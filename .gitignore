@@ -1,0 +1,19 @@
+# Secrets. .env holds the bot token and the AES key; committing it once means
+# rewriting history, and the token has to be rotated regardless.
+.env
+.env.*
+!.env.example
+
+# SSH host key. Not a secret you can rotate cheaply -- replacing it makes every
+# client report a host key mismatch, which is the same warning a real
+# man-in-the-middle produces.
+host_key
+host_key.pub
+keys/
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.pytest_cache/

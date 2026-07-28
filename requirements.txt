@@ -1,0 +1,18 @@
+asyncssh==2.14.2
+cryptography==42.0.5
+motor==3.4.0
+# Pinned because motor 3.4.0 only declares pymongo>=4.5,<5, and pip resolves
+# that to the latest 4.x, which no longer imports. pymongo 4.9 removed the
+# private names motor reaches for (pymongo.cursor._QUERY_OPTIONS), so every
+# release from 4.9 up fails at "import motor.motor_asyncio". Verified against
+# 4.8.0 (works) and 4.9.0 / 4.10.1 (both fail); the real range is >=4.5,<4.9.
+# "pip check" does not catch this: the broken combination still satisfies the
+# declared metadata. Revisit if motor is ever upgraded, since motor 3.6+
+# supports pymongo 4.9+ and this pin would then be holding the stack back.
+#
+# Keep this file ASCII-only. pip reads it with the locale encoding, so a
+# non-ASCII character makes the install fail outright on non-UTF-8 consoles
+# (cp950, cp1252, ...) before any package is resolved.
+pymongo==4.8.0
+aiohttp==3.9.5
+python-dotenv==1.0.1
