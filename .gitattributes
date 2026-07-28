@@ -1,0 +1,5 @@
+# The whole tree is LF. Without this, any tool that writes a file through
+# Windows' default newline translation (Python's open()/write_text() being the
+# easy one to hit) silently converts it to CRLF, and the next diff shows every
+# line as changed even though nothing did.
+* text=auto eol=lf
