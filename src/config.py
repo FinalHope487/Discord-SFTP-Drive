@@ -48,6 +48,15 @@ SFTP_HOST_KEY_PATH = os.getenv("SFTP_HOST_KEY_PATH", "host_key")
 
 MAX_CHUNK_SIZE = 9 * 1024 * 1024  # 9MB, under Discord's 10MiB attachment cap
 
+# How many Discord requests may be in flight at once. Firing every chunk of a
+# large upload in parallel exhausts the rate-limit allowance in one burst and
+# then stalls, which is slower end to end than a steady rate.
+#
+# Left as a string here for the same reason as SFTP_PORT: parsing at import
+# time turns a typo into a bare traceback raised before validate() has a
+# chance to report it alongside every other problem.
+DISCORD_MAX_CONCURRENCY = os.getenv("DISCORD_MAX_CONCURRENCY", "4")
+
 # Decrypted chunks held per open file. Sequential reads cross a boundary
 # constantly, so keeping the previous chunk avoids re-downloading it.
 CHUNK_CACHE_SIZE = 2
@@ -98,6 +107,18 @@ def check(env=None):
             if not 1 <= port <= 65535:
                 problems.append(f"SFTP_PORT out of range: {port}")
 
+    raw_concurrency = env.get("DISCORD_MAX_CONCURRENCY")
+    if raw_concurrency:
+        try:
+            concurrency = int(raw_concurrency)
+        except ValueError:
+            problems.append(
+                f"DISCORD_MAX_CONCURRENCY is not an integer: {raw_concurrency!r}")
+        else:
+            if concurrency < 1:
+                problems.append(
+                    f"DISCORD_MAX_CONCURRENCY must be at least 1: {concurrency}")
+
     return problems
 
 
@@ -119,3 +140,8 @@ def validate(env=None):
 def sftp_port():
     """The listening port as an int. Only safe once `validate()` has passed."""
     return int(SFTP_PORT)
+
+
+def discord_max_concurrency():
+    """In-flight Discord request cap. Safe once `validate()` has passed."""
+    return int(DISCORD_MAX_CONCURRENCY)

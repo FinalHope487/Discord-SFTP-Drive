@@ -1,7 +1,13 @@
 import aiohttp
 import asyncio
 import logging
-from src.config import DISCORD_BOT_TOKEN, DISCORD_USER_ID, DISCORD_CHANNEL_ID
+from src.config import (
+    DISCORD_BOT_TOKEN,
+    DISCORD_USER_ID,
+    DISCORD_CHANNEL_ID,
+    discord_max_concurrency,
+)
+from src.ratelimit import RateLimiter, route_key
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +35,26 @@ class ReachabilityError(RuntimeError):
 
 
 class DiscordAPI:
-    def __init__(self):
+    def __init__(self, limiter=None):
         self.session = None
         self.base_url = "https://discord.com/api/v10"
         self.headers = {
             "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
         }
         self.dm_channel_id = None
+        self._limiter = limiter
+
+    @property
+    def limiter(self):
+        """Built on first use, not in `__init__`.
+
+        The module-level instance below is constructed at import time, which
+        happens before `validate()` has had a chance to report a malformed
+        DISCORD_MAX_CONCURRENCY as a readable configuration error.
+        """
+        if self._limiter is None:
+            self._limiter = RateLimiter(discord_max_concurrency())
+        return self._limiter
 
     async def get_target_channel_id(self):
         if self.dm_channel_id:
@@ -69,6 +88,7 @@ class DiscordAPI:
         """
         session = await self.get_session()
         url = f"{self.base_url}{endpoint}"
+        route = route_key(method, endpoint)
 
         retries = 5
         for attempt in range(retries):
@@ -76,23 +96,32 @@ class DiscordAPI:
             if data_factory is not None:
                 request_kwargs["data"] = data_factory()
 
-            async with session.request(method, url, **request_kwargs) as response:
-                if response.status == 429:
-                    # Rate limited
-                    data = await response.json()
-                    retry_after = data.get("retry_after", 1.0)
-                    logger.warning(f"Rate limited by Discord. Retrying after {retry_after} seconds.")
-                    await asyncio.sleep(retry_after)
-                    continue
+            # The slot is taken per attempt, not around the whole loop: a 429
+            # means waiting, and holding a concurrency slot while waiting would
+            # block requests to unrelated routes that are still within budget.
+            async with self.limiter.slot(route):
+                async with session.request(method, url, **request_kwargs) as response:
+                    self.limiter.update(route, response.headers)
 
-                if not response.ok:
-                    text = await response.text()
-                    logger.error(f"Discord API Error {response.status}: {text}")
-                    response.raise_for_status()
+                    if response.status == 429:
+                        data = await response.json()
+                        retry_after = data.get("retry_after", 1.0)
+                        self.limiter.note_429(response.headers, retry_after)
+                        logger.warning(
+                            "Rate limited by Discord on %s. Retrying after %ss.",
+                            route, retry_after)
+                        sleep_for = retry_after
+                    else:
+                        if not response.ok:
+                            text = await response.text()
+                            logger.error(f"Discord API Error {response.status}: {text}")
+                            response.raise_for_status()
 
-                if response.status == 204: # No content
-                    return None
-                return await response.json()
+                        if response.status == 204: # No content
+                            return None
+                        return await response.json()
+
+            await asyncio.sleep(sleep_for)
         raise Exception("Max retries exceeded for Discord API")
 
     async def upload_chunk(self, file_bytes: bytes, filename: str):
@@ -142,13 +171,16 @@ class DiscordAPI:
         """
         session = await self.get_session()
         url = f"{self.base_url}{endpoint}"
-        async with session.request(method, url, **kwargs) as response:
-            if response.status == 204:
-                return response.status, None
-            try:
-                return response.status, await response.json()
-            except (aiohttp.ContentTypeError, ValueError):
-                return response.status, await response.text()
+        route = route_key(method, endpoint)
+        async with self.limiter.slot(route):
+            async with session.request(method, url, **kwargs) as response:
+                self.limiter.update(route, response.headers)
+                if response.status == 204:
+                    return response.status, None
+                try:
+                    return response.status, await response.json()
+                except (aiohttp.ContentTypeError, ValueError):
+                    return response.status, await response.text()
 
     async def check_reachability(self):
         """Verify the configured credentials can actually move bytes.
