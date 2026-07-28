@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import stat
 import sys
 
 import asyncssh
@@ -18,12 +19,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# A private key readable by anyone who can reach the file is a key anyone can
+# use to impersonate this server, and clients cannot tell the difference.
+_HOST_KEY_MODE = 0o600
+
+
 def ensure_host_key(path: str):
     if os.path.exists(path):
+        _restrict_host_key(path)
         return
+
+    directory = os.path.dirname(path) or "."
+    if not os.access(directory, os.W_OK):
+        # Typical cause: a host_key_data volume created by an older build that
+        # ran as root, now mounted into a container that does not. Without
+        # this the failure is a bare PermissionError from deep inside asyncssh.
+        # getuid() is POSIX-only; this module is imported on Windows too.
+        uid = getattr(os, "getuid", lambda: "n/a")()
+        raise ConfigError(
+            f"No host key at {path} and {directory} is not writable by this "
+            f"user (uid {uid}). If this volume was created by an earlier "
+            "root-running build, either chown it to uid 10001 or recreate it "
+            "-- note that recreating changes the host key, so clients will "
+            "report a mismatch."
+        )
+
     logger.info("Generating new host key at %s", path)
     key = asyncssh.generate_private_key("ssh-rsa", key_size=3072)
     key.write_private_key(path)
+    _restrict_host_key(path)
+
+
+def _restrict_host_key(path: str):
+    """Force the key to owner-only, repairing keys written by older builds.
+
+    asyncssh writes through the process umask, which in the container left the
+    key world-readable.
+    """
+    try:
+        current = stat.S_IMODE(os.stat(path).st_mode)
+        if current != _HOST_KEY_MODE:
+            os.chmod(path, _HOST_KEY_MODE)
+            logger.info("Tightened host key permissions from %o to %o",
+                        current, _HOST_KEY_MODE)
+    except OSError as exc:
+        # Not fatal on its own -- the server still works -- but the operator
+        # should know the key is more exposed than intended.
+        logger.warning("Could not restrict permissions on %s: %s", path, exc)
 
 
 async def check_discord_reachable():
