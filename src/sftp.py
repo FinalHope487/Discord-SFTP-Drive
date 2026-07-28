@@ -26,6 +26,7 @@ import stat
 import asyncssh
 
 from src.config import SFTP_PASSWORD, SFTP_USER
+from src.crypto import IntegrityError
 from src.vfs import (
     AlreadyExists,
     IsADirectory,
@@ -66,6 +67,14 @@ def _translate(func):
             return await func(*args, **kwargs)
         except asyncssh.SFTPError:
             raise
+        except IntegrityError as exc:
+            # Handled before the generic branch so it is logged as the
+            # security event it is, rather than as an unhandled bug with a
+            # traceback. The client gets a failure and no data: returning the
+            # bytes anyway would defeat the check entirely.
+            logger.error("Integrity check failed in SFTP %s: %s",
+                         func.__name__, exc)
+            raise asyncssh.SFTPError(asyncssh.FX_FAILURE, str(exc)) from exc
         except VFSError as exc:
             raise _to_sftp_error(exc) from exc
         except Exception as exc:

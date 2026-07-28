@@ -20,8 +20,14 @@ Node schema (collection `nodes`):
         index       int   position in the chunk sequence
         message_id  str   Discord message holding the attachment
         nonce       str   hex, this chunk's AES-CTR initial counter block
+        hmac        str   hex, HMAC-SHA256 over nonce||ciphertext
         offset      int   plaintext offset of this chunk within the file
         size        int   plaintext length of this chunk
+
+`hmac` is required. It lives here rather than alongside the ciphertext on
+Discord on purpose: that is what stops whoever serves the bytes from also
+producing a tag for them. A chunk without one is rejected rather than read
+unverified -- see `crypto.verify_chunk`.
 """
 
 import asyncio
@@ -33,7 +39,7 @@ from collections import OrderedDict
 from typing import Optional
 
 from src.config import AES_SECRET_KEY, CHUNK_CACHE_SIZE, MAX_CHUNK_SIZE
-from src.crypto import generate_nonce, transform
+from src.crypto import chunk_tag, generate_nonce, transform, verify_chunk
 from src.db import db
 from src.discord_api import discord_api
 
@@ -193,7 +199,13 @@ class DiscordFile:
 
         url = await discord_api.get_attachment_url(chunk["message_id"])
         ciphertext = await discord_api.download_chunk(url)
-        plaintext = transform(AES_SECRET_KEY, bytes.fromhex(chunk["nonce"]), ciphertext)
+        nonce = bytes.fromhex(chunk["nonce"])
+
+        # Before decryption, not after: the whole point of encrypt-then-MAC is
+        # that forged bytes never reach the cipher.
+        verify_chunk(AES_SECRET_KEY, nonce, ciphertext, chunk.get("hmac"))
+
+        plaintext = transform(AES_SECRET_KEY, nonce, ciphertext)
 
         self._chunk_cache[key] = plaintext
         self._chunk_cache.move_to_end(key)
@@ -302,14 +314,15 @@ class DiscordFile:
         """
         nonce = generate_nonce()
         ciphertext = transform(AES_SECRET_KEY, nonce, plaintext)
+        tag = chunk_tag(AES_SECRET_KEY, nonce, ciphertext)
         filename = f"{self._node['id']}_chunk_{chunk['index']}.bin"
 
         message_id, _url, _size = await discord_api.upload_chunk(ciphertext, filename)
 
-        previous_message_id = chunk["message_id"]
-        previous_nonce = chunk["nonce"]
+        previous = (chunk["message_id"], chunk["nonce"], chunk.get("hmac"))
         chunk["message_id"] = message_id
         chunk["nonce"] = nonce.hex()
+        chunk["hmac"] = tag.hex()
 
         try:
             await db.get_db().nodes.update_one(
@@ -317,15 +330,16 @@ class DiscordFile:
                 {"$set": {"chunks": self._node["chunks"], "modified_at": _now()}},
             )
         except Exception:
-            chunk["message_id"] = previous_message_id
-            chunk["nonce"] = previous_nonce
+            # All three move together: a chunk left with the new nonce and the
+            # old tag would fail verification on every subsequent read.
+            chunk["message_id"], chunk["nonce"], chunk["hmac"] = previous
             await _safe_delete_message(message_id)
             raise
 
         # Only now does nothing reference the old attachment. Deleting it
         # before the metadata write would turn a failed update into data loss;
         # doing it after can at worst leave an orphan.
-        await _safe_delete_message(previous_message_id)
+        await _safe_delete_message(previous[0])
 
         self._chunk_cache[chunk["index"]] = plaintext
         self._chunk_cache.move_to_end(chunk["index"])
@@ -342,6 +356,7 @@ class DiscordFile:
 
         nonce = generate_nonce()
         ciphertext = transform(AES_SECRET_KEY, nonce, data)
+        tag = chunk_tag(AES_SECRET_KEY, nonce, ciphertext)
         index = len(self._node["chunks"])
         filename = f"{self._node['id']}_chunk_{index}.bin"
 
@@ -355,6 +370,7 @@ class DiscordFile:
             "index": index,
             "message_id": message_id,
             "nonce": nonce.hex(),
+            "hmac": tag.hex(),
             "offset": self._node["size"],
             "size": len(data),
         }
