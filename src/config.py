@@ -17,7 +17,14 @@ import os
 
 from dotenv import load_dotenv
 
+from src import crypto
+
 load_dotenv()
+
+# Anything true-ish an operator is likely to write. Everything else is false,
+# including typos: an unrecognised value must not silently enable something
+# this cautious.
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 class ConfigError(RuntimeError):
@@ -43,11 +50,25 @@ SFTP_PASSWORD_OLD = os.getenv("SFTP_PASSWORD_OLD")
 SFTP_PORT = os.getenv("SFTP_PORT", "2222")
 SFTP_HOST_KEY_PATH = os.getenv("SFTP_HOST_KEY_PATH", "host_key")
 
-# Cost of turning the password into a key-encryption key. Left as a string
-# for the same reason as SFTP_PORT; see `pbkdf2_iterations()`. Lowering it
-# only affects keys wrapped from then on, because each stored record carries
-# the parameters it was made with.
-PBKDF2_ITERATIONS = os.getenv("PBKDF2_ITERATIONS", "600000")
+# How the password becomes a key-encryption key. Changing any of this only
+# affects keys wrapped from then on, because each stored record carries the
+# function and parameters it was made with -- which is what lets the default
+# move from PBKDF2 to Argon2id without stranding an existing deployment.
+#
+# Left as strings for the same reason as SFTP_PORT; see `kdf_settings()`.
+KDF = os.getenv("KDF", crypto.DEFAULT_KDF)
+PBKDF2_ITERATIONS = os.getenv("PBKDF2_ITERATIONS", str(crypto.DEFAULT_PBKDF2_ITERATIONS))
+ARGON2_TIME_COST = os.getenv("ARGON2_TIME_COST", str(crypto.DEFAULT_ARGON2_TIME_COST))
+ARGON2_MEMORY_KIB = os.getenv("ARGON2_MEMORY_KIB", str(crypto.DEFAULT_ARGON2_MEMORY_KIB))
+ARGON2_PARALLELISM = os.getenv("ARGON2_PARALLELISM", str(crypto.DEFAULT_ARGON2_PARALLELISM))
+
+# Whether startup may rewrite an existing wrapped-key record onto the
+# configured KDF. Off by default and deliberately so: it is the only thing the
+# server does to a record the deployment is already depending on, and getting
+# it wrong makes every stored file unreadable rather than breaking one of them.
+# The upgrade verifies the new record opens before storing it, but the
+# operator still chooses when it happens.
+KDF_UPGRADE = os.getenv("KDF_UPGRADE", "0")
 
 MAX_CHUNK_SIZE = 9 * 1024 * 1024  # 9MB, under Discord's 10MiB attachment cap
 
@@ -72,6 +93,19 @@ _REQUIRED = ("DISCORD_BOT_TOKEN", "SFTP_USER", "SFTP_PASSWORD")
 # database and every file in it, so it gets a length floor that a login
 # credential alone would not need.
 MIN_PASSWORD_BYTES = 12
+
+_SUPPORTED_KDFS = {crypto.KDF_ARGON2ID, crypto.KDF_PBKDF2_SHA256}
+
+# Cost variables and the smallest value that is not simply nonsense. These are
+# hard floors, not the recommended settings -- `keystore` warns separately when
+# a valid-but-weak cost is configured, because "weaker than recommended" is the
+# operator's call to make and "zero iterations" is not.
+_KDF_COST_VARIABLES = {
+    "PBKDF2_ITERATIONS": 1,
+    "ARGON2_TIME_COST": 1,
+    "ARGON2_MEMORY_KIB": 8,
+    "ARGON2_PARALLELISM": 1,
+}
 
 
 def check(env=None):
@@ -117,17 +151,38 @@ def check(env=None):
             if not 1 <= port <= 65535:
                 problems.append(f"SFTP_PORT out of range: {port}")
 
-    raw_iterations = env.get("PBKDF2_ITERATIONS")
-    if raw_iterations:
+    kdf = env.get("KDF")
+    if kdf and kdf not in _SUPPORTED_KDFS:
+        problems.append(
+            f"KDF is not a supported key derivation function: {kdf!r}. "
+            f"Supported: {', '.join(sorted(_SUPPORTED_KDFS))}")
+
+    for name, floor in _KDF_COST_VARIABLES.items():
+        raw = env.get(name)
+        if not raw:
+            continue
         try:
-            iterations = int(raw_iterations)
+            value = int(raw)
         except ValueError:
-            problems.append(
-                f"PBKDF2_ITERATIONS is not an integer: {raw_iterations!r}")
+            problems.append(f"{name} is not an integer: {raw!r}")
         else:
-            if iterations < 1:
-                problems.append(
-                    f"PBKDF2_ITERATIONS must be at least 1: {iterations}")
+            if value < floor:
+                problems.append(f"{name} must be at least {floor}: {value}")
+
+    # Argon2 refuses a memory cost below 8 KiB per lane, and refusing it here
+    # is a configuration error rather than a traceback out of the C library on
+    # the first login attempt.
+    try:
+        lanes = int(env.get("ARGON2_PARALLELISM") or ARGON2_PARALLELISM)
+        memory = int(env.get("ARGON2_MEMORY_KIB") or ARGON2_MEMORY_KIB)
+    except ValueError:
+        pass  # already reported above
+    else:
+        if memory < 8 * lanes:
+            problems.append(
+                f"ARGON2_MEMORY_KIB is {memory}, below the 8 KiB per lane that "
+                f"Argon2 requires for ARGON2_PARALLELISM={lanes} "
+                f"(at least {8 * lanes})")
 
     raw_concurrency = env.get("DISCORD_MAX_CONCURRENCY")
     if raw_concurrency:
@@ -169,6 +224,23 @@ def discord_max_concurrency():
     return int(DISCORD_MAX_CONCURRENCY)
 
 
-def pbkdf2_iterations():
-    """Key-derivation cost for newly wrapped keys. Safe after `validate()`."""
-    return int(PBKDF2_ITERATIONS)
+def kdf_settings():
+    """How to derive a key-encryption key from now on. Safe after `validate()`.
+
+    Both functions' costs are passed through whichever one is selected;
+    `crypto.kdf_settings` keeps the ones that apply. That means an operator can
+    leave both sets in `.env` and switch by changing `KDF` alone, rather than
+    having to remember which variables become live.
+    """
+    return crypto.kdf_settings(
+        KDF,
+        iterations=int(PBKDF2_ITERATIONS),
+        time_cost=int(ARGON2_TIME_COST),
+        memory_kib=int(ARGON2_MEMORY_KIB),
+        parallelism=int(ARGON2_PARALLELISM),
+    )
+
+
+def kdf_upgrade():
+    """Whether startup may re-wrap the stored key onto the configured KDF."""
+    return KDF_UPGRADE.strip().lower() in _TRUTHY

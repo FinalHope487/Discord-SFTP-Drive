@@ -83,6 +83,39 @@ def test_zero_iterations_is_rejected():
                for p in check(env(PBKDF2_ITERATIONS="0")))
 
 
+@pytest.mark.parametrize("name", ["ARGON2_TIME_COST", "ARGON2_MEMORY_KIB",
+                                  "ARGON2_PARALLELISM"])
+def test_non_numeric_argon2_costs_are_reported(name):
+    assert any(name in p for p in check(env(**{name: "lots"})))
+
+
+@pytest.mark.parametrize("name", ["ARGON2_TIME_COST", "ARGON2_PARALLELISM"])
+def test_zero_argon2_costs_are_rejected(name):
+    assert any(name in p for p in check(env(**{name: "0"})))
+
+
+def test_an_unknown_kdf_is_rejected():
+    problems = check(env(KDF="rot13"))
+    assert any("KDF" in p and "rot13" in p for p in problems)
+
+
+@pytest.mark.parametrize("kdf", ["argon2id", "pbkdf2-sha256"])
+def test_both_supported_kdfs_are_accepted(kdf):
+    assert check(env(KDF=kdf)) == []
+
+
+def test_a_memory_cost_argon2_itself_would_refuse_is_reported():
+    # Argon2 requires 8 KiB per lane. Catching it here makes it a startup
+    # configuration error rather than a traceback out of the C library on the
+    # first login attempt.
+    assert any("ARGON2_MEMORY_KIB" in p
+               for p in check(env(ARGON2_MEMORY_KIB="16", ARGON2_PARALLELISM="4")))
+
+
+def test_a_memory_cost_that_clears_the_per_lane_floor_is_accepted():
+    assert check(env(ARGON2_MEMORY_KIB="32", ARGON2_PARALLELISM="4")) == []
+
+
 def test_a_destination_channel_is_required():
     problems = check(env(DISCORD_USER_ID=None))
     assert any("DISCORD_CHANNEL_ID" in p for p in problems)

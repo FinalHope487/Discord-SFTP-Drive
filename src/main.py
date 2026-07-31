@@ -13,7 +13,8 @@ from src.config import (
     SFTP_PASSWORD,
     SFTP_PASSWORD_OLD,
     ConfigError,
-    pbkdf2_iterations,
+    kdf_settings,
+    kdf_upgrade,
     sftp_port,
     validate,
 )
@@ -140,7 +141,8 @@ async def start_server():
             await keystore.ensure_usable(
                 SFTP_PASSWORD,
                 old_password=SFTP_PASSWORD_OLD,
-                iterations=pbkdf2_iterations(),
+                settings=kdf_settings(),
+                upgrade=kdf_upgrade(),
             )
         except keystore.KeystoreError as exc:
             raise ConfigError(str(exc)) from exc

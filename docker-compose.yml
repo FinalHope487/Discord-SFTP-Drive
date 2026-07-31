@@ -44,7 +44,16 @@ services:
       - SFTP_PASSWORD=${SFTP_PASSWORD:?set SFTP_PASSWORD in .env}
       # Only needed while changing the password, and only read at startup.
       - SFTP_PASSWORD_OLD=${SFTP_PASSWORD_OLD:-}
+      # Key derivation. Only the costs belonging to the selected KDF are used,
+      # and every stored key record carries the ones it was made with, so
+      # changing these never strands an existing key.
+      - KDF=${KDF:-argon2id}
+      - ARGON2_TIME_COST=${ARGON2_TIME_COST:-3}
+      - ARGON2_MEMORY_KIB=${ARGON2_MEMORY_KIB:-65536}
+      - ARGON2_PARALLELISM=${ARGON2_PARALLELISM:-1}
       - PBKDF2_ITERATIONS=${PBKDF2_ITERATIONS:-600000}
+      # Opt-in, one restart at a time; see .env.example.
+      - KDF_UPGRADE=${KDF_UPGRADE:-0}
       # The container always listens on 2222; the host-side port is mapped
       # above, so changing SFTP_PORT does not need a rebuild.
       - SFTP_PORT=2222

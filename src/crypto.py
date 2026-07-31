@@ -50,8 +50,8 @@ no such place in this design.
 The master key
 --------------
 The key that encrypts data is random and never leaves memory in the clear.
-It is stored wrapped: the SFTP password goes through PBKDF2 to make a
-key-encryption key, and that wraps the master key with the same
+It is stored wrapped: the SFTP password goes through a memory-hard KDF to make
+a key-encryption key, and that wraps the master key with the same
 encrypt-then-MAC construction used everywhere else. Three consequences,
 all of them the point:
 
@@ -64,12 +64,19 @@ all of them the point:
 
 The KDF name and its parameters are stored *with* the wrapped key rather than
 compiled in, so the cost can be raised, or the algorithm replaced, without a
-migration.
+migration. That is not a hypothetical: new wraps use Argon2id, and the records
+written earlier under PBKDF2-HMAC-SHA256 still open, because each one says
+which function made it and at what cost. Argon2id is the default because the
+password is the only secret outside the database, and PBKDF2's work is pure
+arithmetic that a GPU runs thousands of at a time, while Argon2id's cost is
+memory that a GPU cannot parallelise away.
 """
 
 import hmac
 import os
 
+from argon2.low_level import Type as Argon2Type
+from argon2.low_level import hash_secret_raw
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -90,10 +97,29 @@ _WRAP_ENC_INFO = b"discord-drive/key-wrap-enc/v1"
 _WRAP_MAC_INFO = b"discord-drive/key-wrap-mac/v1"
 
 KDF_PBKDF2_SHA256 = "pbkdf2-sha256"
+KDF_ARGON2ID = "argon2id"
+
+# What a *new* wrap uses. Reading is unaffected: every stored record names the
+# function that produced it, so the ones written under PBKDF2 keep opening.
+DEFAULT_KDF = KDF_ARGON2ID
 
 # OWASP's floor for PBKDF2-HMAC-SHA256. Overridable because the stored record
-# carries whatever was used; see `config.pbkdf2_iterations`.
+# carries whatever was used; see `config.kdf_settings`.
 DEFAULT_PBKDF2_ITERATIONS = 600_000
+
+# Comfortably above OWASP's Argon2id floor (19 MiB / t=2 / p=1). The cost that
+# matters here is memory, which is the whole point: PBKDF2 at 600k iterations
+# is roughly 200ms of pure arithmetic and a GPU runs thousands of those at
+# once, whereas 64 MiB per guess is what a GPU cannot parallelise its way out
+# of. Wall time lands in the same order as the PBKDF2 it replaces, so the
+# login path does not get slower.
+#
+# p=1 rather than the core count: parallelism has to be recorded and matched
+# exactly on the way back, so tying it to whatever CPU happened to wrap the key
+# would be a portability trap for no security gain at this memory size.
+DEFAULT_ARGON2_TIME_COST = 3
+DEFAULT_ARGON2_MEMORY_KIB = 64 * 1024
+DEFAULT_ARGON2_PARALLELISM = 1
 
 
 class IntegrityError(Exception):
@@ -228,21 +254,128 @@ def transform(key: bytes, nonce: bytes, data: bytes, offset: int = 0) -> bytes:
 # ------------------------------------------------------------- key wrapping
 
 
-def derive_kek(password: str, salt: bytes, *, kdf: str, iterations: int) -> bytes:
+# Which cost parameters each function takes, and what each one is called in
+# the stored record. Driving both directions off one table is what keeps a
+# parameter from being written under one name and read back under another --
+# which would not fail loudly, it would just derive a different key.
+_KDF_PARAMS = {
+    KDF_PBKDF2_SHA256: {"iterations": "kdf_iterations"},
+    KDF_ARGON2ID: {
+        "time_cost": "kdf_time_cost",
+        "memory_kib": "kdf_memory_kib",
+        "parallelism": "kdf_parallelism",
+    },
+}
+
+_KDF_DEFAULTS = {
+    KDF_PBKDF2_SHA256: {"iterations": DEFAULT_PBKDF2_ITERATIONS},
+    KDF_ARGON2ID: {
+        "time_cost": DEFAULT_ARGON2_TIME_COST,
+        "memory_kib": DEFAULT_ARGON2_MEMORY_KIB,
+        "parallelism": DEFAULT_ARGON2_PARALLELISM,
+    },
+}
+
+
+def kdf_settings(kdf: str = DEFAULT_KDF, **overrides) -> dict:
+    """A complete, validated description of one derivation.
+
+    The shape everything else passes around: `{"kdf": name, ...costs}`, with
+    anything unspecified filled in from that function's defaults. Overrides
+    belonging to a different function are ignored rather than rejected, so a
+    deployment can keep both sets of variables in its environment and switch
+    between them by changing one name.
+    """
+    if kdf not in _KDF_PARAMS:
+        raise KeyUnwrapError(f"unsupported key derivation function: {kdf!r}")
+
+    settings = {"kdf": kdf}
+    for name, default in _KDF_DEFAULTS[kdf].items():
+        value = overrides.get(name)
+        settings[name] = default if value is None else int(value)
+    return settings
+
+
+def _settings_to_record(settings: dict) -> dict:
+    """The stored spelling of a settings dict."""
+    fields = _KDF_PARAMS[settings["kdf"]]
+    record = {"kdf": settings["kdf"]}
+    record.update({stored: settings[name] for name, stored in fields.items()})
+    return record
+
+
+def _settings_from_record(record: dict) -> dict:
+    """The settings a stored record describes, or `KeyUnwrapError`.
+
+    Every parameter is required. Falling back to a default for a missing one
+    would mean a record silently opening under costs it was not made with,
+    which cannot work -- the derivation would produce a different key and the
+    failure would surface as a wrong password.
+    """
+    kdf = record.get("kdf")
+    if kdf not in _KDF_PARAMS:
+        raise KeyUnwrapError(f"unsupported key derivation function: {kdf!r}")
+
+    settings = {"kdf": kdf}
+    for name, stored in _KDF_PARAMS[kdf].items():
+        if stored not in record:
+            raise KeyUnwrapError(
+                f"stored key record is missing {stored!r}, which {kdf} needs")
+        try:
+            settings[name] = int(record[stored])
+        except (TypeError, ValueError) as exc:
+            raise KeyUnwrapError(
+                f"stored key record has a malformed {stored!r}: {exc}") from exc
+    return settings
+
+
+def record_matches_settings(record: dict, settings: dict) -> bool:
+    """Whether a stored record was made with exactly these settings.
+
+    A record naming an unknown function is simply "no match" rather than an
+    error: the caller asking this is deciding whether to rewrite it, and a
+    record nobody can read is the strongest possible case for rewriting.
+    """
+    try:
+        return _settings_from_record(record) == settings
+    except KeyUnwrapError:
+        return False
+
+
+def derive_kek(password: str, salt: bytes, settings: dict) -> bytes:
     """The key-encryption key for a password.
 
     Deliberately takes the algorithm name rather than assuming it: the stored
     record names what produced it, so an old record keeps opening after the
     default changes.
     """
-    if kdf != KDF_PBKDF2_SHA256:
-        raise KeyUnwrapError(f"unsupported key derivation function: {kdf!r}")
-    return PBKDF2HMAC(algorithm=hashes.SHA256(), length=KEY_SIZE, salt=salt,
-                      iterations=iterations).derive(password.encode("utf-8"))
+    kdf = settings.get("kdf")
+    secret = password.encode("utf-8")
+
+    if kdf == KDF_PBKDF2_SHA256:
+        return PBKDF2HMAC(algorithm=hashes.SHA256(), length=KEY_SIZE, salt=salt,
+                          iterations=settings["iterations"]).derive(secret)
+
+    if kdf == KDF_ARGON2ID:
+        # Type.ID, not Type.I or Type.D: the hybrid is the one to use unless
+        # there is a specific reason otherwise, and it is what the name in the
+        # record commits to. Reading the type from the record rather than the
+        # constant would let someone downgrade a stored record to Argon2i.
+        return hash_secret_raw(
+            secret=secret,
+            salt=salt,
+            time_cost=settings["time_cost"],
+            memory_cost=settings["memory_kib"],
+            parallelism=settings["parallelism"],
+            hash_len=KEY_SIZE,
+            type=Argon2Type.ID,
+        )
+
+    raise KeyUnwrapError(f"unsupported key derivation function: {kdf!r}")
 
 
 def wrap_master_key(password: str, master_key: bytes, *,
-                    iterations: int = DEFAULT_PBKDF2_ITERATIONS) -> dict:
+                    settings: dict = None) -> dict:
     """Encrypt `master_key` under `password`, with everything needed to undo it.
 
     The salt is fresh on every call, so re-wrapping after a password change
@@ -251,8 +384,10 @@ def wrap_master_key(password: str, master_key: bytes, *,
     if len(master_key) != KEY_SIZE:
         raise ValueError(f"master key must be {KEY_SIZE} bytes")
 
+    settings = kdf_settings() if settings is None else settings
+
     salt = os.urandom(16)
-    kek = derive_kek(password, salt, kdf=KDF_PBKDF2_SHA256, iterations=iterations)
+    kek = derive_kek(password, salt, settings)
 
     nonce = generate_nonce()
     ciphertext = transform(_subkey(kek, _WRAP_ENC_INFO), nonce, master_key)
@@ -261,9 +396,8 @@ def wrap_master_key(password: str, master_key: bytes, *,
     mac.update(ciphertext)
 
     return {
-        "kdf": KDF_PBKDF2_SHA256,
+        **_settings_to_record(settings),
         "kdf_salt": salt.hex(),
-        "kdf_iterations": iterations,
         "nonce": nonce.hex(),
         "ciphertext": ciphertext.hex(),
         "hmac": mac.digest().hex(),
@@ -277,17 +411,16 @@ def unwrap_master_key(password: str, record: dict) -> bytes:
     yield 32 bytes of garbage that look exactly like a key, and every read
     would then fail as a corrupt file rather than as a bad password.
     """
+    settings = _settings_from_record(record)
     try:
         salt = bytes.fromhex(record["kdf_salt"])
         nonce = bytes.fromhex(record["nonce"])
         ciphertext = bytes.fromhex(record["ciphertext"])
         expected = bytes.fromhex(record["hmac"])
-        iterations = int(record["kdf_iterations"])
-        kdf = record["kdf"]
     except (KeyError, TypeError, ValueError) as exc:
         raise KeyUnwrapError(f"stored key record is malformed: {exc}") from exc
 
-    kek = derive_kek(password, salt, kdf=kdf, iterations=iterations)
+    kek = derive_kek(password, salt, settings)
 
     mac = hmac.new(_subkey(kek, _WRAP_MAC_INFO), digestmod="sha256")
     mac.update(nonce)

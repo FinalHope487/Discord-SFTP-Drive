@@ -6,6 +6,8 @@
 ---
 
 - [x] **動態加密金鑰 (Key Derivation)** — 已實作，但**改了做法**。
+  （2026-07-31 補：KDF 已從 PBKDF2 換成原文也提到的 Argon2id，用 `argon2-cffi`。
+  既有的 PBKDF2 記錄不需要 migration，因為記錄自己帶著參數。細節見 `ROADMAP.md`。）
   - **原文**：取消在 `.env` 中寫死 `AES_SECRET_KEY`，改為接收使用者在 SFTP 客戶端
     輸入的密碼，並透過 PBKDF2 或 Argon2 動態生成 AES 金鑰。金鑰僅在連線期間留存於
     記憶體，不寫入資料庫，連線中斷即銷毀。

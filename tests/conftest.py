@@ -23,11 +23,19 @@ os.environ["DISCORD_USER_ID"] = "100000000000000000"
 os.environ["SFTP_USER"] = TEST_USER
 os.environ["SFTP_PASSWORD"] = TEST_PASSWORD
 
-# PBKDF2 at the production cost is ~200ms, and a login happens in almost every
-# test in this suite. The stored key record carries the parameters it was made
-# with, so a low count here is a property of these fixtures, not of the code
-# under test.
+# Either KDF at its production cost is ~200ms, and a login happens in almost
+# every test in this suite. The stored key record carries the parameters it was
+# made with, so the trivial costs here are a property of these fixtures, not of
+# the code under test.
+#
+# The *algorithm* is left at the production default on purpose -- only the cost
+# is turned down. Pinning the suite to PBKDF2 while the server wraps with
+# Argon2id would leave the path that actually runs in production untested
+# everywhere except the handful of tests that ask for it by name.
 os.environ["PBKDF2_ITERATIONS"] = "1000"
+os.environ["ARGON2_TIME_COST"] = "1"
+os.environ["ARGON2_MEMORY_KIB"] = "64"
+os.environ["ARGON2_PARALLELISM"] = "1"
 
 import asyncssh  # noqa: E402
 import pytest  # noqa: E402
@@ -82,9 +90,9 @@ async def master_key(fake_db):
     would leave it untested everywhere.
     """
     from src import keystore
-    from src.config import pbkdf2_iterations
+    from src.config import kdf_settings
 
-    await keystore.ensure_usable(TEST_PASSWORD, iterations=pbkdf2_iterations())
+    await keystore.ensure_usable(TEST_PASSWORD, settings=kdf_settings())
     return await keystore.open_master_key(TEST_PASSWORD)
 
 
