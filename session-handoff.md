@@ -1,117 +1,163 @@
 # Session Handoff
 
 依 `.claude/templates/session-handoff.md` 產出。
-涵蓋範圍：**真實環境驗證 Discord 429**——上一輪交接時說「連續四輪記著、
-一直沒被真實環境觸發過」的那一條，本輪補上。
+涵蓋範圍：**commit 積壓的跨 handle 同步**、**KDF 換 Argon2id**、
+**整檔 rollback 拍板不做**、**多使用者設計方案**，以及一個讀程式碼時發現的新缺口。
 
-> **目前沒有 `[now]`。** 自動化測試 310 項全過，pyflakes 乾淨，
-> 跨 handle 同步（上一輪）與 rate limit（本輪）都已完成實地驗收。
-> 服務是活的，跑的是既有 image（本輪未改 `src/`，未重建）。
+> **有一條 `[next]`，是本輪新發現的**：`node_tag` 沒有涵蓋 `filename` / `parent_id`，
+> 能寫 MongoDB 的人可以改名、搬檔而且驗得過。詳見 `ROADMAP.md`。
+> 自動化測試 336 項全過，pyflakes 乾淨。
+> **服務跑的仍是舊 image**——本輪改了 `src/` 但沒有重建，見「未完成待辦」第一條。
 
 ---
 
 ## 目前狀態
 
-本輪**沒有改動任何程式碼**，只跑了兩支 scratchpad 一次性腳本
-（驗證腳本＋對帳腳本，皆未留在 repo，沿用既有慣例）：
+三個 commit，前兩個是程式碼，第三個是文件：
 
-1. 用真實 bot token 對真實 SFTP 服務（`docker compose` 既有容器，
-   `sftp-discord-server` 已跑 2 小時、跑的是上一輪跨 handle 同步的程式碼）
-   序列上傳 50 個 200 bytes 小檔案，刻意用小檔案＋無延遲去撞 Discord 真實限流。
-2. 對帳：比對 Discord 頻道裡的附件與 MongoDB `nodes.chunks.message_id`。
+| commit | 內容 |
+|---|---|
+| `6ada626` | 跨 handle 的內容狀態同步（上一輪寫好、一直沒 commit 的） |
+| `5643ccb` | KDF 換成 Argon2id；整檔 rollback 拍板不做 |
+| （本輪最後一個） | 新缺口寫進 `ROADMAP.md`、`design-multi-user.md`、本檔 |
 
-`ROADMAP.md` 已補上本輪完成的段落（「本輪第四段」），細節不重複寫在這裡。
+## 已完成
 
-### 結果摘要
+### 一、把積壓的跨 handle 同步 commit 掉（`6ada626`）
 
-- **主動節流被真實觸發**：上傳路徑（`POST .../messages`）上，部分檔案耗時從
-  約 0.5s 跳到 4.5～5s——這是 `src/ratelimit.py` 讀到 `X-RateLimit-Remaining`
-  歸零後主動等到 `X-RateLimit-Reset-After`，讓請求**沒有**真的撞到 429。
-- **真實 429 與重試被真實觸發**：清理路徑（`DELETE .../messages/{id}`）的
-  bucket 一開始沒被學到，前幾個刪除跑得比限流快，7 次真的收到 Discord 429，
-  `retry_after`（實測 0.3s～0.602s）被正確解析、記成 WARNING、等待後重試，
-  50 個檔案最終全部刪除成功，無一失敗。
-- 50 個檔案上傳後 `stat` 核對 size 全部正確；清理後對帳 **0 孤兒、0 懸空引用**。
+上一輪寫完、驗收過但沒 commit 的改動。內容沒有再改，只是入庫。
+
+### 二、KDF 換成 Argon2id（`5643ccb`）
+
+- 新增相依 `argon2-cffi==25.1.0`（**你本輪批准的**）。
+- 新設定值 `KDF` / `ARGON2_TIME_COST` / `ARGON2_MEMORY_KIB` / `ARGON2_PARALLELISM`，
+  預設 `argon2id` 64 MiB / t=3 / p=1。`.env.example` 與 `docker-compose.yml` 都補了。
+- **選 `argon2-cffi` 而不是 `cryptography` 44 內建的**：後者要把 cryptography 從
+  42.0.5 跨兩個 major 升上去，而 asyncssh 整個傳輸層坐在它上面。
+- **實測 Argon2id 64 MiB/t=3 是 125ms，比原本 PBKDF2 600k 的 214ms 還快**，
+  登入路徑沒有變慢。
+- **「不需要 migration」這次被兌現並釘住了**：`derive_kek` 從記錄裡讀函式名與成本，
+  不假設當前預設值。並且實地確認過線上那份記錄的形狀就是
+  `pbkdf2-sha256 / kdf_iterations=600000`——正是新程式碼讀得懂的形狀。
+- 成本參數改成「記錄裡缺一個就拒絕」而不是補當前預設值：補預設會推出一把不同的金鑰，
+  然後以「密碼錯誤」的形式浮現，那是最糟的一種報錯方式。
+- `KDF_UPGRADE`（**預設關**）才會把既有記錄重新包裝。覆蓋前會先確認新記錄真的解得開
+  （`_replace_wrapping`）。這是系統裡最危險的一次寫入——寫壞不是壞掉一個檔案，
+  是所有位元組永遠讀不出來。
+
+### 三、拍板的兩個決策（已寫進 `ROADMAP.md` 的「已拍板的長期決策」）
+
+- **整檔 rollback 不做**。釘 Discord / 本機 append-only 檔 / 外部 KMS-TPM 三條路都不走，
+  改列為已評估並接受的威脅模型邊界，不再是待辦。
+- **既有記錄的 KDF 升級是 opt-in**，預設不動。
+
+### 四、多使用者設計方案（`design-multi-user.md`，只出方案未動工）
+
+你選的是「只出方案」。文件裡最重要的一段是 §2：多使用者有兩種產品，
+**共用金鑰（A）與每人一把金鑰（B）**，差別在「A 的密碼能不能解開 B 的資料」，
+而且選了之後要改很貴。文件末尾列了三個必須先拍板的決策點。
 
 ### 驗證方式
 
 ```bash
-./venv/Scripts/python.exe -m pytest      # 310 passed（本輪未新增測試，確認未回歸）
-./venv/Scripts/python.exe -m pyflakes src tests   # 乾淨
+./venv/Scripts/python.exe -m pytest
 ```
 
-真實環境驗證不是單元測試能取代的部分：實際的 `retry_after` 精度、
-bucket 何時「還沒學到」而真的吃到 429、以及主動節流在真實延遲下的行為，
-單元測試對假的 collection / 假的 Discord response 跑不出這些。
+336 passed（本輪 +26，全在 `test_keystore.py` / `test_config.py`），24 秒，pyflakes 乾淨。
+新增的測試裡值得一提的三個：
+
+- `test_a_pbkdf2_record_still_opens_after_the_default_moved` — 釘住零 migration 的宣稱。
+- `test_ensure_usable_does_not_upgrade_unless_asked` — 釘住「重啟不會自己改寫金鑰記錄」。
+- `test_a_rewrap_that_does_not_open_again_is_not_stored` — 釘住覆蓋前的驗證。
+
+另外實地做了兩項（腳本在 scratchpad，未留在 repo，沿用既有慣例）：
+本機量測兩種 KDF 的實際耗時；從容器讀出線上 keystore 記錄的**欄位形狀**
+（刻意只印欄位名與 KDF 參數，不印 salt / ciphertext / hmac）。
 
 ---
 
 ## 未完成待辦
 
-### 一、本輪順帶發現、未修的一個 log 噪音（已寫進 `ROADMAP.md` `[parked]`）
+### 一、`src/` 改了但沒有重建 image（**下一輪第一件事**）
 
-`src/sftp.py` 的 `connection_lost()` 只把 `None` 與 `ConnectionResetError`
-視為正常斷線；本輪驗證腳本用 `async with asyncssh.connect(...)` 正常關閉連線時，
-觸發了另一種例外型別，被記成 `WARNING SSH connection error: Connection lost`。
-純粹是 log 噪音，功能本身無誤（上傳/清理/對帳結果都正確）。按規則第一次出現不處理，
-先記錄；下次再踩到才回頭查是哪個例外型別。
+本輪動了 `src/crypto.py`、`src/keystore.py`、`src/config.py`、`src/main.py`
+與 `requirements.txt`，**但沒有 `docker compose up -d --build`**。
+重建屬於會影響正在跑的服務的動作，本輪沒有自作主張。
 
-### 二、仍未被真實環境驗證的東西（沿用上一輪，本輪未觸碰）
+重建後預期會看到的行為（都不是錯誤）：
 
-- **5xx 重試與傳輸層重試沒有在真實環境被觸發過。** 這條和 429 不同：429 可以
-  刻意灌流量去撞，5xx 是 Discord 自己的故障，沒有辦法從外部刻意觸發，
-  大概率會長期停留在「單元測試涵蓋邏輯、真實環境等一次自然發生」的狀態，
-  不是本輪疏漏。
-- **附件 URL 真的過期（24 小時後）沒有等過。** 過期路徑由 stub 涵蓋。
+- 啟動時多一則 WARNING：「stored master key is still wrapped with pbkdf2-sha256
+  while this server is configured for argon2id ... only happens when KDF_UPGRADE is enabled」。
+- **服務照常運作，既有檔案照常讀得出來**，因為記錄自己帶著參數。
+- 想真的搬到 Argon2id：`.env` 設 `KDF_UPGRADE=1` 重啟一次，看到
+  「Master key re-wrapped」那則 WARNING 後改回 `0`。
 
-### 三、已知的坑（沿用上一輪，本輪未觸碰）
+**Argon2id 尚未在真實環境跑過**——本輪的驗證都在 venv 與單元測試裡。
+重建後值得確認的是容器內 `argon2-cffi` 的 wheel 有裝起來（`python:3.11-slim`
+有 manylinux wheel，理論上不需要編譯工具鏈，但沒有實測過）。
 
-- **整檔 rollback 仍擋不住**（見 `ROADMAP.md` `[next]`）。唯一已知的完整性缺口，
-  需要外部信任錨點（KMS / TPM 之類），架構內部解不了，需要你決定要不要引入外部服務。
-- **跨 handle 的 metadata 變更仍不同步**、**真正同時寫入仍是後寫的贏**——
-  上一輪的殘留缺口，已改列 `ROADMAP.md` `[later]`。
-- 其餘（`_node_versions` 是 process 內的、刪除後仍開著的 handle、
-  列目錄不做完整性驗證、權限位與時間戳不受保護、PBKDF2 約 200ms）
-  與上一輪相同，未變動。
+### 二、新發現的完整性缺口（`ROADMAP.md` `[next]`）
+
+`node_tag` 蓋的是 `(id, size, 有序 chunk tags)`，**`filename` 與 `parent_id` 不在裡面**。
+能寫 MongoDB 的人可以把任何檔案改名、搬到別的目錄，而且驗得過；目錄節點根本沒有 tag，
+所以憑空往某個目錄塞一個檔案也沒東西擋。
+
+`ROADMAP.md` 那條列了要修得完整需要一起做的四件事，其中第 4 件是
+**一支回填既有節點的 migration 腳本**——這是這件事真正的成本所在，
+跑錯一次就是全部讀不出來。**做之前先出方案。**
+
+### 三、你本輪明確決定不做的（不要下一輪又拿出來問）
+
+- **整檔 rollback** — 拍板不做，已成為接受的邊界。
+- **scandir 完整性驗證**（A）— 不做。效益接近化妝品：讀和開都已經驗了，
+  它只影響 `ls -l` 顯示的數字可不可信，而且目錄項本來就沒 tag、驗不了。
+- **權限位/時間戳的 `meta_mac`**（B）— 不做，已被上面第二條取代
+  （補小洞留大洞沒有意義）。
+- **符號連結**（C）— 不做。要改 `get_node()`，而每個操作都走它。
+- **多使用者**（D）— 只出方案，未動工。
+
+### 四、仍未被真實環境驗證的東西（沿用上一輪）
+
+- 5xx 重試與傳輸層重試沒有被真實觸發過（Discord 自己故障才會發生，無法從外部觸發）。
+- 附件 URL 真的過期（24 小時後）沒有等過。
+- **（本輪新增）Argon2id 沒有在容器裡跑過**，見上面第一條。
 
 ---
 
-## 資料狀態（本輪動過，寫清楚）
+## 資料狀態
 
-- **Discord DM 上目前沒有任何附件。** 本輪驗證產生的 50 個小檔案已透過 SFTP
-  `remove` 全數清掉，對帳腳本確認 0 孤兒、0 懸空引用。
-- **`nodes` 集合裡沒有本輪留下的節點。**
-- **`keystore` 未動**，仍是既有那份用 `SFTP_PASSWORD` 包裝的主金鑰。
+- **本輪沒有動任何資料。** `nodes` 未動，`keystore` **未動**（仍是那份 PBKDF2 記錄），
+  Discord 上沒有新增或刪除任何附件。
+- 本輪跑的兩支 scratchpad 腳本都是唯讀的：一支只 `find_one` 再印欄位名，
+  一支完全不碰 DB（純本機量測）。
 - `mongo_data` / `host_key_data` volume 未刪除，host key 沒換。
-- **本輪沒有 `src/` 的改動需要 commit**——上一輪（跨 handle 同步）的改動仍未
-  commit，狀態與上一輪交接時相同，本輪未再新增變動。
 
 ---
 
 ## 本輪不可碰的範圍
 
-- **加密與金鑰層**——`src/crypto.py`、`src/keystore.py` 一行未改。
-- **`src/` 完全未改動**——本輪純粹是真實環境驗證既有程式碼，不是開發。
-- **相依套件**——`requirements.txt` 未改。
-- **`todo.md`**——未動。
-- **`mongo_data` / `host_key_data` volume**——未刪除。
+- **`src/vfs.py` / `src/sftp.py` / `src/discord_api.py` / `src/db.py` 一行未改**——
+  本輪的改動集中在金鑰與設定層。
+- **加密演算法本身未改**：AES-256-CTR、HMAC-SHA256 的 chunk/node tag 全部沒動。
+  換掉的只有「密碼 → KEK」那一段。
+- **`node_tag` 的涵蓋範圍未改**（新發現的缺口只寫進文件，沒有動程式碼）。
+- **既有 keystore 記錄未覆蓋**——`KDF_UPGRADE` 預設關就是為了這件事。
+- **image 未重建**，服務跑的是舊碼。
 
 ---
 
 ## 下一步建議任務
 
-**上一輪與本輪的改動都還沒 commit。** 這不是本輪自己決定要不要做的事
-（commit 屬於你才能拍板的動作），下一輪開始前建議先確認是否要 commit。
-
-實作類的下一步，目前排得上號的兩條都需要先問你，不是能直接接手做的：
-
-1. **Argon2id**（`ROADMAP.md` `[later]`）——要新增相依套件，依 `CLAUDE.md`
-   規則必須先問過你才能加。
-2. **整檔 rollback**（`ROADMAP.md` `[next]`）——需要外部信任錨點，
-   要不要引入外部服務（KMS/TPM 之類）是架構層級的決定，不是能自己選一條路做掉的。
-
-其餘 `[later]` 項目（metadata 跨 handle 不同步、真正同時寫入競態、多使用者樹、
-符號連結）都被你評估過影響很小，暫不列為下一步候選。
+1. **`docker compose up -d --build`**，然後確認上面「未完成待辦」第一條列的
+   三件事（WARNING 出現、既有檔案讀得出來、`argon2-cffi` 在容器裡裝得起來）。
+   這是唯一會擋住其他事的一步——本輪的成果目前還沒真的上線。
+2. 決定要不要 `KDF_UPGRADE=1` 跑一次，把線上那份記錄真的搬到 Argon2id。
+   （不搬也不會壞，只是每次啟動多一則 WARNING。）
+3. **`filename` / `parent_id` 的完整性**（`ROADMAP.md` `[next]`）——先出方案，
+   重點在那支 migration 腳本要怎麼寫得能重跑、能 dry-run 對帳。
+4. 多使用者要不要做，等你看完 `design-multi-user.md` §6 的三個決策點再說。
+   文件裡建議的分四步走法，前三步跑完系統仍是單一使用者、行為不變，
+   所以「要不要做」這個決定其實可以推遲。
 
 ---
 
@@ -119,13 +165,9 @@ bucket 何時「還沒學到」而真的吃到 429、以及主動節流在真實
 
 - venv 在 `venv/`。一律用 `./venv/Scripts/python.exe -m pytest`（見 `SOP.md`）。
 - repo 在 `master`，**沒有 remote**，只有本機 commit。
-- 程式碼是烤進 image 的，改完 `src/` 一定要 `docker compose up -d --build`
-  （本輪未改 `src/`，未重建）。
+- 程式碼是烤進 image 的，改完 `src/` 一定要 `docker compose up -d --build`。
+- **MongoDB 的埠沒有對宿主開放**，一次性腳本不能從 venv 直連 `127.0.0.1:27017`
+  （本輪踩到一次）。要走
+  `docker compose exec -T sftp-discord-server python - < 腳本`（`SOP.md` 既有條目）。
+  這是第一次踩，按規則沒寫進 `SOP.md`；再踩一次就補條目。
 - 驗收腳本寫在 scratchpad 時，`load_dotenv()` 要傳絕對路徑（見 `SOP.md`）。
-- 對帳腳本用 `docker compose exec -T sftp-discord-server python - < 腳本` 餵進去，
-  不要把資料內插進程式碼字串（`SOP.md` 既有條目）。
-- **本輪新踩到一個小地方**：`src/db.py` 的 `Database` 沒有直接的 `.nodes`
-  之類屬性，一次性腳本要先 `await Database.connect()` 再用
-  `Database.get_db().nodes`；`from src.db import db` 拿到的模組級單例
-  在腳本獨立跑（不經 `main.py`）時還沒連線。這個是我自己腳本的失誤，
-  不算重複性問題，未寫進 `SOP.md`。
