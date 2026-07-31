@@ -27,6 +27,21 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # EXACTLY ONE REPLICA. Do not `--scale` this service, do not run a second
+  # copy against the same MongoDB, and do not overlap two of them during a
+  # deploy.
+  #
+  # Handles coordinate through `_node_versions` in src/vfs.py, a dict living
+  # in the process. A handle consults it before every read and write to find
+  # out whether another handle has committed a change underneath it, and a
+  # node it has never heard of means "nobody has touched this" -- which is
+  # true within one process and false the moment there are two. Replica A
+  # would keep serving a stale chunk layout for files replica B had already
+  # rewritten: no error, no log line, just old bytes. That is the exact bug
+  # fixed on 2026-07-31, put back.
+  #
+  # Supporting more than one replica needs optimistic locking at the node
+  # level, not a bigger cache. See ROADMAP.md.
   sftp-discord-server:
     build: .
     ports:
@@ -54,6 +69,12 @@ services:
       - PBKDF2_ITERATIONS=${PBKDF2_ITERATIONS:-600000}
       # Opt-in, one restart at a time; see .env.example.
       - KDF_UPGRADE=${KDF_UPGRADE:-0}
+      # Documented as tunable in .env.example, and it was not: the image only
+      # COPYs src/, so there is no .env inside the container for
+      # load_dotenv() to find, and anything missing from this list silently
+      # stays at its code default. Lowering it had no effect and said
+      # nothing -- the worst shape a configuration error can take.
+      - DISCORD_MAX_CONCURRENCY=${DISCORD_MAX_CONCURRENCY:-4}
       # The container always listens on 2222; the host-side port is mapped
       # above, so changing SFTP_PORT does not need a rebuild.
       - SFTP_PORT=2222

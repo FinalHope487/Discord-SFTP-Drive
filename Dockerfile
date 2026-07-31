@@ -1,4 +1,14 @@
-FROM python:3.11-slim
+# Matches the interpreter the test suite runs on. It used to be 3.11 while
+# every test ran on 3.12, so nothing had ever been executed on the version
+# that serves real traffic. The risk was not "different versions" in the
+# abstract: pytest.ini promotes DeprecationWarning from src.* to an error,
+# and that is precisely what drifts between minor releases -- so a drift
+# would have surfaced only inside the container, where no test could run.
+#
+# All four compiled dependencies publish wheels for cp312 on manylinux
+# (cryptography and argon2-cffi-bindings via abi3, pymongo and aiohttp
+# per-version), so the image still needs no build toolchain.
+FROM python:3.12-slim
 
 # An unprivileged account to run as. A flaw reachable through the SFTP surface
 # should not also hand over root inside the container.

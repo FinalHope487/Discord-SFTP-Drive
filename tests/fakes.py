@@ -97,6 +97,14 @@ class FakeDB:
         return {"ok": 1}
 
 
+class DiscordFailure(RuntimeError):
+    """What an injected Discord outage raises.
+
+    Its own type so a test can assert that the failure it arranged is the one
+    that surfaced, rather than quietly passing on an unrelated exception.
+    """
+
+
 class FakeDiscord:
     """Attachments live in `store`, keyed by message id.
 
@@ -109,9 +117,25 @@ class FakeDiscord:
         self.store = {}
         self.uploads = 0
         self.deleted = []
+        # Attempt number, counted from 1, at which uploads start raising and
+        # keep raising. `fail_uploads_from = 3` is a Discord outage that
+        # begins part way through a multi-chunk write, which is the shape of
+        # the failure that matters: the bytes already up there are committed
+        # and the ones still coming cannot land.
+        #
+        # One raise here stands for a whole exhausted retry budget. The real
+        # client retries 5xx and transport errors internally and only raises
+        # once it has given up, so this is what the VFS actually sees.
+        #
+        # `uploads` counts attempts, failed ones included, so it and this
+        # threshold are on the same scale.
+        self.fail_uploads_from = None
 
     async def upload_chunk(self, data, filename):
         self.uploads += 1
+        if self.fail_uploads_from is not None and self.uploads >= self.fail_uploads_from:
+            raise DiscordFailure(
+                f"injected upload failure on attempt {self.uploads} ({filename})")
         mid = str(uuid.uuid4())
         self.store[mid] = bytes(data)
         return mid, f"https://cdn.test/{mid}", len(data)

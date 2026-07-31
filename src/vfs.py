@@ -557,15 +557,36 @@ class DiscordFile:
         self._reindex()
 
     async def _rollback(self):
-        """Discard what this handle uploaded.
+        """Give up on this handle after a write failed part way through.
 
-        A file created by this handle is removed outright. An existing file
-        that was truncated for rewriting is left empty — its previous contents
-        were already gone before the failure, so there is nothing to restore.
+        A file this handle created is removed outright, attachments included:
+        it had no contents before, so a partially uploaded one is worth
+        nothing to anybody.
+
+        **A file that already existed is left exactly as its last successful
+        commit, and nothing is deleted.** That includes a file this handle
+        truncated -- its previous contents were already gone, and committed
+        gone, before the failure.
+
+        There is nothing to reclaim here because both callers release their
+        own attachment before unwinding: `_upload_chunk` either never got one
+        (the upload itself raised) or deletes it and restores `chunks`/`size`
+        before calling in. Everything still referenced by the node is
+        committed, readable, and -- on a file opened for appending or random
+        writing without O_TRUNC -- was never this handle's to discard.
+
+        This method used to walk `chunks` unconditionally and zero the node,
+        which on exactly that path deleted the file's entire pre-existing
+        contents from Discord, unrecoverably, in response to a Discord outage.
+        A new caller must therefore keep releasing its own attachment; this
+        method will not do it.
         """
         if self._failed:
             return
         self._failed = True
+
+        if not self._node.get("_created_by_handle"):
+            return
 
         for chunk in self._node.get("chunks", []):
             await _safe_delete_message(chunk["message_id"])
@@ -574,11 +595,8 @@ class DiscordFile:
         self._node["size"] = 0
 
         try:
-            if self._node.get("_created_by_handle"):
-                await db.get_db().nodes.delete_one({"id": self._node["id"]})
-                _node_versions.pop(self._node["id"], None)
-            else:
-                await _commit_content(self._key, self._node, mtime=self._effective_mtime())
+            await db.get_db().nodes.delete_one({"id": self._node["id"]})
+            _node_versions.pop(self._node["id"], None)
         except Exception:
             logger.exception("Rollback bookkeeping failed for node %s", self._node["id"])
 
