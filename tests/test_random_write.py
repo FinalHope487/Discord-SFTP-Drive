@@ -123,8 +123,9 @@ async def test_write_extending_past_the_end_grows_the_file(sftp):
 
 
 async def test_write_past_the_end_zero_fills_the_hole(sftp):
-    # POSIX says a gap reads back as zeros. There is no sparse representation
-    # here, so the zeros have to be real.
+    # POSIX says a gap reads back as zeros. Only the tail has a sparse
+    # representation here (see `truncate`), and this write puts chunks beyond
+    # the gap, so these zeros have to be real.
     await _write_blob(sftp, "/blob.bin", b"head")
 
     await _patch(sftp, "/blob.bin", 10_000, b"tail")

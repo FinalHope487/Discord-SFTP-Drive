@@ -85,12 +85,12 @@ def _translate(func):
     return wrapper
 
 
-def _attrs(node: dict) -> asyncssh.SFTPAttrs:
+def _attrs(node: dict, size: int = None) -> asyncssh.SFTPAttrs:
     is_dir = node["is_dir"]
     mtime = int(node.get("modified_at") or node.get("created_at") or 0)
     permissions = (stat.S_IFDIR | 0o755) if is_dir else (stat.S_IFREG | 0o644)
     return asyncssh.SFTPAttrs(
-        size=int(node.get("size", 0)),
+        size=int(node.get("size", 0)) if size is None else int(size),
         uid=0,
         gid=0,
         permissions=permissions,
@@ -149,27 +149,36 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
 
     @_translate
     async def fstat(self, file_obj):
-        return _attrs(file_obj.node)
+        # The handle's size, not the node's: the node does not know about
+        # bytes that have been written but not yet uploaded. asyncssh calls
+        # this to size a length-less read(), so a stale answer here makes a
+        # client's own last write read back as EOF.
+        return _attrs(file_obj.node, file_obj.size)
 
     @_translate
     async def setstat(self, path, attrs):
-        node = await self._vfs.require_node(self._decode(path))
-        self._reject_resize(attrs, node)
-        # Permissions, ownership and timestamps are not modelled; accepting
-        # them silently keeps post-upload chmod/utimes from failing the client.
+        decoded = self._decode(path)
+        size = getattr(attrs, "size", None)
+        if size is None:
+            # Permissions, ownership and timestamps are not modelled;
+            # accepting them silently keeps post-upload chmod/utimes from
+            # failing the client. The lookup still happens so that a setstat
+            # on a path that does not exist fails as it should.
+            await self._vfs.require_node(decoded)
+            return
+
+        await self._vfs.truncate(decoded, size)
 
     @_translate
     async def fsetstat(self, file_obj, attrs):
-        self._reject_resize(attrs, file_obj.node)
-
-    @staticmethod
-    def _reject_resize(attrs, node):
         size = getattr(attrs, "size", None)
-        if size is not None and size != node.get("size", 0):
-            raise asyncssh.SFTPError(
-                asyncssh.FX_OP_UNSUPPORTED,
-                "resizing an existing file is not supported",
-            )
+        if size is None:
+            return
+
+        # Goes through the handle rather than the path so that anything the
+        # handle is still buffering is accounted for, and so its decrypted
+        # chunk cache is invalidated.
+        await file_obj.truncate_to(size)
 
     @_translate
     async def statvfs(self, path):

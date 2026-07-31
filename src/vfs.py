@@ -13,7 +13,7 @@ Node schema (collection `nodes`):
     parent_id   str   parent's id; None only for root
     filename    str   single path segment; "" for root
     is_dir      bool
-    size        int   plaintext bytes (0 for directories)
+    size        int   plaintext length (0 for directories); see "holes"
     created_at  int   unix epoch seconds
     modified_at int   unix epoch seconds
     chunks      list  files only, ordered by `index`:
@@ -28,6 +28,22 @@ Node schema (collection `nodes`):
 Discord on purpose: that is what stops whoever serves the bytes from also
 producing a tag for them. A chunk without one is rejected rather than read
 unverified -- see `crypto.verify_chunk`.
+
+Holes
+-----
+Chunks are contiguous from offset 0, but `size` may run past the end of the
+last one. The stretch in between is a hole: it holds no attachment and reads
+back as zeros. Only the tail can be a hole, which is exactly the shape a
+grow-`truncate` produces; a write landing past the end of the chunks
+materialises the gap instead, because a hole in the middle has no
+representation here.
+
+Not storing those zeros is what keeps pre-allocating clients usable. Some
+set the final size before uploading a byte; materialising the zeros would
+put real chunks under the whole file, so every subsequent write would land
+mid-file and rewrite a full chunk *per SFTP packet* -- hundreds of 9MB
+re-uploads for one chunk. With the hole, those writes still land at the end
+of the data and take the ordinary buffered append path.
 """
 
 import asyncio
@@ -142,9 +158,33 @@ class DiscordFile:
     def node(self) -> dict:
         return self._node
 
+    @property
+    def size(self) -> int:
+        """The file's length as this handle sees it.
+
+        Buffered bytes are part of the file from the client's point of view
+        even though no chunk holds them yet, so the committed size would tell
+        a client that its own last write never happened. asyncssh asks for
+        exactly this before a length-less `read()`, and answers such a client
+        with EOF.
+        """
+        return self._end_of_file()
+
     def _reindex(self):
         self._chunks = sorted(self._node.get("chunks", []), key=lambda c: c["offset"])
         self._chunk_starts = [c["offset"] for c in self._chunks]
+
+    def _covered_end(self) -> int:
+        """Offset just past the last chunk — where real data stops.
+
+        Not the same as the file's size once a grow-`truncate` has left a
+        hole at the tail.
+        """
+        return _covered_end(self._node)
+
+    def _end_of_file(self) -> int:
+        """The file's logical end, buffered bytes included."""
+        return max(self._node["size"], self._covered_end() + len(self._buffer))
 
     # ---------------------------------------------------------------- reading
 
@@ -163,9 +203,19 @@ class DiscordFile:
             remaining = size
 
             while remaining > 0:
+                if pos < 0 or pos >= self._node["size"]:
+                    break
+
                 chunk = self._locate_chunk(pos)
                 if chunk is None:
-                    break
+                    # Inside the file but past the last chunk: a hole. POSIX
+                    # says it reads back as zeros, and there is nothing on
+                    # Discord to fetch.
+                    take = min(remaining, self._node["size"] - pos)
+                    out += bytes(take)
+                    pos += take
+                    remaining -= take
+                    continue
 
                 data = await self._chunk_bytes(chunk)
                 start = pos - chunk["offset"]
@@ -197,15 +247,7 @@ class DiscordFile:
             self._chunk_cache.move_to_end(key)
             return cached
 
-        url = await discord_api.get_attachment_url(chunk["message_id"])
-        ciphertext = await discord_api.download_chunk(url)
-        nonce = bytes.fromhex(chunk["nonce"])
-
-        # Before decryption, not after: the whole point of encrypt-then-MAC is
-        # that forged bytes never reach the cipher.
-        verify_chunk(AES_SECRET_KEY, nonce, ciphertext, chunk.get("hmac"))
-
-        plaintext = transform(AES_SECRET_KEY, nonce, ciphertext)
+        plaintext = await _fetch_chunk(chunk)
 
         self._chunk_cache[key] = plaintext
         self._chunk_cache.move_to_end(key)
@@ -220,10 +262,13 @@ class DiscordFile:
         """Where an appending write would land.
 
         Buffered bytes are already part of the file from the client's point of
-        view even though no chunk holds them yet, so end-of-file is the
-        committed size plus whatever is still in the buffer.
+        view even though no chunk holds them yet, so this is the end of the
+        chunks plus whatever is still in the buffer. On a file with no hole
+        that is end-of-file; on one with a hole it is where the hole starts,
+        and a write there fills the hole from the left rather than paying for
+        a rewrite.
         """
-        return self._node["size"] + len(self._buffer)
+        return self._covered_end() + len(self._buffer)
 
     async def write_at(self, offset: int, data: bytes) -> int:
         if not self._writable:
@@ -238,8 +283,12 @@ class DiscordFile:
                 raise Unsupported(f"negative write offset: {offset}")
 
             # O_APPEND means the offset the client sends is advisory; POSIX
-            # requires every write to go to the end regardless.
-            if self._append_mode or offset == self._append_position():
+            # requires every write to go to the end regardless. That is the
+            # end of the *file*, which a hole puts past the end of the data.
+            if self._append_mode:
+                offset = self._end_of_file()
+
+            if offset == self._append_position():
                 return await self._append(data)
 
             return await self._write_random(offset, data)
@@ -263,16 +312,17 @@ class DiscordFile:
         # flushing would put the stale copy back on top of the new one.
         await self._flush_buffer()
 
-        # A write past end-of-file leaves a hole, which POSIX says reads back
-        # as zeros. There is no sparse representation here, so materialise it.
-        if offset > self._node["size"]:
-            await self._append_now(bytes(offset - self._node["size"]))
+        # A write starting past the end of the data leaves a gap, which POSIX
+        # says reads back as zeros. Only the tail can be a hole here, and this
+        # write is about to put chunks beyond the gap, so materialise it.
+        if offset > self._covered_end():
+            await self._append_now(bytes(offset - self._covered_end()))
 
         view = memoryview(data)
         written = 0
         pos = offset
 
-        while written < len(data) and pos < self._node["size"]:
+        while written < len(data) and pos < self._covered_end():
             chunk = self._locate_chunk(pos)
             if chunk is None:
                 break
@@ -366,16 +416,23 @@ class DiscordFile:
             await self._rollback()
             raise
 
+        # New chunks land where the existing ones stop, which is not the file
+        # size when a hole follows them.
+        offset = self._covered_end()
+        previous_size = self._node["size"]
+
         chunk = {
             "index": index,
             "message_id": message_id,
             "nonce": nonce.hex(),
             "hmac": tag.hex(),
-            "offset": self._node["size"],
+            "offset": offset,
             "size": len(data),
         }
         self._node["chunks"].append(chunk)
-        self._node["size"] += len(data)
+        # Filling a hole from the left leaves the recorded size alone; only
+        # writing past it makes the file longer.
+        self._node["size"] = max(previous_size, offset + len(data))
 
         try:
             await db.get_db().nodes.update_one(
@@ -391,7 +448,7 @@ class DiscordFile:
             # unwinding so it does not become an orphan.
             await _safe_delete_message(message_id)
             self._node["chunks"].pop()
-            self._node["size"] -= len(data)
+            self._node["size"] = previous_size
             await self._rollback()
             raise
 
@@ -426,6 +483,32 @@ class DiscordFile:
         self._node["size"] = 0
         self._reindex()
 
+    # -------------------------------------------------------------- resizing
+
+    async def truncate_to(self, size: int):
+        """`ftruncate` on this handle."""
+        if not self._writable:
+            raise Unsupported("file is not open for writing")
+
+        async with self._lock:
+            if self._failed:
+                raise VFSError("file is in a failed state from an earlier error")
+
+            # Buffered bytes are part of the file but belong to no chunk yet,
+            # so a resize computed around them would either drop them or
+            # place them past the new end.
+            await self._flush_buffer()
+
+            await _resize_node(self._node, size)
+
+            # Indices are handed out as `len(chunks)` and so get reused once
+            # the tail is dropped; a stale entry would then hand back another
+            # chunk's plaintext. The trimmed chunk's entry is stale too.
+            # Truncation is rare enough that dropping the lot is the cheap
+            # way to be sure.
+            self._chunk_cache.clear()
+            self._reindex()
+
     # ---------------------------------------------------------------- closing
 
     async def close(self):
@@ -449,6 +532,102 @@ async def _safe_delete_message(message_id: str):
         await discord_api.delete_message(message_id)
     except Exception:
         logger.warning("Could not delete Discord message %s", message_id, exc_info=True)
+
+
+def _covered_end(node: dict) -> int:
+    """Offset just past the node's last chunk.
+
+    Equal to the file's size unless a hole follows the chunks — see the
+    module docstring.
+    """
+    chunks = node.get("chunks") or []
+    if not chunks:
+        return 0
+    last = max(chunks, key=lambda c: c["offset"])
+    return last["offset"] + last["size"]
+
+
+async def _fetch_chunk(chunk: dict) -> bytes:
+    """Download, authenticate and decrypt one chunk."""
+    url = await discord_api.get_attachment_url(chunk["message_id"])
+    ciphertext = await discord_api.download_chunk(url)
+    nonce = bytes.fromhex(chunk["nonce"])
+
+    # Before decryption, not after: the whole point of encrypt-then-MAC is
+    # that forged bytes never reach the cipher.
+    verify_chunk(AES_SECRET_KEY, nonce, ciphertext, chunk.get("hmac"))
+
+    return transform(AES_SECRET_KEY, nonce, ciphertext)
+
+
+async def _resize_node(node: dict, size: int):
+    """Set a file's length to exactly `size`.
+
+    Growing is free: the file's recorded length is authoritative and the
+    stretch past the last chunk is a hole that reads back as zeros. Only
+    shrinking has to touch Discord, and only for the single chunk the new end
+    falls inside — attachments are immutable, so trimming one means uploading
+    a shorter replacement under a fresh nonce.
+    """
+    if size < 0:
+        # Not FX_OP_UNSUPPORTED: after this change the server *does* resize,
+        # and reporting otherwise would have clients disable a feature that
+        # works. This is a malformed request, not a missing capability.
+        raise VFSError(f"negative size: {size}")
+
+    chunks = node.get("chunks") or []
+    keep = []
+    drop = []
+    straddler = None
+
+    for chunk in sorted(chunks, key=lambda c: c["offset"]):
+        if chunk["offset"] >= size:
+            drop.append(chunk)
+        elif chunk["offset"] + chunk["size"] > size:
+            straddler = chunk
+        else:
+            keep.append(chunk)
+
+    replacement_id = None
+    if straddler is not None:
+        plaintext = await _fetch_chunk(straddler)
+        trimmed = plaintext[:size - straddler["offset"]]
+
+        nonce = generate_nonce()
+        ciphertext = transform(AES_SECRET_KEY, nonce, trimmed)
+        tag = chunk_tag(AES_SECRET_KEY, nonce, ciphertext)
+        filename = f"{node['id']}_chunk_{straddler['index']}.bin"
+
+        replacement_id, _url, _size = await discord_api.upload_chunk(ciphertext, filename)
+        keep.append(dict(
+            straddler,
+            message_id=replacement_id,
+            nonce=nonce.hex(),
+            hmac=tag.hex(),
+            size=len(trimmed),
+        ))
+
+    try:
+        await db.get_db().nodes.update_one(
+            {"id": node["id"]},
+            {"$set": {"size": size, "chunks": keep, "modified_at": _now()}},
+        )
+    except Exception:
+        # Nothing points at the replacement yet, so it would be an orphan.
+        if replacement_id:
+            await _safe_delete_message(replacement_id)
+        raise
+
+    node["chunks"] = keep
+    node["size"] = size
+
+    # Same ordering as `_replace_chunk`: not until the metadata write lands is
+    # anything still referencing these. Deleting first would turn a failed
+    # update into real data loss; deleting after can at worst leave an orphan.
+    for chunk in drop:
+        await _safe_delete_message(chunk["message_id"])
+    if straddler is not None:
+        await _safe_delete_message(straddler["message_id"])
 
 
 class DiscordVFS:
@@ -643,18 +822,17 @@ class DiscordVFS:
         await db.get_db().nodes.insert_one(node)
         return node
 
+    async def truncate(self, path: str, size: int):
+        """`truncate` by path, for SFTP `setstat`."""
+        node = await self.require_node(path)
+        if node["is_dir"]:
+            raise IsADirectory(normalize_path(path))
+        await _resize_node(node, size)
+
     async def _truncate(self, node: dict):
         """Drop the file's contents, releasing the Discord messages too.
 
         The old code cleared `chunks` in MongoDB only, leaving every previous
         attachment referenced by nothing.
         """
-        for chunk in node.get("chunks", []):
-            await _safe_delete_message(chunk["message_id"])
-
-        node["chunks"] = []
-        node["size"] = 0
-        await db.get_db().nodes.update_one(
-            {"id": node["id"]},
-            {"$set": {"size": 0, "chunks": [], "modified_at": _now()}},
-        )
+        await _resize_node(node, 0)
