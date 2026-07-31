@@ -1,61 +1,115 @@
 # Session Handoff
 
 依 `.claude/templates/session-handoff.md` 產出。
-涵蓋範圍：**commit 積壓的跨 handle 同步**、**KDF 換 Argon2id**、
-**整檔 rollback 拍板不做**、**多使用者設計方案**，以及一個讀程式碼時發現的新缺口。
+涵蓋範圍：**`BLUEPRINT.md` 全掃列出的 H1 / M2 / M3 / M4 / M7 五條全部處理完**，
+加上 `README.md`，以及 **H2 的完整方案**（只出方案，未動工）。
 
-> **有一條 `[next]`，是本輪新發現的**：`node_tag` 沒有涵蓋 `filename` / `parent_id`，
-> 能寫 MongoDB 的人可以改名、搬檔而且驗得過。詳見 `ROADMAP.md`。
-> 自動化測試 336 項全過，pyflakes 乾淨。
-> **Argon2id 已上線，線上那份金鑰記錄也已完成遷移**，實地驗證過，見下。
+> **一條資料遺失路徑已修**：對既有檔案附加寫入時若 Discord 故障，
+> `_rollback()` 會把該檔案**原本就存在的** chunk 從 Discord 全部刪掉。
+> 自動化測試 343 項全過（+7），pyflakes 乾淨。
+> **本輪尚未 commit**——工作樹是髒的，見「目前狀態」。
 
 ---
 
 ## 目前狀態
 
-三個 commit，前兩個是程式碼，第三個是文件：
+**服務跑在 Python 3.12 上，起得來，Discord 可達，正常運作。**
+本輪**沒有寫入任何使用者資料**（沒有上傳、沒有刪除、`nodes` 與 Discord 附件狀態未動）。
 
-| commit | 內容 |
+工作樹**未 commit**：
+
+| 狀態 | 檔案 |
 |---|---|
-| `6ada626` | 跨 handle 的內容狀態同步（上一輪寫好、一直沒 commit 的） |
-| `5643ccb` | KDF 換成 Argon2id；整檔 rollback 拍板不做 |
-| （本輪最後一個） | 新缺口寫進 `ROADMAP.md`、`design-multi-user.md`、本檔 |
+| M | `src/vfs.py`（`_rollback()`）、`tests/fakes.py`（失敗注入）、`Dockerfile`（3.12）、`docker-compose.yml`（設定 + 告示）、`ROADMAP.md`、`missing_info.md` |
+| ?? | `README.md`、`design-node-identity-integrity.md`、`tests/test_write_failures.py`、`BLUEPRINT.md`（上輪產出，一直沒入庫） |
+
+commit 訊息還沒寫，因為沒被要求。建議切成兩個：程式碼（`vfs.py` / `fakes.py` /
+`test_write_failures.py` / `Dockerfile` / `docker-compose.yml`）與文件（其餘）。
 
 ## 已完成
 
-### 一、把積壓的跨 handle 同步 commit 掉（`6ada626`）
+### 一、`_rollback()` 會刪光既有檔案（`BLUEPRINT.md` H1，原 `[now]`）
 
-上一輪寫完、驗收過但沒 commit 的改動。內容沒有再改，只是入庫。
+`src/vfs.py:559`。原本無條件走訪 `self._node["chunks"]` 刪掉**每一個** chunk 的
+Discord 訊息再把節點清零。它的 docstring 只假設了「本 handle 新建」與「已 truncate」
+兩種情況，但 `open()` 也支援不帶 `O_TRUNC` 開啟既有檔案來寫（`put -a`、log 附加、續傳），
+那時 `chunks` 裡裝的是檔案原本的內容。
 
-### 二、KDF 換成 Argon2id（`5643ccb`）
+**修法不是原本評估的那個。** ROADMAP 與 BLUEPRINT 建議的 (A)「還原成開啟時的
+chunks/size 快照」，實作前發現它會生出**新的**資料損壞路徑：`_replace_chunk` 在 commit
+**成功之後**才刪舊附件，所以開啟時的快照可能指向已經不存在的訊息，還原它等於寫進一個
+懸空引用、那個 chunk 永久讀不出來——比原症狀更難察覺（原症狀至少 size 歸零看得見）。
 
-- 新增相依 `argon2-cffi==25.1.0`（**你本輪批准的**）。
-- 新設定值 `KDF` / `ARGON2_TIME_COST` / `ARGON2_MEMORY_KIB` / `ARGON2_PARALLELISM`，
-  預設 `argon2id` 64 MiB / t=3 / p=1。`.env.example` 與 `docker-compose.yml` 都補了。
-- **選 `argon2-cffi` 而不是 `cryptography` 44 內建的**：後者要把 cryptography 從
-  42.0.5 跨兩個 major 升上去，而 asyncssh 整個傳輸層坐在它上面。
-- **實測 Argon2id 64 MiB/t=3 是 125ms，比原本 PBKDF2 600k 的 214ms 還快**，
-  登入路徑沒有變慢。
-- **「不需要 migration」這次被兌現並釘住了**：`derive_kek` 從記錄裡讀函式名與成本，
-  不假設當前預設值。並且實地確認過線上那份記錄的形狀就是
-  `pbkdf2-sha256 / kdf_iterations=600000`——正是新程式碼讀得懂的形狀。
-- 成本參數改成「記錄裡缺一個就拒絕」而不是補當前預設值：補預設會推出一把不同的金鑰，
-  然後以「密碼錯誤」的形式浮現，那是最糟的一種報錯方式。
-- `KDF_UPGRADE`（**預設關**）才會把既有記錄重新包裝。覆蓋前會先確認新記錄真的解得開
-  （`_replace_wrapping`）。這是系統裡最危險的一次寫入——寫壞不是壞掉一個檔案，
-  是所有位元組永遠讀不出來。
+追下去發現正解更小：兩個呼叫點（`:530`、`:554`）本來就各自釋放了自己那顆附件，
+**所以對既有檔案而言 `_rollback()` 該做的清理是零**。現在它對既有檔案只標記 handle 失敗
+就返回，一個 delete 都不發。新建的檔案維持原行為（整個消失）。
 
-### 三、拍板的兩個決策（已寫進 `ROADMAP.md` 的「已拍板的長期決策」）
+代價寫在 docstring 裡：**日後新增 `_rollback()` 呼叫點的人必須自己負責釋放附件。**
 
-- **整檔 rollback 不做**。釘 Discord / 本機 append-only 檔 / 外部 KMS-TPM 三條路都不走，
-  改列為已評估並接受的威脅模型邊界，不再是待辦。
-- **既有記錄的 KDF 升級是 opt-in**，預設不動。
+### 二、失敗路徑零測試覆蓋（`BLUEPRINT.md` M2）
 
-### 四、多使用者設計方案（`design-multi-user.md`，只出方案未動工）
+`tests/fakes.py` 的 `FakeDiscord` 加了 `fail_uploads_from`（第 N 次上傳起開始失敗，
+計數含失敗的那次）。**這個門檻就是失敗路徑長期沒人測的根因**，補完之後 H1 的迴歸測試
+立刻寫得出來。
 
-你選的是「只出方案」。文件裡最重要的一段是 §2：多使用者有兩種產品，
-**共用金鑰（A）與每人一把金鑰（B）**，差別在「A 的密碼能不能解開 B 的資料」，
-而且選了之後要改很貴。文件末尾列了三個必須先拍板的決策點。
+新增 `tests/test_write_failures.py` 7 項：
+
+1. 新建檔案上傳到一半失敗 → 節點與附件都要整個消失
+2. **既有檔案 append 失敗 → 既有內容與附件必須原封不動**（H1 迴歸）
+3. 隨機寫入失敗 → 舊位元組還在（釘住 `_replace_chunk` 的順序）
+4. metadata 寫入失敗 → 只釋放自己剛上傳的那一顆
+5. truncate 過的檔案再失敗 → 留空（`_rollback` docstring 一直宣稱的那個情況）
+6. 失敗的 handle 拒絕後續寫入與 truncate，且 `close()` 不會 flush
+7. **走完整 SFTP 協定的 H1 迴歸測試**（`put -a` 遇上 Discord 故障）
+
+**這些測試在修好前後各跑了一次**：舊程式碼下第 2、4、7 三項失敗，新程式碼下全過。
+（1、3、5、6 兩版都過——它們覆蓋的是本來就正確的行為。）
+
+### 三、`DISCORD_MAX_CONCURRENCY` 在 compose 下無效（M3）
+
+`docker-compose.yml` 加一行。**17 個設定值逐項比對過，確認只漏這一個。**
+實測驗證：`DISCORD_MAX_CONCURRENCY=2 docker compose up -d` 之後容器內
+`config.discord_max_concurrency()` 回 2；修之前永遠是 4，而且不會有任何錯誤訊息。
+
+### 四、測試與上線的 Python 版本對齊（M4）
+
+`Dockerfile` 從 `python:3.11-slim` 升到 `python:3.12-slim`。
+**不只是改版號——整份 suite 已實際在那個 image 裡跑過一次：**
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm --user root -v "D:/my-projects/Discord-Drive:/repo" \
+  -w /repo discord-drive-sftp-discord-server:latest \
+  sh -c "pip install -q -r requirements-dev.txt && python -m pytest -q -p no:cacheprovider"
+```
+
+343 passed，Python 3.12.13 / Linux。四個編譯型相依全部有 cp312 wheel，image 仍不需要
+建置工具鏈。所以「336 個測試從未在上線用的直譯器上跑過」這句話現在不成立了。
+**沒有另外加 3.11 的測試環境**——兩邊同版之後那件事的價值就消失了。
+
+### 五、`README.md`（M-「沒有入口文件」）與不可水平擴展的告示（M7）
+
+`README.md` 新增：是什麼、怎麼跑起來、怎麼跑測試（含在 production image 裡跑的指令）、
+各份文件各自負責什麼、誠實的現況與已知缺口。
+
+水平擴展告示寫在 `README.md` 一節與 `docker-compose.yml` 服務定義上方，
+兩處都寫明症狀是**無聲的**（沒有錯誤、沒有 log，只有舊位元組）。
+**執行期守衛評估後不做**（Mongo 單例標記硬擋、心跳租約只 WARNING），理由見
+`ROADMAP.md` 拍板決策——簡單說是不想用一個新的失敗模式（殘留標記害服務起不來）
+去換一個需要刻意 `--scale` 才會觸發的誤用。
+
+### 六、H2 的方案（`design-node-identity-integrity.md`，**只出方案，未動工**）
+
+`ROADMAP.md` 對這條的拍板就是「做之前先出方案，不要直接動工」，所以只出方案。
+寫的過程中發現三件原本沒展開的事，都在文件裡：
+
+- **驗證目錄的子項集合必須從實際子項重算**，否則攻擊者刪掉子項、不動摘要欄位就好。
+  所以成本會落在**每一次路徑查詢**上（`/a/b/c/x` 要列三個目錄的全部子項）。
+  可行做法是把目錄 tag 拆成「身分」（走路徑時驗，O(1)）與「子項集合」（只在 `list_dir` 驗）兩層。
+- **`ensure_root()` 在任何人認證之前就跑，那時沒有 master key**，所以 root 不可能在建立
+  當下帶 tag。root 的身分可以合理豁免（`ROOT_ID` 是常數），但它的子項集合就不行。
+- **子項集合的邊際價值精確地只有「偵測刪除」**——改名與搬移由檔案自己的 tag 就擋掉了，
+  而「把刪掉的節點插回去」等於已拍板接受的整檔 rollback。這讓「不納入子項集合」的
+  一致性論證比原先預期的強。
 
 ### 驗證方式
 
@@ -63,118 +117,87 @@
 ./venv/Scripts/python.exe -m pytest
 ```
 
-336 passed（本輪 +26，全在 `test_keystore.py` / `test_config.py`），24 秒，pyflakes 乾淨。
-新增的測試裡值得一提的三個：
-
-- `test_a_pbkdf2_record_still_opens_after_the_default_moved` — 釘住零 migration 的宣稱。
-- `test_ensure_usable_does_not_upgrade_unless_asked` — 釘住「重啟不會自己改寫金鑰記錄」。
-- `test_a_rewrap_that_does_not_open_again_is_not_stored` — 釘住覆蓋前的驗證。
-
-另外實地做了兩項（腳本在 scratchpad，未留在 repo，沿用既有慣例）：
-本機量測兩種 KDF 的實際耗時；從容器讀出線上 keystore 記錄的**欄位形狀**
-（刻意只印欄位名與 KDF 參數，不印 salt / ciphertext / hmac）。
-
----
-
-### 五、Argon2id 上線與線上金鑰記錄的遷移（**本輪已完成**）
-
-**分兩次重啟做，刻意不合併成一次**——合併的話出事分不出是哪一層：
-
-1. `docker compose up -d --build`，`KDF_UPGRADE` 維持 `0`。確認三件事：
-   `argon2-cffi` 25.1.0 在 `python:3.11-slim` 裡**直接裝得起來**（manylinux wheel，
-   不需編譯工具鏈）、**舊的 PBKDF2 記錄照常打得開**、預期的 WARNING 有出現。
-2. 確認無誤才 `.env` 設 `KDF_UPGRADE=1` 重啟做遷移，然後關回 `0` 再重啟一次。
-
-**驗證方式是 canary**：遷移**前**用 SFTP 上傳一個 256 KiB、內容由固定種子產生的檔案，
-遷移**後**讀回來比對——sha256 完全相同，這才真的證明 master key 原封不動
-（記錄形狀對了不代表金鑰沒變）。種子固定是刻意的：驗證端自己重新產生一次期望值，
-不去信任遷移前那一端寫下的東西。
-
-遷移後記錄是 `argon2id / 64 MiB / t=3 / p=1`，`kdf_iterations` 整個消失
-（整筆置換而非合併）。關回 `0` 後啟動 log 已無任何 WARNING。
-收尾清掉 canary，**對帳 0 孤兒、0 懸空引用**。
-
-**刻意不做記錄備份**：`_replace_wrapping` 覆蓋前已先確認新記錄解得開，而留一份
-PBKDF2 包裝的同一把金鑰**會直接抵銷這次升級**——攻擊者挑弱的那份打就好。
-另外遷移當下系統裡除了 canary 沒有任何檔案，是做這件事成本最低的時機。
+343 passed（+7），約 30 秒，pyflakes 乾淨。另外在 production image 裡跑過同一份，
+見上方第四節。實地驗證只做了設定值那條（第三節），**H1 的修法沒有在真實 Discord 故障下
+驗證過**，理由見下。
 
 ---
 
 ## 未完成待辦
 
-### 一、新發現的完整性缺口（`ROADMAP.md` `[next]`）
+### 一、H2：檔名與位置不受完整性保護（`ROADMAP.md` `[next]`，**唯一阻擋上線的一條**）
 
-`node_tag` 蓋的是 `(id, size, 有序 chunk tags)`，**`filename` 與 `parent_id` 不在裡面**。
-能寫 MongoDB 的人可以把任何檔案改名、搬到別的目錄，而且驗得過；目錄節點根本沒有 tag，
-所以憑空往某個目錄塞一個檔案也沒東西擋。
+方案在 `design-node-identity-integrity.md`。**§7 有四個必須先選的決策點**，
+其中 **D1（目錄的子項集合要不要納入 tag）決定整件事是一輪還是兩輪的規模**，
+而且選 (b) 會推翻一條既有拍板決策（`scandir` 不做完整性驗證）。
 
-`ROADMAP.md` 那條列了要修得完整需要一起做的四件事，其中第 4 件是
-**一支回填既有節點的 migration 腳本**——這是這件事真正的成本所在，
-跑錯一次就是全部讀不出來。**做之前先出方案。**
+真正的成本是那支回填 migration：fail closed 是既有決策，沒有回填的話升級當下
+**所有檔案立刻讀不出來**。方案 §5 列了它必須有的五條性質，其中最重要的是
+**「寫新 tag 之前一定要先驗過舊 tag」**——對已被竄改的節點重算 tag 等於用真金鑰把
+竄改結果洗白成合法。
 
-### 二、你本輪明確決定不做的（不要下一輪又拿出來問）
+### 二、repo 沒有 remote（`ROADMAP.md` `[next]`）
 
-- **整檔 rollback** — 拍板不做，已成為接受的邊界。
-- **scandir 完整性驗證**（A）— 不做。效益接近化妝品：讀和開都已經驗了，
-  它只影響 `ls -l` 顯示的數字可不可信，而且目錄項本來就沒 tag、驗不了。
-- **權限位/時間戳的 `meta_mac`**（B）— 不做，已被上面第二條取代
-  （補小洞留大洞沒有意義）。
-- **符號連結**（C）— 不做。要改 `get_node()`，而每個操作都走它。
-- **多使用者**（D）— 只出方案，未動工。
+**你說要先開 GitHub MCP，本輪未動。**所有 commit 仍只存在這台機器的磁碟。
 
-### 三、仍未被真實環境驗證的東西（沿用上一輪）
+### 三、`SFTP_PASSWORD` 以明文環境變數注入（`ROADMAP.md` `[later]`，仍未拍板）
 
-- 5xx 重試與傳輸層重試沒有被真實觸發過（Discord 自己故障才會發生，無法從外部觸發）。
+要嘛走 docker secret，要嘛明確寫成「已接受的風險」。目前兩者都不是，是預設狀態——
+`BLUEPRINT.md` 那條的原話是「那應該是一個明確寫下來的決定，而不是預設」。
+
+### 四、仍未被真實環境驗證的東西
+
+- 5xx 重試與傳輸層重試從未被真實觸發（要 Discord 自己故障，無法從外部觸發）。
 - 附件 URL 真的過期（24 小時後）沒有等過。
-- Argon2id 本身已在容器裡跑過並完成遷移，不再列在這裡。
+- **H1 的保護只在 fake 上驗證過**，與上面同一類——要在真實環境驗證得先讓 Discord
+  對這個 bot 連續失敗五次以上。修好前的**症狀**也是只在 fake 上實證的。
 
 ---
 
-## 資料狀態（本輪動過，寫清楚）
+## 資料狀態（本輪沒有動過，但寫清楚）
 
-- **`keystore` 已改寫**：那份記錄從 `pbkdf2-sha256 / 600000` 換成
-  `argon2id / 64 MiB / t=3 / p=1`。**master key 本身沒有變**（canary 驗證過），
-  換掉的只是外面那層包裝。**沒有留備份**，理由見「已完成」第五節。
-- **`nodes` 目前只有 root**。本輪為了驗證上傳的 canary（256 KiB）已透過 SFTP
-  `remove` 清掉。
-- **Discord 上目前沒有任何附件**，對帳 0 孤兒、0 懸空引用。
+- **`nodes` 與 `keystore` 都沒有寫入。**本輪沒有透過 SFTP 上傳或刪除任何檔案。
+- **Discord 上的附件數量未變。**沒有跑對帳（沒有動過，不需要）。
 - `mongo_data` / `host_key_data` volume 未刪除，host key 沒換。
-- **`.env` 動過**：新增了 `KDF_UPGRADE`，遷移後已設回 `0` 並加了註解說明何時該設 1。
-  （`.env` 在 `.gitignore` 內，不會進 commit。）
+- **image 已重建**（3.12），服務重啟過數次。**線上那份 Argon2id 金鑰記錄在 3.12 下
+  照常打得開**——啟動 log 無任何 WARNING，這順帶驗證了升版沒有動到 `argon2-cffi` 的行為。
+- `.env` **未動**（測 `DISCORD_MAX_CONCURRENCY` 時是用命令列前綴傳的，沒有寫進檔案）。
 
 ---
 
 ## 本輪不可碰的範圍
 
-- **`src/vfs.py` / `src/sftp.py` / `src/discord_api.py` / `src/db.py` 一行未改**——
-  本輪的改動集中在金鑰與設定層。
-- **加密演算法本身未改**：AES-256-CTR、HMAC-SHA256 的 chunk/node tag 全部沒動。
-  換掉的只有「密碼 → KEK」那一段。
-- **`node_tag` 的涵蓋範圍未改**（新發現的缺口只寫進文件，沒有動程式碼）。
-- **`keystore` 只換了包裝，master key 沒有重新產生**——遷移不是換金鑰。
+- **加密與金鑰層一行未改**：`src/crypto.py`、`src/keystore.py`、`src/config.py` 都沒動。
+  `node_tag` / `chunk_tag` 的涵蓋範圍**沒有改**——H2 只出方案沒動工。
+- **`src/vfs.py` 只動了 `_rollback()` 一個方法**，沒有碰讀寫路徑、同步邏輯或 resize。
+- **`src/sftp.py`、`src/discord_api.py`、`src/db.py`、`src/main.py` 一行未改。**
+- **沒有 schema 變更、沒有 migration、沒有刪除任何資料。**
+- **沒有 commit、沒有 push。**
 
 ---
 
 ## 下一步建議任務
 
-1. **`filename` / `parent_id` 的完整性**（`ROADMAP.md` `[next]`）——先出方案，
-   重點在那支 migration 腳本要怎麼寫得能重跑、能 dry-run 對帳。
-   排第一是因為它是目前唯一的 `[next]`，而且愈晚做、要回填的節點愈多。
-2. 多使用者要不要做，等你看完 `design-multi-user.md` §6 的三個決策點再說。
-   文件裡建議的分四步走法，前三步跑完系統仍是單一使用者、行為不變，
-   所以「要不要做」這個決定其實可以推遲。
+1. **先 commit**。本輪改動已驗證（343 項 + production image 裡跑過一次），
+   留在工作樹裡沒有好處，而且下一件事（H2）會動到同一批檔案。
+2. **拍板 `design-node-identity-integrity.md` §7 的四個決策點**，特別是 D1。
+   排在 remote 前面是因為它是唯一阻擋上線的一條，而且**愈晚做、要回填的節點愈多**——
+   目前 `nodes` 幾乎是空的，是做這件事成本最低的時機（與 KDF 遷移那次的理由相同）。
+3. **開好 GitHub MCP 之後推 remote。**在 H2 那種「跑錯一次全部讀不出來」的改動之前
+   有一份異地備份，價值比平常高。
 
 ---
 
 ## 環境備忘
 
-- venv 在 `venv/`。一律用 `./venv/Scripts/python.exe -m pytest`（見 `SOP.md`）。
-- repo 在 `master`，**沒有 remote**，只有本機 commit。
+- venv 在 `venv/`（3.12.7）。一律用 `./venv/Scripts/python.exe -m pytest`（見 `SOP.md`）。
+- **上線 image 現在也是 3.12**（3.12.13）。兩邊同版是刻意的，見 `ROADMAP.md` 拍板決策；
+  改任何一邊之前先讀那條。
+- repo 在 `master`，**沒有 remote**。
 - 程式碼是烤進 image 的，改完 `src/` 一定要 `docker compose up -d --build`。
-- **重啟服務目前不必先問**，見 `CLAUDE.md`「臨時例外」那一節。
-  那是一條有到期日的規則，使用者說「專案已上線使用」時要把它刪掉。
-- **MongoDB 的埠沒有對宿主開放**，一次性腳本不能從 venv 直連 `127.0.0.1:27017`
-  （本輪踩到一次）。要走
-  `docker compose exec -T sftp-discord-server python - < 腳本`（`SOP.md` 既有條目）。
-  這是第一次踩，按規則沒寫進 `SOP.md`；再踩一次就補條目。
-- 驗收腳本寫在 scratchpad 時，`load_dotenv()` 要傳絕對路徑（見 `SOP.md`）。
+- **重啟服務目前不必先問**，見 `CLAUDE.md`「臨時例外」。那是一條有到期日的規則。
+- MongoDB 的埠沒有對宿主開放，一次性腳本要走
+  `docker compose exec -T sftp-discord-server python - < 腳本`（`SOP.md`）。
+- 在容器裡跑測試要 `MSYS_NO_PATHCONV=1` 前綴（Git Bash 會改寫路徑參數，`SOP.md` 有這條），
+  且要 `--user root`（image 內的 `appuser` 裝不了 dev 相依）與 `-p no:cacheprovider`
+  （否則會在 repo 裡留下容器寫的 `.pytest_cache`）。
