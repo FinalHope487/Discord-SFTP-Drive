@@ -59,10 +59,14 @@ CTR 密文長度等於明文長度，不需要 padding，metadata 記的 `size` 
 
 - 決策與理由：`ROADMAP.md`「已拍板的長期決策」。
 - 實際涵蓋範圍與**明確沒有涵蓋的部分**：`BLUEPRINT.md` §4.3 / §4.4。
-- **仍存在的缺口**：`filename` 與 `parent_id` 不在 tag 內，目錄節點根本沒有 tag，
-  所以能寫 MongoDB 的人可以改名、搬檔而且驗得過（`ROADMAP.md` `[next]`）。
-  **方案已產出於 `design-node-identity-integrity.md`（2026-08-01），尚未拍板要不要做**
-  ——該文件 §7 有四個必須先選的決策點。
+**身分與位置也已經涵蓋（2026-08-01）**：`node_tag` 現在還蓋 `filename` 與 `parent_id`，
+目錄有自己的身分 tag，目錄還有一個蓋住子項集合的 tag（在列目錄時驗）。所以改名、搬檔、
+交換兩個檔案的名字、改目錄名、從資料庫刪掉一個節點，全部會被抓到。
+每個節點帶 `tag_version`，舊格式一律拒絕。
+
+- **仍沒有涵蓋的**：權限位與時間戳（刻意，見 `ROADMAP.md`），以及把節點與其父目錄
+  一起還原成舊版本——那是已拍板接受的整檔 rollback。
+- 方案與實作的出入：`design-node-identity-integrity.md` 開頭的已實作橫幅。
 
 ## 4. Discord 上傳附件檔名
 在將 Chunk 上傳至 Discord 時，附件需要一個檔名。

@@ -12,6 +12,12 @@ chunk nor forge one. The master key is random and stored wrapped under the
 SFTP password (Argon2id), which is why changing the password costs one 32-byte
 rewrite rather than re-uploading everything.
 
+The tags cover identity as well as content: a file's name and the directory
+it sits in, each directory's own name and place, and the set of entries a
+directory holds. So an attacker holding the database — a leaked backup, stolen
+Mongo credentials — cannot rename a file, move it, swap two files' names, or
+delete one without it being caught on the next read or listing.
+
 ## Running it
 
 ```bash
@@ -54,7 +60,7 @@ larger cache. It is on the roadmap and is not done.
 ./venv/Scripts/python.exe -m pytest
 ```
 
-343 tests, about 30 seconds, no credentials or network required — MongoDB and
+371 tests, about 30 seconds, no credentials or network required — MongoDB and
 the Discord API are faked. A green suite is not a substitute for a run against
 real infrastructure; the fakes model neither rate limits nor attachment URL
 expiry, and several of the bugs in the history here were only ever found by
@@ -77,6 +83,7 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 | [`SOP.md`](SOP.md) | Recurring problems and the order to check things in. Environment traps, mostly. |
 | [`missing_info.md`](missing_info.md) | The original open questions and what each was finally decided to be. |
 | [`design-multi-user.md`](design-multi-user.md) | A proposal, not a description. Multi-user support is not built. |
+| [`design-node-identity-integrity.md`](design-node-identity-integrity.md) | Built, and its banner lists the four places the plan and the result diverged. |
 | [`CLAUDE.md`](CLAUDE.md) | Collaboration rules for AI-assisted work on this repo. |
 
 Source lives in `src/`: `sftp.py` is the protocol surface, `vfs.py` the
@@ -88,7 +95,14 @@ filesystem, `crypto.py` and `keystore.py` the encryption and key handling,
 
 Working and in real use against a real bot token, single user, single replica.
 The known gaps are written down rather than glossed over — see §7.2 of
-`BLUEPRINT.md` and the `[next]` / `[later]` items in `ROADMAP.md`. The two
-that matter most: file *names* and locations are not covered by the integrity
-tags, and whole-file rollback by someone who can write to MongoDB is an
-accepted, documented residual risk.
+`BLUEPRINT.md` and the `[later]` items in `ROADMAP.md`.
+
+The one worth knowing up front: whoever can write to MongoDB can restore a
+file, and its parent directory, to an older copy of both, and it will verify.
+Stopping that needs a monotonic counter they cannot reach; three ways of
+providing one were evaluated and none was worth its cost. It is an accepted,
+documented residual risk rather than an oversight. Everything else — altered
+bytes, reordered or missing chunks, renames, moves, name swaps, deletions —
+is caught.
+
+There is no off-machine backup of this repository yet.

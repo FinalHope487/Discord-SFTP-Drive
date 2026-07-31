@@ -1,203 +1,149 @@
 # Session Handoff
 
 依 `.claude/templates/session-handoff.md` 產出。
-涵蓋範圍：**`BLUEPRINT.md` 全掃列出的 H1 / M2 / M3 / M4 / M7 五條全部處理完**，
-加上 `README.md`，以及 **H2 的完整方案**（只出方案，未動工）。
+涵蓋範圍：**`BLUEPRINT.md` 全掃列出的 H1 / H2 / M2 / M3 / M4 / M7 六條全部處理完**，
+加上 `README.md` 與三條順帶掃掉的 `[later]`。
 
-> **一條資料遺失路徑已修**：對既有檔案附加寫入時若 Discord 故障，
-> `_rollback()` 會把該檔案**原本就存在的** chunk 從 Discord 全部刪掉。
-> 自動化測試 343 項全過（+7），pyflakes 乾淨。
-> **本輪尚未 commit**——工作樹是髒的，見「目前狀態」。
+> **`ROADMAP.md` 現在沒有 `[now]`，也沒有 `[next]` 需要動工的項目了**
+> ——只剩 repo remote（等你開好 GitHub MCP）與一批 `[later]`。
+> 371 項自動化測試全過，pyflakes 乾淨，production image 內同樣 371 過。
+> **實地驗收 17/17**，收尾對帳 0 孤兒、0 懸空引用。
 
 ---
 
 ## 目前狀態
 
-**服務跑在 Python 3.12 上，起得來，Discord 可達，正常運作。**
-本輪**沒有寫入任何使用者資料**（沒有上傳、沒有刪除、`nodes` 與 Discord 附件狀態未動）。
+**服務跑在 Python 3.12 上，帶著新的完整性 tag，已上線並實地驗收過。**
+線上 `nodes` 只剩 root（驗收用的檔案已清乾淨），Discord 上 0 個附件。
 
-工作樹**未 commit**：
-
-| 狀態 | 檔案 |
-|---|---|
-| M | `src/vfs.py`（`_rollback()`）、`tests/fakes.py`（失敗注入）、`Dockerfile`（3.12）、`docker-compose.yml`（設定 + 告示）、`ROADMAP.md`、`missing_info.md` |
-| ?? | `README.md`、`design-node-identity-integrity.md`、`tests/test_write_failures.py`、`BLUEPRINT.md`（上輪產出，一直沒入庫） |
-
-commit 訊息還沒寫，因為沒被要求。建議切成兩個：程式碼（`vfs.py` / `fakes.py` /
-`test_write_failures.py` / `Dockerfile` / `docker-compose.yml`）與文件（其餘）。
+三個 commit 已入庫（`9669c7c` 程式碼、`9413874` 文件、`a28aa65` slash command），
+**本段的改動尚未 commit。**
 
 ## 已完成
 
-### 一、`_rollback()` 會刪光既有檔案（`BLUEPRINT.md` H1，原 `[now]`）
+### 一、H2：完整性 tag 涵蓋身分與位置（本段的主體）
 
-`src/vfs.py:559`。原本無條件走訪 `self._node["chunks"]` 刪掉**每一個** chunk 的
-Discord 訊息再把節點清零。它的 docstring 只假設了「本 handle 新建」與「已 truncate」
-兩種情況，但 `open()` 也支援不帶 `O_TRUNC` 開啟既有檔案來寫（`put -a`、log 附加、續傳），
-那時 `chunks` 裡裝的是檔案原本的內容。
+拍板：**D1/D2 = (b1) 納入子項集合、重算式；D3 = 加 `tag_version`；D4 = 不寫 migration。**
 
-**修法不是原本評估的那個。** ROADMAP 與 BLUEPRINT 建議的 (A)「還原成開啟時的
-chunks/size 快照」，實作前發現它會生出**新的**資料損壞路徑：`_replace_chunk` 在 commit
-**成功之後**才刪舊附件，所以開啟時的快照可能指向已經不存在的訊息，還原它等於寫進一個
-懸空引用、那個 chunk 永久讀不出來——比原症狀更難察覺（原症狀至少 size 歸零看得見）。
+- `src/crypto.py`：`node_tag` 加 `parent_id` / `filename`（網域分隔字串 `b"node"` → `b"node2"`）；
+  新增 `dir_tag`（目錄身分）、`dir_entries_tag`（子項集合）與各自的 verify；
+  檔名一律 NFC 正規化（否則同一個名字在 macOS 的 NFD 與 Linux 的 NFC 之間會算出不同的 tag，
+  變成只在單一平台出現的「檔案損毀」）。
+- `src/vfs.py`：`_verify_node` 現在也驗目錄並檢查 `tag_version`；`get_node` **逐段**驗證；
+  `_stage_entries` 統一處理所有結構變動；`rename` 會重算被移動節點自己的 tag；
+  `ensure_root` 變成需要金鑰的方法。
+- `src/sftp.py`：`scandir` 改走驗證過的 `entries_of()`；root 在 `validate_password` 建立。
+- `src/main.py`：不再於啟動時建 root（那時沒有金鑰）。
 
-追下去發現正解更小：兩個呼叫點（`:530`、`:554`）本來就各自釋放了自己那顆附件，
-**所以對既有檔案而言 `_rollback()` 該做的清理是零**。現在它對既有檔案只標記 handle 失敗
-就返回，一個 delete 都不發。新建的檔案維持原行為（整個消失）。
+**實作與方案有四處出入，每一處都寫進 `ROADMAP.md` 與方案文件的橫幅了。**
+最值得記的兩條：
 
-代價寫在 docstring 裡：**日後新增 `_rollback()` 呼叫點的人必須自己負責釋放附件。**
+- **`scandir` 繞過了 `list_dir`**，所以子項集合的保護「對直接呼叫 VFS 的人有效、
+  對真正的 SFTP 客戶端無效」。**單元測試全部通過，是實地驗收抓到的。**
+  這個 suite 當初存在的理由就是抓這種「協定層沒接上」的錯，而我又踩了一次——
+  教訓是**寫協定層的迴歸測試時，happy path 不算數，要竄改後從協定那一端驗**。
+- **方案漏了一個崩潰視窗。**目錄 tag 與子項在不同文件，standalone MongoDB 沒有 transaction，
+  所以中間崩潰會讓一個**沒有被攻擊**的目錄從此列不出來。補了兩階段寫入
+  （`entries_mac_pending` 先存、變更後才升為正式，驗證接受兩者）。
 
-### 二、失敗路徑零測試覆蓋（`BLUEPRINT.md` M2）
+### 二、三條順帶掃掉的 `[later]`
 
-`tests/fakes.py` 的 `FakeDiscord` 加了 `fail_uploads_from`（第 N 次上傳起開始失敗，
-計數含失敗的那次）。**這個門檻就是失敗路徑長期沒人測的根因**，補完之後 H1 的迴歸測試
-立刻寫得出來。
-
-新增 `tests/test_write_failures.py` 7 項：
-
-1. 新建檔案上傳到一半失敗 → 節點與附件都要整個消失
-2. **既有檔案 append 失敗 → 既有內容與附件必須原封不動**（H1 迴歸）
-3. 隨機寫入失敗 → 舊位元組還在（釘住 `_replace_chunk` 的順序）
-4. metadata 寫入失敗 → 只釋放自己剛上傳的那一顆
-5. truncate 過的檔案再失敗 → 留空（`_rollback` docstring 一直宣稱的那個情況）
-6. 失敗的 handle 拒絕後續寫入與 truncate，且 `close()` 不會 flush
-7. **走完整 SFTP 協定的 H1 迴歸測試**（`put -a` 遇上 Discord 故障）
-
-**這些測試在修好前後各跑了一次**：舊程式碼下第 2、4、7 三項失敗，新程式碼下全過。
-（1、3、5、6 兩版都過——它們覆蓋的是本來就正確的行為。）
-
-### 三、`DISCORD_MAX_CONCURRENCY` 在 compose 下無效（M3）
-
-`docker-compose.yml` 加一行。**17 個設定值逐項比對過，確認只漏這一個。**
-實測驗證：`DISCORD_MAX_CONCURRENCY=2 docker compose up -d` 之後容器內
-`config.discord_max_concurrency()` 回 2；修之前永遠是 4，而且不會有任何錯誤訊息。
-
-### 四、測試與上線的 Python 版本對齊（M4）
-
-`Dockerfile` 從 `python:3.11-slim` 升到 `python:3.12-slim`。
-**不只是改版號——整份 suite 已實際在那個 image 裡跑過一次：**
-
-```bash
-MSYS_NO_PATHCONV=1 docker run --rm --user root -v "D:/my-projects/Discord-Drive:/repo" \
-  -w /repo discord-drive-sftp-discord-server:latest \
-  sh -c "pip install -q -r requirements-dev.txt && python -m pytest -q -p no:cacheprovider"
-```
-
-343 passed，Python 3.12.13 / Linux。四個編譯型相依全部有 cp312 wheel，image 仍不需要
-建置工具鏈。所以「336 個測試從未在上線用的直譯器上跑過」這句話現在不成立了。
-**沒有另外加 3.11 的測試環境**——兩邊同版之後那件事的價值就消失了。
-
-### 五、`README.md`（M-「沒有入口文件」）與不可水平擴展的告示（M7）
-
-`README.md` 新增：是什麼、怎麼跑起來、怎麼跑測試（含在 production image 裡跑的指令）、
-各份文件各自負責什麼、誠實的現況與已知缺口。
-
-水平擴展告示寫在 `README.md` 一節與 `docker-compose.yml` 服務定義上方，
-兩處都寫明症狀是**無聲的**（沒有錯誤、沒有 log，只有舊位元組）。
-**執行期守衛評估後不做**（Mongo 單例標記硬擋、心跳租約只 WARNING），理由見
-`ROADMAP.md` 拍板決策——簡單說是不想用一個新的失敗模式（殘留標記害服務起不來）
-去換一個需要刻意 `--scale` 才會觸發的誤用。
-
-### 六、H2 的方案（`design-node-identity-integrity.md`，**只出方案，未動工**）
-
-`ROADMAP.md` 對這條的拍板就是「做之前先出方案，不要直接動工」，所以只出方案。
-寫的過程中發現三件原本沒展開的事，都在文件裡：
-
-- **驗證目錄的子項集合必須從實際子項重算**，否則攻擊者刪掉子項、不動摘要欄位就好。
-  所以成本會落在**每一次路徑查詢**上（`/a/b/c/x` 要列三個目錄的全部子項）。
-  可行做法是把目錄 tag 拆成「身分」（走路徑時驗，O(1)）與「子項集合」（只在 `list_dir` 驗）兩層。
-- **`ensure_root()` 在任何人認證之前就跑，那時沒有 master key**，所以 root 不可能在建立
-  當下帶 tag。root 的身分可以合理豁免（`ROOT_ID` 是常數），但它的子項集合就不行。
-- **子項集合的邊際價值精確地只有「偵測刪除」**——改名與搬移由檔案自己的 tag 就擋掉了，
-  而「把刪掉的節點插回去」等於已拍板接受的整檔 rollback。這讓「不納入子項集合」的
-  一致性論證比原先預期的強。
+- **失敗 handle 的讀取語意**：`size` 不再計入永遠不會落地的 buffer；`read_at` 不再 flush
+  失敗的 handle（否則 Discord 剛好復原時會復活一次已回報失敗的寫入）。
+- **`_url_cache` 加上限**（LRU 4096）。註解寫明為什麼**這個**快取淘汰是安全的
+  而 `_node_versions` 不是。
+- **`_to_sftp_error` 的死分支**刪掉，換成一行說明。
 
 ### 驗證方式
 
 ```bash
-./venv/Scripts/python.exe -m pytest
+./venv/Scripts/python.exe -m pytest        # 371 passed, ~30s
 ```
 
-343 passed（+7），約 30 秒，pyflakes 乾淨。另外在 production image 裡跑過同一份，
-見上方第四節。實地驗證只做了設定值那條（第三節），**H1 的修法沒有在真實 Discord 故障下
-驗證過**，理由見下。
+四層驗證，缺一條就會漏掉東西：
+
+1. **371 項單元/整合測試**（+28），`tests/test_node_identity.py` 24 項是新的。
+2. **突變測試**：把九個保護逐一拿掉，確認每一個都有測試會失敗——包含
+   「`scandir` 改回直接呼叫 `children()`」這一條，就是它現在釘住了上面那個 bug。
+   腳本在 scratchpad，未留在 repo。
+3. **production image 內跑同一份 suite**：371 passed（3.12.13 / Linux）。
+4. **實地驗收 17/17**（真實 bot token、真 MongoDB、12MB 檔案）：
+   建樹、列目錄、12MB 往返、改名、跨目錄搬移、目錄改名之後子項仍讀得出來；
+   然後**直接竄改 MongoDB**——改檔名、搬到別的目錄、交換兩個檔名、改目錄名、刪掉一個節點
+   ——五種全部被拒；還原後所有位元組逐一比對相同；清理後只剩 root，
+   root 帶著兩個 tag 與 `tag_version=2`，沒有殘留的 `entries_mac_pending`。
+   收尾對帳 **0 孤兒、0 懸空引用**。
 
 ---
 
 ## 未完成待辦
 
-### 一、H2：檔名與位置不受完整性保護（`ROADMAP.md` `[next]`，**唯一阻擋上線的一條**）
+### 一、repo 沒有 remote（`ROADMAP.md` 唯一的 `[next]`）
 
-方案在 `design-node-identity-integrity.md`。**§7 有四個必須先選的決策點**，
-其中 **D1（目錄的子項集合要不要納入 tag）決定整件事是一輪還是兩輪的規模**，
-而且選 (b) 會推翻一條既有拍板決策（`scandir` 不做完整性驗證）。
+**你說要先開 GitHub MCP。**所有 commit 仍只存在這台機器。
+現在比之前更值得做：這一段動了加密層，而且**沒有 migration 可以退回去**。
 
-真正的成本是那支回填 migration：fail closed 是既有決策，沒有回填的話升級當下
-**所有檔案立刻讀不出來**。方案 §5 列了它必須有的五條性質，其中最重要的是
-**「寫新 tag 之前一定要先驗過舊 tag」**——對已被竄改的節點重算 tag 等於用真金鑰把
-竄改結果洗白成合法。
+### 二、`BLUEPRINT.md` 該重新產出（新列的 `[later]`）
 
-### 二、repo 沒有 remote（`ROADMAP.md` `[next]`）
+它以 `5968362` 為準，之後 H1 與 H2 都落地了，§4.3 / §4.4 描述的 tag 涵蓋範圍已明顯落後。
+目前靠開頭的狀態橫幅與逐條註記撐著，那是權宜。`/blueprint` 跑一次就好。
 
-**你說要先開 GitHub MCP，本輪未動。**所有 commit 仍只存在這台機器的磁碟。
+### 三、仍未拍板的 `[later]`
 
-### 三、`SFTP_PASSWORD` 以明文環境變數注入（`ROADMAP.md` `[later]`，仍未拍板）
-
-要嘛走 docker secret，要嘛明確寫成「已接受的風險」。目前兩者都不是，是預設狀態——
-`BLUEPRINT.md` 那條的原話是「那應該是一個明確寫下來的決定，而不是預設」。
+`SFTP_PASSWORD` 走 docker secret 還是明確接受風險；多使用者
+（`design-multi-user.md` §6 三個決策點）；其餘見 `ROADMAP.md`。
 
 ### 四、仍未被真實環境驗證的東西
 
-- 5xx 重試與傳輸層重試從未被真實觸發（要 Discord 自己故障，無法從外部觸發）。
-- 附件 URL 真的過期（24 小時後）沒有等過。
-- **H1 的保護只在 fake 上驗證過**，與上面同一類——要在真實環境驗證得先讓 Discord
-  對這個 bot 連續失敗五次以上。修好前的**症狀**也是只在 fake 上實證的。
+5xx 與傳輸層重試（要 Discord 自己故障）、附件 URL 真的過期（要等 24 小時）、
+`_rollback` 的保護（同樣要 Discord 連續失敗五次以上）。
 
 ---
 
-## 資料狀態（本輪沒有動過，但寫清楚）
+## 資料狀態（本段動過，寫清楚）
 
-- **`nodes` 與 `keystore` 都沒有寫入。**本輪沒有透過 SFTP 上傳或刪除任何檔案。
-- **Discord 上的附件數量未變。**沒有跑對帳（沒有動過，不需要）。
+- **root 節點已就地升級**：原本是 pre-tag 形狀（沒有 `tag_version` / `mac` / `entries_mac`），
+  升級當下它是空的，所以升級是安全的（`ensure_root` 對**非空**的 pre-tag root 會拒絕啟動
+  並說明原因——對有內容的目錄重算 tag 等於把已經發生的刪除簽成合法）。
+- **驗收期間建立的檔案與目錄已全部刪除**，Discord 附件一併釋放，對帳 0 孤兒、0 懸空。
+- **`keystore` 未動**，master key 沒有變。
 - `mongo_data` / `host_key_data` volume 未刪除，host key 沒換。
-- **image 已重建**（3.12），服務重啟過數次。**線上那份 Argon2id 金鑰記錄在 3.12 下
-  照常打得開**——啟動 log 無任何 WARNING，這順帶驗證了升版沒有動到 `argon2-cffi` 的行為。
-- `.env` **未動**（測 `DISCORD_MAX_CONCURRENCY` 時是用命令列前綴傳的，沒有寫進檔案）。
+- **從這一刻起寫入的資料回不去舊格式**——沒有 migration，這是 D4 拍板的內容。
 
 ---
 
-## 本輪不可碰的範圍
+## 本段不可碰的範圍
 
-- **加密與金鑰層一行未改**：`src/crypto.py`、`src/keystore.py`、`src/config.py` 都沒動。
-  `node_tag` / `chunk_tag` 的涵蓋範圍**沒有改**——H2 只出方案沒動工。
-- **`src/vfs.py` 只動了 `_rollback()` 一個方法**，沒有碰讀寫路徑、同步邏輯或 resize。
-- **`src/sftp.py`、`src/discord_api.py`、`src/db.py`、`src/main.py` 一行未改。**
-- **沒有 schema 變更、沒有 migration、沒有刪除任何資料。**
-- **沒有 commit、沒有 push。**
+- **`keystore.py` 一行未改**，KDF 與金鑰包裝完全沒動。
+- **`chunk_tag` 沒有改**，所以**一個 chunk 都不需要重新上傳**。加密演算法本身沒動。
+- **`ratelimit.py`、`db.py` 未改。**
+- 沒有新增相依套件；沒有 schema migration；沒有 push。
 
 ---
 
 ## 下一步建議任務
 
-1. **先 commit**。本輪改動已驗證（343 項 + production image 裡跑過一次），
-   留在工作樹裡沒有好處，而且下一件事（H2）會動到同一批檔案。
-2. **拍板 `design-node-identity-integrity.md` §7 的四個決策點**，特別是 D1。
-   排在 remote 前面是因為它是唯一阻擋上線的一條，而且**愈晚做、要回填的節點愈多**——
-   目前 `nodes` 幾乎是空的，是做這件事成本最低的時機（與 KDF 遷移那次的理由相同）。
-3. **開好 GitHub MCP 之後推 remote。**在 H2 那種「跑錯一次全部讀不出來」的改動之前
-   有一份異地備份，價值比平常高。
+1. **commit 這一段**（建議同樣切成程式碼／文件兩個）。
+2. **開好 GitHub MCP 之後推 remote。**這一段沒有回頭路，異地備份的價值比之前高。
+3. **`/blueprint` 重跑一次**，讓藍圖回到與程式碼一致。排在 remote 之後是因為它會產生
+   一份大檔，先有備份再說。
 
 ---
 
 ## 環境備忘
 
-- venv 在 `venv/`（3.12.7）。一律用 `./venv/Scripts/python.exe -m pytest`（見 `SOP.md`）。
-- **上線 image 現在也是 3.12**（3.12.13）。兩邊同版是刻意的，見 `ROADMAP.md` 拍板決策；
-  改任何一邊之前先讀那條。
-- repo 在 `master`，**沒有 remote**。
+- venv 在 `venv/`（3.12.7）；上線 image 也是 3.12（3.12.13）。一律用
+  `./venv/Scripts/python.exe -m pytest`（見 `SOP.md`；裸 `python` 是 Store 的 stub，
+  **本輪又踩了一次，exit 49 且無輸出**）。
 - 程式碼是烤進 image 的，改完 `src/` 一定要 `docker compose up -d --build`。
 - **重啟服務目前不必先問**，見 `CLAUDE.md`「臨時例外」。那是一條有到期日的規則。
 - MongoDB 的埠沒有對宿主開放，一次性腳本要走
   `docker compose exec -T sftp-discord-server python - < 腳本`（`SOP.md`）。
-- 在容器裡跑測試要 `MSYS_NO_PATHCONV=1` 前綴（Git Bash 會改寫路徑參數，`SOP.md` 有這條），
-  且要 `--user root`（image 內的 `appuser` 裝不了 dev 相依）與 `-p no:cacheprovider`
-  （否則會在 repo 裡留下容器寫的 `.pytest_cache`）。
+  容器裡有 compose 注入的環境變數，**不需要也讀不到 `.env`**。
+- 在容器裡跑測試要 `MSYS_NO_PATHCONV=1` 前綴、`--user root`、`-p no:cacheprovider`。
+- **竄改腳本要注意真實 MongoDB 有 `(parent_id, filename)` 唯一索引**：直接對調兩個檔名
+  會撞 DuplicateKeyError，要經過一個暫時名稱。in-memory fake 不模擬唯一性，所以單元測試
+  不會遇到。本輪第一次踩，按規則沒寫進 `SOP.md`。
+- **竄改腳本的「還原」要用明確的目標值，不要「再做一次同樣的操作來還原」**——
+  對調兩次讀的是同一份快照，等於再對調一次。本輪踩到，而且**只檢查檔名的斷言驗不出來**
+  （名字的集合兩種情況下一模一樣，那正是被測的攻擊）。斷言要讀位元組。
