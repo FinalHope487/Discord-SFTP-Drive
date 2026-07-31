@@ -81,6 +81,20 @@ logger = logging.getLogger(__name__)
 
 ROOT_ID = "root"
 
+# node id -> the mac last committed for it, kept for the lifetime of the
+# process. Lets an open handle tell whether another handle changed the node
+# without a database round trip: a matching mac means nothing to do, and only
+# a mismatch pays for a refetch. Not a source of truth -- every refetch still
+# re-verifies the tag against Mongo -- so a process restart clearing it is
+# harmless.
+#
+# Deliberately unbounded rather than an LRU. A missing entry reads as "nothing
+# is known to have changed", so evicting one would quietly put the handle that
+# owns it back to serving its stale copy -- the exact bug this exists to close,
+# reintroduced under memory pressure and impossible to reproduce on demand. The
+# cost of keeping every entry is about 100 bytes per node ever touched.
+_node_versions: dict = {}
+
 
 class VFSError(Exception):
     """Base class for everything the SFTP layer translates into status codes."""
@@ -239,6 +253,40 @@ class DiscordFile:
         """The file's logical end, buffered bytes included."""
         return max(self._node["size"], self._covered_end() + len(self._buffer))
 
+    async def refresh(self):
+        """Pull this handle up to date if another handle changed the node.
+
+        Public for `SFTPServer.fstat`, which otherwise reads `.size` off a
+        handle that may not have touched the node since it was opened.
+        """
+        async with self._lock:
+            await self._sync()
+
+    async def _sync(self):
+        """The mismatch check behind `refresh` -- call with `_lock` held.
+
+        Comparing against `_node_versions` is a dict lookup, not a database
+        call, so an idle node costs nothing here. Only a real mismatch --
+        another handle actually committed a change -- pays for a refetch.
+        """
+        current = _node_versions.get(self._node["id"])
+        if current is None or current == self._node.get("mac"):
+            return
+
+        latest = await db.get_db().nodes.find_one({"id": self._node["id"]})
+        if latest is None:
+            raise NotFound(self._node["id"])
+        _verify_node(self._key, latest)
+
+        self._node["size"] = latest["size"]
+        self._node["chunks"] = latest["chunks"]
+        self._node["mac"] = latest["mac"]
+        self._node["modified_at"] = latest.get("modified_at")
+        # Indices are reused as chunks are trimmed and replaced, so a cached
+        # entry keyed by index could now hand back a different chunk's bytes.
+        self._chunk_cache.clear()
+        self._reindex()
+
     # ---------------------------------------------------------------- reading
 
     async def read_at(self, offset: int, size: int) -> bytes:
@@ -246,6 +294,8 @@ class DiscordFile:
             raise Unsupported("file is not open for reading")
 
         async with self._lock:
+            await self._sync()
+
             # Anything still buffered has not been uploaded yet, so a reader
             # would silently miss it. Flushing keeps read-after-write honest.
             if self._buffer:
@@ -334,6 +384,8 @@ class DiscordFile:
                 return 0
             if offset < 0:
                 raise Unsupported(f"negative write offset: {offset}")
+
+            await self._sync()
 
             # A write after the client set a time is a genuine new
             # modification, so the requested time no longer applies.
@@ -434,10 +486,7 @@ class DiscordFile:
         chunk["hmac"] = tag.hex()
 
         try:
-            await db.get_db().nodes.update_one(
-                {"id": self._node["id"]},
-                {"$set": _content_update(self._key, self._node, mtime=self._effective_mtime())},
-            )
+            await _commit_content(self._key, self._node, mtime=self._effective_mtime())
         except Exception:
             # All three move together: a chunk left with the new nonce and the
             # old tag would fail verification on every subsequent read.
@@ -495,10 +544,7 @@ class DiscordFile:
         self._node["size"] = max(previous_size, offset + len(data))
 
         try:
-            await db.get_db().nodes.update_one(
-                {"id": self._node["id"]},
-                {"$set": _content_update(self._key, self._node, mtime=self._effective_mtime())},
-            )
+            await _commit_content(self._key, self._node, mtime=self._effective_mtime())
         except Exception:
             # The attachment exists but nothing references it — drop it before
             # unwinding so it does not become an orphan.
@@ -530,11 +576,9 @@ class DiscordFile:
         try:
             if self._node.get("_created_by_handle"):
                 await db.get_db().nodes.delete_one({"id": self._node["id"]})
+                _node_versions.pop(self._node["id"], None)
             else:
-                await db.get_db().nodes.update_one(
-                    {"id": self._node["id"]},
-                    {"$set": _content_update(self._key, self._node, mtime=self._effective_mtime())},
-                )
+                await _commit_content(self._key, self._node, mtime=self._effective_mtime())
         except Exception:
             logger.exception("Rollback bookkeeping failed for node %s", self._node["id"])
 
@@ -572,6 +616,8 @@ class DiscordFile:
             if self._failed:
                 raise VFSError("file is in a failed state from an earlier error")
 
+            await self._sync()
+
             # Buffered bytes are part of the file but belong to no chunk yet,
             # so a resize computed around them would either drop them or
             # place them past the new end.
@@ -597,6 +643,11 @@ class DiscordFile:
 
             if not self._writable or self._failed:
                 return
+
+            # Only matters if there is something to place: a stale
+            # `_covered_end()` would land the final flush at the wrong offset.
+            if self._buffer:
+                await self._sync()
 
             # Just the flush. Closing is not a modification -- every path that
             # actually changes the file stamps `modified_at` itself -- and
@@ -669,7 +720,26 @@ def _verify_node(key: bytes, node):
         return node
     verify_node(key, file_id=node["id"], size=node.get("size", 0),
                 chunk_tags=_chunk_tags(node), tag_hex=node.get("mac"))
+    # Every verified read is a trustworthy point-in-time truth, so it is safe
+    # to stamp the version cache here regardless of who is asking.
+    _node_versions[node["id"]] = node.get("mac")
     return node
+
+
+async def _commit_content(key: bytes, node: dict, *, mtime: int = None) -> dict:
+    """Write a node's content fields and record the new version.
+
+    Every path that changes size/chunks/mac funnels through here so that a
+    handle on the same node held open elsewhere can tell, without a database
+    round trip, whether its cached copy is still current -- see
+    `DiscordFile._sync`.
+    """
+    update = _content_update(key, node, mtime=mtime)
+    await db.get_db().nodes.update_one({"id": node["id"]}, {"$set": update})
+    node["mac"] = update["mac"]
+    node["modified_at"] = update["modified_at"]
+    _node_versions[node["id"]] = update["mac"]
+    return update
 
 
 async def _fetch_chunk(key: bytes, file_id: str, chunk: dict) -> bytes:
@@ -743,10 +813,7 @@ async def _resize_node(key: bytes, node: dict, size: int):
     node["chunks"], node["size"] = keep, size
 
     try:
-        await db.get_db().nodes.update_one(
-            {"id": node["id"]},
-            {"$set": _content_update(key, node)},
-        )
+        await _commit_content(key, node)
     except Exception:
         node["chunks"], node["size"] = previous_chunks, previous_size
         # Nothing points at the replacement yet, so it would be an orphan.
@@ -871,6 +938,7 @@ class DiscordVFS:
             await _safe_delete_message(chunk["message_id"])
 
         await db.get_db().nodes.delete_one({"id": node["id"]})
+        _node_versions.pop(node["id"], None)
         await _touch_dir(node.get("parent_id"))
 
     async def removedir(self, path: str):
@@ -939,6 +1007,7 @@ class DiscordVFS:
                 await _safe_delete_message(chunk["message_id"])
 
         await db.get_db().nodes.delete_one({"id": node["id"]})
+        _node_versions.pop(node["id"], None)
 
     async def open(self, path: str, *, read: bool, write: bool, create: bool = False,
                    truncate: bool = False, append: bool = False,
@@ -987,6 +1056,7 @@ class DiscordVFS:
         node["mac"] = node_tag(self._key, file_id=node["id"], size=0,
                                chunk_tags=[]).hex()
         await db.get_db().nodes.insert_one(node)
+        _node_versions[node["id"]] = node["mac"]
         await _touch_dir(parent["id"])
         return node
 

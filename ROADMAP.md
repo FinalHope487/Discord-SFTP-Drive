@@ -52,12 +52,16 @@
   與「把 chunk 換成洞」，但「把整份 node 換成**同一個檔案的舊版本**」仍然自洽、仍然驗得過。
   要擋它需要一個放在持有資料庫的人碰不到的地方的單調版本計數器，這個架構裡沒有那種地方
   （外部 KMS、TPM，或把根雜湊釘在別的服務上）。**這是目前唯一已知的完整性缺口。**
-- [next] **跨 handle 的狀態不同步**（你指示延後）。`setstat` 改大小走的是路徑，若同一個
-  檔案正被另一個 handle 開著，那個 handle 手上的 node 是舊的。
-  **已實地確認（2026-07-31）**：連線 B 把 20MB 檔案截到 4096 之後，連線 A 的 handle
-  仍回報 20971520 bytes，並且**在新檔尾之後的 offset 讀得到 1024 bytes 的舊資料**。
-  修法大概是 handle 每次操作前重新讀 node，或加一層 open-handle 註冊表。
-  單一客戶端循序操作碰不到，所以優先度由「這台是不是單人用」決定。
+- [later] **跨 handle 的 metadata 變更仍不同步**（本輪內容同步的殘留缺口）。
+  `_node_versions` 比對的是 `mac`，而 `mac` 刻意不涵蓋權限位與時間戳
+  （見上方拍板決策），所以另一條連線的 `chmod` / `utimes` **不會**觸發重新抓取，
+  開著的 handle 會繼續回報舊的 mode 與 mtime。內容（size / chunks）已經同步了。
+  要一併涵蓋就得替 metadata 另開一個版本欄位，或讓 `mac` 蓋住 metadata——
+  後者已經被拍板否決過。實務衝擊小：SFTP 客戶端不會邊開著檔案邊等別人改權限。
+- [later] **真正同時寫入的競態仍是後寫的贏**。本輪同步的保證是「單一 handle
+  在每次操作前看得到別人**已經 commit 完**的狀態」，不是寫入互斥。兩條連線同時
+  對同一個檔案寫，後寫的仍會蓋掉先寫的——POSIX 對此本來也不保證原子性。
+  要真的擋需要 node 層級的樂觀鎖（`update_one` 帶上舊 `mac` 當條件）。
 - [later] **路徑版 `stat` 看不到別的 handle 還在 buffer 裡的位元組**。同一 handle 的
   `fstat` 已修；跨 handle 的沒修，也修不乾淨——那些位元組還沒上傳，本來就不該對別人可見。
 - [later] **KDF 換成 Argon2id**。目前是 PBKDF2-HMAC-SHA256 600k 次，選它純粹是為了
@@ -72,6 +76,49 @@
 - [parked] chunk 壓縮與去重。
 
 ---
+
+## 本輪第四段（2026-07-31）完成並移除的項目
+
+> **真實環境驗證 Discord 429**（`src/ratelimit.py`），連續四輪記著、
+> 一直沒被真實環境觸發過的一條，本輪補上。
+
+- ~~仍未被真實 429 驗證過的 rate limit bucket~~ — 已驗證。用真實 bot token
+  對真實 SFTP 服務灌 50 個 200 bytes 小檔案、序列上傳無延遲，兩個機制都被
+  真實觸發：
+  - **主動節流**（讀 `X-RateLimit-Remaining` / `X-RateLimit-Reset-After`）
+    在上傳（`POST .../messages`）路徑上生效，讓大多數請求**沒有**真的撞到 429——
+    可觀察到的訊號是部分檔案耗時從約 0.5s 跳到 4.5～5s（等待 bucket 重置），
+    而不是錯誤或重試 log。
+  - **真實 429 與重試**在清理（`DELETE .../messages/{id}`）路徑上被觸發：
+    這條路由的 bucket 在迴圈一開始還沒被學到，所以前幾個刪除跑得比真實限流快，
+    7 次真的收到 Discord 的 429，`retry_after`（實測 0.3s～0.602s）被正確讀出、
+    log 記成 WARNING、等待後重試，最終 50 個檔案全部刪除成功。
+  - 50 個檔案上傳後全數 `stat` 核對 size 正確，清理後**對帳 0 孤兒、0 懸空引用**。
+  驗證腳本與對帳腳本皆為 scratchpad 一次性腳本，未留在 repo（沿用既有慣例）。
+- [parked] **（本輪順帶發現，未修）SFTP 用戶端正常斷線時偶爾被記成 WARNING**：
+  `src/sftp.py` 的 `connection_lost()` 只把 `None` 與 `ConnectionResetError`
+  視為正常斷線；本輪驗證腳本用 `async with asyncssh.connect(...)` 正常關閉連線時
+  觸發了另一種例外型別，被記成 `WARNING SSH connection error: Connection lost`。
+  純粹是 log 噪音（功能本身無誤——所有上傳/清理/對帳結果都正確），本輪僅第一次
+  觀察到、按規則不在第一次出現時處理，先記錄。若之後又踩到，再回來查究竟是
+  哪個例外型別、決定是否要擴大 `connection_lost()` 判斷的白名單。
+
+## 本輪第三段（2026-07-31）完成並移除的項目
+
+> **實地驗收 10/10 通過**（真實 bot token、真 MongoDB、真 SFTP、12MB 檔案）。
+> 收尾對帳：Discord 0 個附件、0 個被引用、**0 孤兒**。
+
+- ~~[next] 跨 handle 的狀態不同步~~ — 已修。上一輪實地確認的情境
+  （連線 B 截短後，連線 A 的 handle 仍回報舊 size，並在新檔尾之後**讀得到舊資料**）
+  這輪實地重跑：A 的 `fstat` 回報 4096、新檔尾之後讀回 EOF 而不是 1024 bytes 舊明文。
+  做法是 process 內的 `_node_versions`（node id → 最後 commit 的 `mac`）：
+  handle 在每次 read / write / truncate 前先比對，**相符就什麼都不做**，
+  只有真的被別人改過才付一次 `find_one` 並重新驗章、清快取。
+  所以無衝突時零額外 DB 查詢（有測試釘住），這對序列上傳很重要——
+  `fstat` 每個 SFTP 封包都會被呼叫。
+  **這個字典刻意不設上限**：查不到會被當成「沒人改過」，所以 LRU 淘汰等於把這個
+  bug 在記憶體壓力下悄悄放回來。代價是每個碰過的 node 約 100 bytes。
+  殘留缺口兩條（metadata 不同步、真正的同時寫入競態）已改列 `[later]`，見上。
 
 ## 本輪後半（2026-07-31）完成並移除的項目
 

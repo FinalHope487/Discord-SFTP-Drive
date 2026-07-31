@@ -31,6 +31,10 @@ class FakeCollection:
         # creations. Lets a test drive the upgrade path MongoDB takes when an
         # index of the same shape already exists without `unique`.
         self.create_index_errors = []
+        # Lets a test assert on database traffic directly -- e.g. that a
+        # handle's cross-handle sync check skips the round trip when nothing
+        # actually changed underneath it.
+        self.find_one_calls = 0
 
     async def create_index(self, keys, **options):
         # Recorded rather than enforced. Uniqueness is MongoDB's job, and a
@@ -46,6 +50,7 @@ class FakeCollection:
         self.dropped_indexes.append(name)
 
     async def find_one(self, flt):
+        self.find_one_calls += 1
         for d in self.docs:
             if _matches(d, flt):
                 return copy.deepcopy(d)

@@ -167,7 +167,9 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
         # The handle's size, not the node's: the node does not know about
         # bytes that have been written but not yet uploaded. asyncssh calls
         # this to size a length-less read(), so a stale answer here makes a
-        # client's own last write read back as EOF.
+        # client's own last write read back as EOF. Refresh first so a resize
+        # committed by another handle shows up too.
+        await file_obj.refresh()
         return _attrs(file_obj.node, file_obj.size)
 
     @staticmethod
