@@ -20,6 +20,20 @@
   理由：改動面積最小，且**竄改者即使控制 Discord 也改不到 tag**（tag 不在 Discord 上）。
 - **不做向後相容**（2026-07-29 決定）。沒有 HMAC 欄位的 chunk 一律拒絕（fail closed），
   不保留「舊檔跳過驗證」的路徑——那條路徑本身就是降級攻擊面。既有測試資料直接清掉重跑。
+- **主金鑰隨機產生、以密碼包裝，不由密碼直接推導**（2026-07-31 決定）。
+  `.env` 不再有 `AES_SECRET_KEY`；資料用一把隨機主金鑰加密，主金鑰用 SFTP 密碼
+  推導出的 KEK 包裝後存在 MongoDB 的 `keystore`。理由：直接由密碼推導的話，
+  **改密碼＝所有資料永久讀不出來**；包裝之後改密碼只是重寫一份 32 bytes 的記錄，
+  一個 chunk 都不用動。另外包裝用的 MAC 讓「密碼錯」與「資料壞了」可以區分開來。
+  KDF 用 PBKDF2-HMAC-SHA256（600k 次）——**選它是因為不想為此新增相依套件**，
+  包裝格式裡存了 `kdf` 名稱與參數，之後換 Argon2id 不需要 migration。
+- **金鑰是每連線的，不是每行程的**（2026-07-31 決定）。`validate_password` 解開主金鑰
+  後放在該連線上，`DiscordVFS` 每條連線各一個。連線結束即釋放參照
+  （Python 無法真的抹除 bytes，這是盡力而為，不是安全抹除）。
+- **完整性 tag 的涵蓋範圍：內容，不含 metadata**（2026-07-31 決定）。
+  chunk tag 綁 (file id, index, offset, size)；node tag 蓋 (file id, size, 有序 chunk tag 列表)。
+  **權限位與時間戳刻意不在裡面**——它們不是內容，把它們納入會讓每次 chmod 都要重算
+  一份蓋在完全沒動過的位元組上的 tag。
 - **檔案擴張採「稀疏尾端」，不實際補零**（2026-07-31 決定）。
   `size` 可以大於所有 chunk 的長度總和，中間那段是洞、讀回零、不佔 Discord 空間。
   **洞只會在尾端**；寫入落在 chunk 之後仍然實際補零（中間的洞沒有表示法）。
@@ -34,43 +48,61 @@
 
 <!-- 格式：- [標記] 說明（可附上下文/來源 session） -->
 
-- [next] **HMAC 尚未涵蓋 chunk 在檔案中的位置**。tag 蓋的是 `nonce||ciphertext`，
-  所以單一 chunk 被換掉會被抓到，但「把整份 metadata 換成另一組自洽的舊版本」
-  （replay / rollback）不會。要擋這個需要把 file id + index 也納入 tag，或做檔案層級的 MAC。
-  威脅模型不同：前者防的是「能改 Discord 的人」，後者防的是「能改 MongoDB 的人」。
-  **2026-07-31 補充**：稀疏尾端讓這個缺口多一種形狀——洞完全由 metadata 定義、沒有 tag，
-  所以能改 MongoDB 的人可以把 chunk 換成洞，讓一段資料無聲地變成零。同一個威脅模型，
-  同一個修法（檔案層級的 MAC），不是新的一條。
-  **已實地確認（2026-07-31）**：把一個 9MB 檔案的第二個 chunk 從 MongoDB 的 `chunks`
-  拿掉、`size` 不動 → 讀回全零、`stat` 大小不變、**沒有任何 integrity error**。
-  不再是理論推導。
-- [next] **測試又更慢了**（208 秒 / 197 項；上上輪 78 秒 / 77 項，上輪 149 秒 / 159 項）。
-  每個 test 都重開一次 asyncssh server。若要進 CI，把 server 改成 module-scoped 是最大的一筆。
-- [next] **跨 handle 的狀態不同步**。`setstat` 改大小走的是路徑，若同一個檔案正被另一個
-  handle 開著，那個 handle 手上的 node 是舊的。`remove` / `rename` 早就有同樣問題，
-  只是 `setstat` 讓它更容易被踩到。單一客戶端循序操作不會遇上。
+- [next] **整檔 rollback 仍然擋不住**。本輪的 node tag 關掉了重排、跨檔搬運、刪尾端 chunk
+  與「把 chunk 換成洞」，但「把整份 node 換成**同一個檔案的舊版本**」仍然自洽、仍然驗得過。
+  要擋它需要一個放在持有資料庫的人碰不到的地方的單調版本計數器，這個架構裡沒有那種地方
+  （外部 KMS、TPM，或把根雜湊釘在別的服務上）。**這是目前唯一已知的完整性缺口。**
+- [next] **跨 handle 的狀態不同步**（你指示延後）。`setstat` 改大小走的是路徑，若同一個
+  檔案正被另一個 handle 開著，那個 handle 手上的 node 是舊的。
   **已實地確認（2026-07-31）**：連線 B 把 20MB 檔案截到 4096 之後，連線 A 的 handle
-  仍回報 20971520 bytes，並且**在新檔尾之後的 offset 讀得到 1024 bytes 的舊資料**
-  （它手上的 chunk metadata 還指著已被刪掉的附件，讀的是自己的解密快取）。
+  仍回報 20971520 bytes，並且**在新檔尾之後的 offset 讀得到 1024 bytes 的舊資料**。
   修法大概是 handle 每次操作前重新讀 node，或加一層 open-handle 註冊表。
-- [later] **路徑版 `stat` 看不到別的 handle 還在 buffer 裡的位元組**。本輪修好的是同一個
-  handle 的 `fstat`（見下方完成項）；跨 handle 的情況沒修，也修不乾淨——那些位元組還沒
-  上傳，本來就不該對別人可見。記著是因為它看起來像 bug。
-- [next] **`_request` 的重試對 5xx 不重試**。目前只有 429 會重試，Discord 的 502/503 會直接往上拋。實地驗收沒撞到，但長時間跑大概會遇上。
-- [next] **附件 URL 過期未驗證**。`get_attachment_url` 每次重新取，但單一 chunk 下載途中簽章過期的情況仍沒有測過（實地驗收的檔案都在幾秒內下載完）。
-  **2026-07-31 量到了視窗**：真實附件 URL 的 `ex=` 參數顯示簽章**有效 24 小時**。
-  單一 chunk 上限 9MB，要在下載途中過期基本上不可能；真正的風險是**長時間開著的
-  handle**——`_chunk_bytes` 每次都重新取 URL，所以其實已經是安全的那一邊。
-  剩下沒驗的只有「取到 URL 之後、下載開始之前剛好跨過 24 小時」這個極窄的窗，
-  優先度可以降低。
-- [later] 斷點續傳與下載進度紀錄（見 `todo.md`）。
-- [later] PBKDF2/Argon2 動態金鑰，改用連線密碼推導（見 `todo.md`）。
+  單一客戶端循序操作碰不到，所以優先度由「這台是不是單人用」決定。
+- [later] **路徑版 `stat` 看不到別的 handle 還在 buffer 裡的位元組**。同一 handle 的
+  `fstat` 已修；跨 handle 的沒修，也修不乾淨——那些位元組還沒上傳，本來就不該對別人可見。
+- [later] **KDF 換成 Argon2id**。目前是 PBKDF2-HMAC-SHA256 600k 次，選它純粹是為了
+  不新增相依套件。Argon2id 對 GPU 破解強得多。包裝格式已經有 `kdf` 欄位，換過去
+  只要加一個分支＋一個相依，既有記錄照樣能開。
+- [later] **完整性檢查不涵蓋列目錄**。`stat` / `open` / `rename` / `remove` 都會驗，
+  `scandir` 不驗——刻意的，否則一個被竄改的檔案會讓整個目錄列不出來。代價是
+  `ls -l` 顯示的大小未經驗證，但真的去讀或 stat 它就會失敗。
+- [later] **權限位與時間戳不受完整性保護**（見上方拍板決策）。能改 MongoDB 的人可以改它們。
+- [later] **不支援符號連結**（你本輪選擇不做）。`symlink` / `readlink` / `link` 回 FX_OP_UNSUPPORTED。
 - [later] 多使用者與各自獨立的 VFS 樹；目前是單一帳號共用同一棵樹。
 - [parked] chunk 壓縮與去重。
 
 ---
 
-## 本輪（2026-07-31）完成並移除的項目
+## 本輪後半（2026-07-31）完成並移除的項目
+
+- ~~[next] 測試又更慢了（208 秒 / 197 項）~~ — **208 秒 → 23 秒**，302 項。
+  根因不是 fixture 結構：asyncssh 預設會用 `socket.getfqdn()` 算 GSS 主機名，
+  這台機器的反向 DNS 每次要 1.04 秒，而每個測試呼叫兩次（listen 一次、connect 一次）。
+  設 `gss_host=None` 同時關掉了本來就不打算提供的 GSSAPI 認證路徑。
+  **原本計畫的「把 server 改成 module-scoped」不需要了。**
+- ~~[next] `_request` 對 5xx 不重試~~ — 已補 500/502/503/504 與傳輸層例外的重試，
+  指數退避＋抖動，具名的 `DiscordAPIError`，明確的逾時設定。4xx 仍然不重試。
+- ~~[next] 附件 URL 過期~~ — 依 `ex=` 快取並在過期前重新解析；真的被 CDN 以 403/404
+  拒絕時再解析一次重試。順帶：下載改用不帶 bot token 的獨立 session。
+- ~~[next] HMAC 未涵蓋 chunk 位置 / 洞沒有 tag~~ — chunk tag 現在綁
+  (file id, index, offset, size)，另加 node tag 蓋 (file id, size, 有序 chunk tag 列表)。
+  重排、跨檔搬運、刪尾端 chunk、chunk 換洞全部會被抓到。剩下的只有整檔 rollback（見上）。
+- ~~[later] PBKDF2/Argon2 動態金鑰（`todo.md`）~~ — 已實作，但**改成金鑰包裝**而不是
+  直接推導，理由見上方拍板決策。
+- ~~[later] 斷點續傳與下載進度紀錄（`todo.md`）~~ — **不實作，前提不成立**。
+  SFTP 讀取是無狀態的 offset 讀，寫入的 chunk 一上傳就寫進 Mongo，斷線時 asyncssh
+  的 session cleanup 會呼叫 `close()` 把 buffer flush 掉——所以檔案大小就是續傳點。
+  已用測試釘住（`test_an_interrupted_upload_can_be_resumed_by_appending`）而不是加程式碼。
+- ~~（新增）POSIX metadata~~ — 權限位與 mtime/atime 現在會保存。順帶修掉兩個既有錯誤：
+  `close()` 會蓋掉客戶端剛設定的 mtime（`put -p` 的實際流程），以及 rename 會重設 mtime
+  （移動檔案不是修改檔案）。目錄的 mtime 現在會在內容變動時更新。
+- ~~（新增）檔名唯一索引~~ — `(parent_id, filename)` 改為 unique。
+- ~~（新增）優雅關機~~ — SIGTERM 會停止接受新連線、給既有 session 20 秒完成、
+  再關閉它們（這會觸發 handle 的 flush）。所有等待都有上限。
+  `docker-compose.yml` 的 `stop_grace_period` 一併設成 30s。
+- ~~（新增）log 噪音~~ — 正常斷線不再記成 WARNING。
+
+## 本輪前半（2026-07-31）完成並移除的項目
 
 - ~~[next] `setstat` / `fsetstat` 的 size 變更仍被拒絕~~ — 已實作。截短為
   `_resize_node()`（丟掉超出範圍的 chunk、跨邊界那塊換新 nonce 重傳縮短版）；

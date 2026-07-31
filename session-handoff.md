@@ -1,251 +1,205 @@
 # Session Handoff
 
 依 `.claude/templates/session-handoff.md` 產出。
-涵蓋範圍：**`setstat` / `fsetstat` 的 size 變更**（ROADMAP 的 `[next]`，上一輪交接指定的下一步）。
+涵蓋範圍：**setstat/fsetstat resize**（前半）＋ **把 UI 外的功能收尾**（後半）。
+跨 handle 狀態同步依你的指示延後。
 
-> 上一輪交接說「沒有 `[now]`，下一步做 setstat」。本輪把它做完了，並在過程中
-> 修掉一個**上一輪就已經存在、但沒有測試踩到**的資料遺失缺陷（`fstat` 少報 buffer）。
-> **目前仍然沒有 `[now]`。**
+> **目前沒有 `[now]`。** 自動化測試 302 項全過（23 秒），15 個突變全部被抓到。
+> **實地驗收尚未執行**，卡在一個需要你點頭的破壞性步驟，見「未完成待辦」第一項。
 
 ---
 
 ## 目前狀態
 
-模組：`src/vfs.py`、`src/sftp.py`、`tests/test_truncate.py`（新增）、
-`tests/test_random_write.py`（改一行註解）。未動：`src/crypto.py`、`src/db.py`、
-`src/config.py`、`src/discord_api.py`、`src/ratelimit.py`、`src/main.py`、`Dockerfile`。
+本輪動到：`src/crypto.py`、`src/keystore.py`（新增）、`src/vfs.py`、`src/sftp.py`、
+`src/main.py`、`src/config.py`、`src/db.py`、`src/discord_api.py`、
+`.env.example`、`docker-compose.yml`、`tests/`（新增四支、改四支）。
 
-**服務是活的**：`docker compose up -d --build` 以新程式碼重建並啟動，非 root 執行，
-Discord 可達性檢查通過（`Hu Tao#9753`），SFTP listen 2222。
-上一輪留在你 Discord DM 的三個測試檔（9 個 chunk）**未動**；本輪的驗收檔案已全部清掉。
+**服務目前跑的是舊 image**，還沒用本輪的程式碼重建——因為重建之前要先處理資料清除。
 
-### 一、實地驗收結果（**15/15 通過**）
-
-真實 bot token、DM 模式、位元組真的送上 Discord。收尾對帳：
-**Discord 9 個附件、MongoDB 引用 9 個、0 孤兒**；server log 無 ERROR。
-
-| 驗收項 | 結果 |
-|---|---|
-| **預先設定大小再上傳 20MB** vs 一般上傳 | **9.7s vs 10.0s，比值 0.97**；chunk 佈局完全相同、無補零殘留 |
-| 預設大小上傳的 SHA256 | 相符 |
-| 擴張到 500MB | **上傳 0 則訊息、耗時 0.01s**；`stat` 回報 500MB |
-| 洞讀回零（跨真實重新連線） | offset 0 / 400MB / 最後 10 bytes 全部正確 |
-| 截短到 chunk 中間（18886713 bytes） | SHA256 等於原檔前綴；跨邊界 chunk 換了新 nonce |
-| 被取代的附件 | 在 Discord 上真的 **404** |
-| 先截短再擴張 | 舊位元組沒有復活（前綴 ＋ 零） |
-| 全部測試檔以 SFTP `remove` 清除 | 0 孤兒 |
-
-**這裡最重要的是第一列。** 稀疏尾端的整個論證是效能論證，而效能論證對
-`FakeDiscord` 是**結構上測不到的**——假物件不會有真實的上傳延遲。比值 0.97
-是這個設計唯一能被真實 Discord 證實的方式。
-
-順帶把三個 ROADMAP `[next]` 從「推測」變成「量到的事實」，詳見 `ROADMAP.md`：
-附件 URL 簽章有效 **24 小時**、跨 handle staleness 會讓舊 handle 讀到**已刪除
-附件的舊資料**、把 chunk 換成洞**不會**被完整性檢查抓到。
-
-### 二、驗證方式與結果（自動化測試）
+### 驗證方式與結果
 
 ```bash
 ./venv/Scripts/python.exe -m pytest
 ./venv/Scripts/python.exe -m pyflakes src tests
 ```
 
-**197 項全數通過**（208 秒），pyflakes 乾淨。上輪 159 項 → 本輪 197 項。
+**302 項全數通過（23 秒）**，pyflakes 乾淨。上輪 197 項 / 208 秒。
 
 | 檔案 | 涵蓋 | 項數 |
 |---|---|---|
-| `tests/test_truncate.py`（新增） | 截短（6 個邊界位置參數化）、丟棄與孤兒、跨邊界 chunk 換 nonce/換 tag、擴張讀回零、洞的四種寫入位置、O_APPEND 越過洞、handle 快取失效與索引重用、拒絕情境、`fstat` 回報 buffer | 38 |
-| 既有十支 | 未改動（`test_random_write.py` 只改一行註解） | 159 |
+| `test_keystore.py`（新增） | 包裝/解開、錯誤密碼、竄改記錄、換密碼保留金鑰、`SFTP_PASSWORD_OLD` 重新包裝流程 | 25 |
+| `test_discord_robustness.py`（新增） | 5xx 重試、4xx 不重試、連線中斷重試、上傳大小核對、URL 過期與快取、CDN 不帶 token | 22 |
+| `test_metadata.py`（新增） | 權限位、mtime/atime、`put -p` 流程、rename 不改 mtime、唯一索引 | 25 |
+| `test_session.py`（新增） | 登入、每連線金鑰、斷線 flush、**斷點續傳**、關機排空 | 13 |
+| `test_integrity.py`（擴充） | 新增 node tag 的竄改情境：刪尾端 chunk、chunk 換洞、重排、改 size、跨檔搬運 | +18 |
+| 既有各支 | 隨對應改動更新 | 199 |
 
-**九項突變驗證**（把程式故意改壞，確認測試真的會抓到，不是碰巧全綠）：
+**十五項突變驗證全部被抓到**（把程式故意改壞，確認測試真的會失敗）：
 
-| 突變 | 結果 |
-|---|---|
-| `_covered_end()` 退化成回傳 `size`（等於沒有洞的概念） | 抓到 |
-| 跨邊界 chunk 沿用舊 nonce | 抓到 |
-| 截短時不刪 Discord 訊息 | 抓到 |
-| `truncate_to()` 不清 chunk 快取 | 抓到 |
-| `O_APPEND` 落在資料尾端而非檔案尾端 | 抓到 |
-| `truncate_to()` 不 flush buffer | 抓到 |
-| 讀到洞就停止而不補零 | 抓到 |
-| `fstat` 忽略 buffer | 抓到 |
-| 擴張時實際把零上傳到 Discord | 抓到 |
+file-level tag 不驗 / 不重算、chunk tag 不綁位置、node tag 不含 chunk 列表、
+解包不驗密碼、5xx 不重試、CDN 帶 token、過期 URL 照用、不核對上傳大小、
+close 蓋掉 mtime、忽略釘住的 mtime、rename 重設 mtime、不存權限位、
+登入自己造金鑰、關機不關連線。
 
-最後兩項是這輪最值得做的：兩者的 round-trip 都會過。`fstat` 那個會讓客戶端拿到
-**空資料而不是錯誤**；補零那個功能完全正確，只是流量放大數百倍。
+**突變驗證本身找到兩個真的 bug**（測試沒抓到、只有突變會暴露）：
+
+1. `_drain()` 的 `conn.wait_closed()` 與 `server.wait_closed()` **都沒有上限**。
+   一條關不掉的連線會讓行程永遠不結束——正好是優雅關機要避免的「被 SIGKILL 砍掉」。
+   已改成全部有上限。
+2. 有兩個測試在失敗時會 **hang 而不是 fail**。CI 上那會變成整包逾時而不是一行錯誤。
+   已加 `asyncio.wait_for` 護欄。
 
 ---
 
 ## 已完成
 
-### 一、截短（shrink）
+### 一、測試從 208 秒降到 23 秒——但根因不在原本以為的地方
 
-新增 `_resize_node(node, size)`（`src/vfs.py`，模組層級，因為路徑版與 handle 版都要用）：
+ROADMAP 原本記的是「每個 test 都重開 asyncssh server，改成 module-scoped」。
+**先 profile 才發現那完全打錯地方**：真正的成本是 asyncssh 為了算 GSSAPI 預設主機名
+呼叫 `socket.getfqdn()`，這台機器的反向 DNS 每次 1.04 秒，每個測試兩次
+（listen 一次、connect 一次）。208 秒裡有將近 190 秒是這個。
 
-- 完全落在新長度之後的 chunk → 丟掉，並釋放 Discord 訊息。
-- 新結尾**落在中間**的那一塊 chunk → 下載、解密、切短、**換新 nonce** 重新加密、
-  重算 HMAC、上傳新附件。附件是不可變的，「改短」只能是「換一個」。
-- 順序刻意與 `_replace_chunk` 一致：**先上傳新的 → 再寫 metadata → 最後刪舊的**。
-  中間掛掉最多留一個孤兒；反過來做，metadata 寫失敗就是真的資料遺失。
-  metadata 只寫一次（`size` ＋ `chunks` 一起），不會出現寫到一半的中間狀態。
-- `O_TRUNC` 原本的 `_truncate()` 併進來變成 `_resize_node(node, 0)`。順帶把它原本
-  「先刪訊息再更新」的順序修成安全的那一邊。
+兩端都傳 `gss_host=None` 之後 302 項只要 23 秒，**而且不需要動 fixture 結構**。
 
-### 二、擴張（grow）＝ 稀疏尾端
+順帶的效果是關掉 GSSAPI 認證路徑。這裡不誇大：本機與容器都回報
+`gss_available: False`，所以它**目前是惰性的**，不是一個活著的繞過。
+但那取決於哪些選用套件剛好有裝，而這台伺服器只打算做密碼認證，明確關掉比較好。
 
-**這是本輪唯一一個問過你的決策，也是我建議推翻 ROADMAP 舊結論的地方。**
+### 二、Discord 層的韌性（`src/discord_api.py`）
 
-ROADMAP 原本寫「擴張其實已經可以支援（補零即可）」。實際不成立：真的補零之後，
-整個檔案底下都有 chunk，於是客戶端接下來每一筆寫入都落在檔案中間、走
-`_write_random()`，而 SFTP 的寫入是一個封包約 32KB —— **9MB 的 chunk 會被
-重新上傳約 288 次，單一 chunk 產生 2.6GB 流量**。功能會是「正確但不能用」，
-而且必然打爆上一輪才做的 rate limit。
+- **5xx 與傳輸層例外會重試**，指數退避加抖動；4xx 仍然一次就放棄（重試不會成功，
+  只會燒掉留給暫時性故障的額度）。`Exception("Max retries exceeded")` 換成具名的
+  `DiscordAPIError`（帶 status），並設定明確的逾時。
+- **附件 URL 依 `ex=` 快取**，過期前重新解析；真被 CDN 以 403/404 拒絕時再解析一次重試。
+  快取讓每讀一個 chunk 少一次 API 呼叫。
+- **下載改用不帶 bot token 的獨立 session**。原本共用的 session 會把 token 送到 CDN 主機，
+  那是另一個 origin、而且 URL 本來就已簽章，送過去沒有任何好處。
+- **上傳後核對 Discord 回報的大小**，不符就刪掉那則訊息再報錯——而不是留給下次讀取
+  時的 HMAC 去發現一個開不起來的檔案。
 
-改採稀疏尾端後：`size` 可大於 chunk 長度總和，中間那段是洞、讀回零、不佔空間。
-**洞只會在尾端**——中間的洞沒有表示法，所以寫入落在 chunk 之後仍然實際補零。
+### 三、完整性：chunk 位置綁定 ＋ 檔案層級 MAC（`src/crypto.py`）
 
-配套改動（`src/vfs.py`）：
+- `chunk_tag` 現在綁 **(file id, index, offset, size)**：同一組位元組不再「在哪裡都合法」。
+- 新增 `node_tag`，蓋 **(file id, size, 有序的 chunk tag 列表)**。
+  這關掉的是 per-chunk tag **結構上做不到**的那類攻擊——chunk 被整個刪掉時，
+  根本沒有 tag 可以驗。上一輪實地確認過的「把 chunk 換成洞讓資料無聲變成零」就是這種。
+- 所有 MAC 輸入都**加長度前綴並做 domain separation**（`b"chunk"` / `b"node"`），
+  純串接會讓兩種不同結構產生同一個位元組串。
+- 標籤版本 `v1 → v2`，改變涵蓋範圍會讓所有既有 tag 失效——刻意讓破壞是大聲的。
 
-- `_append_position()` 從「`size` ＋ buffer」改成「**chunk 尾端** ＋ buffer」。
-  這一行是效能的關鍵：預先設定大小之後，客戶端從 offset 0 開始寫仍然等於 append，
-  照樣走原本的緩衝路徑，成本與沒設定大小時**完全相同**。
-- `_end_of_file()` 新增，`max(size, chunk 尾端 + buffer)`。`O_APPEND` 用這個，
-  因為 POSIX 的 append 是到**檔案**尾端，有洞的時候那不等於資料尾端。
-- `read_at()` 讀到洞回零而不是停止。
-- `_upload_chunk()` 的 offset 改用 chunk 尾端；`size` 改成 `max(舊值, 新結尾)`，
-  因為從左邊填洞不該讓檔案變長。
+**剩下的缺口只有一個**：把整份 node 換成同一檔案的舊版本。要擋它需要一個放在
+「持有資料庫的人碰不到的地方」的單調計數器，這個架構裡沒有。已記進 ROADMAP。
 
-### 三、`fstat` 少報 buffer（本輪順帶發現，屬於上一輪的缺陷）
+### 四、金鑰包裝與每連線金鑰（`src/keystore.py` 新增）
 
-寫測試時發現：VFS 層測試會過，同一件事走 asyncssh 客戶端就回空。原因是
-**asyncssh 的 `read()` 不帶長度時，會先 `fstat` 問大小再決定要讀多少**
-（`sftp.py:3070` 附近的 `size = (await self._end()) - offset`）。
-我們的 `fstat` 回報 `node["size"]`，不含還在 buffer、尚未上傳的位元組，
-於是客戶端算出「要讀 0 bytes」，**剛寫完的資料被當成 EOF，無聲消失**。
+`.env` 不再有 `AES_SECRET_KEY`。資料用一把**隨機**主金鑰加密；主金鑰用 SFTP 密碼
+經 PBKDF2-HMAC-SHA256（600k）推導出的 KEK 包裝後存在 MongoDB。
 
-修法：`DiscordFile.size` 回報 handle 眼中的長度，`sftp.fstat()` 用它而不是 node 的值。
-路徑版的 `stat` / `lstat` / `scandir` 維持回報已提交狀態（那些位元組還沒上傳，
-本來就不該對別的連線可見）。
+- **為什麼包裝而不是直接推導**（偏離 `todo.md` 原文，理由已寫進 ROADMAP 拍板段）：
+  直接推導的話**改密碼＝所有資料永久讀不出來**，而且「密碼錯」與「資料壞了」
+  在現象上完全一樣。包裝之後換密碼只是重寫 32 bytes；包裝上的 MAC 讓錯誤密碼
+  在解開當下就被判定為密碼錯誤。
+- **換密碼流程**：`SFTP_PASSWORD_OLD` 設成舊的、`SFTP_PASSWORD` 設成新的、重啟。
+  不會重新加密或重傳任何 chunk。沒設 `SFTP_PASSWORD_OLD` 而密碼對不上 → **啟動失敗**，
+  而不是啟動成功然後每次讀取都壞掉。
+- **金鑰是每連線的**：`validate_password` 解開後放在該連線上，`DiscordVFS` 每條連線一個。
+  連線結束釋放參照。**這不是安全抹除**——Python 無法抹除 bytes 物件的內容。
+- KDF 選 PBKDF2 而不是 Argon2id 的唯一理由是**不想為此新增相依套件**
+  （CLAUDE.md 規定新增相依要先問，而你那一題選的是「做，且加金鑰包裝」，沒指定 KDF）。
+  包裝格式存了 `kdf` 名稱與參數，之後要換不需要 migration。
 
-這個缺陷上一輪做隨機寫入時就已經存在，只是當時沒有測試會不帶長度讀取。
+### 五、POSIX metadata（權限位、時間戳）
 
-### 四、SFTP 層接線（`src/sftp.py`）
+原本 `ls -l` 永遠顯示 0644、mtime 永遠是上傳時間。現在都會保存。
+過程中修掉兩個既有錯誤，**兩個都是測試寫出來才發現的**：
 
-`_reject_resize()` 移除。`setstat` 帶 size 走 `vfs.truncate(path, size)`，
-不帶 size 維持原本的「安靜接受」（客戶端上傳完常會 chmod，不能因此失敗，
-但路徑不存在仍要失敗，所以查詢照做）。`fsetstat` 走 `file_obj.truncate_to(size)`
-而不是路徑版，這樣 handle 還在 buffer 的位元組會被算進去、它的解密快取也會失效。
+1. **`close()` 會蓋掉客戶端剛設定的 mtime**。`put -p` 的實際流程是「寫入 → 設定時間 →
+   關閉」，而不滿一個 chunk 的資料要到關閉才 flush，於是那次 flush 把時間蓋掉了。
+   改成：handle 上被明確指定過的 mtime 會「釘住」，最後的 flush 沿用它；
+   指定之後又有新的寫入才解除釘住（那是真的新修改）。
+2. **rename 會重設 mtime**。移動檔案不是修改檔案。改成只更新兩端目錄的 mtime。
 
-負數 size 回 `FX_FAILURE` 而不是 `FX_OP_UNSUPPORTED`：改完之後這台伺服器**確實會
-resize**，回報「不支援」會讓客戶端關掉一個其實能用的功能。那是格式錯誤，不是缺功能。
+另外 `(parent_id, filename)` 改成 unique index。
 
-### 五、實地驗收（結果見最上面的表）
+### 六、優雅關機
 
-一併把三個 `[next]` 從「推測」變成「量到的事實」：
+SIGTERM 原本會直接砍掉行程，不滿一個 chunk 的 buffer 全丟。現在會停止接受新連線、
+給既有 session 20 秒完成、再關閉它們（關閉會觸發 asyncssh 的 cleanup，也就是 flush）。
+所有等待都有上限（見上面突變驗證找到的 bug）。`docker-compose.yml` 的
+`stop_grace_period` 設成 30s，比伺服器自己的 20 秒長。
 
-- **附件 URL 過期**：真實 URL 的 `ex=` 參數顯示簽章**有效 24 小時**。
-  單一 chunk 上限 9MB，下載途中過期基本上不可能，而 `_chunk_bytes` 每次讀都重新取
-  URL，所以本來就在安全的那一邊。這條的優先度可以降低。
-- **跨 handle staleness**：連線 B 把 20MB 檔案截到 4096 之後，連線 A 的 handle 仍回報
-  20971520 bytes，**而且在新檔尾之後讀得到 1024 bytes 的舊資料**——它手上的 chunk
-  metadata 還指著已被刪掉的附件，讀的是自己的解密快取。比原本記的更嚴重一點。
-- **洞沒有 HMAC**：把一個 9MB 檔案的第二個 chunk 從 MongoDB 拿掉、`size` 不動 →
-  讀回全零、`stat` 不變、**沒有任何 integrity error**。文件上寫的缺口是真的。
+### 七、`todo.md` 兩項都結案
 
-驗收過程中我自己的腳本寫壞過一次（多包一層 JSON，把 `chunks` 寫成字串），
-在 server log 留下一筆 `Unhandled error in SFTP open: string indices must be
-integers`（04:11）。**那是腳本的錯，不是伺服器的**；第二次跑完全無錯。
-當下也確認了沒有因此產生孤兒。
-
-### 六、文件回填
-
-- `ROADMAP.md`：移除完成的 setstat 項；新增「稀疏尾端」到已拍板的長期決策
-  （附上為什麼推翻舊結論、以及哪一個測試釘住它）；測試變慢那條更新數字；
-  新增跨 handle 狀態不同步、路徑版 stat 看不到別人的 buffer 兩項；
-  在 HMAC rollback、跨 handle、URL 過期三條各補上本輪實地量到的結果。
-- `SOP.md`：**刻意沒有新增**。`fstat` 那個問題很值得寫成「VFS 層過、走客戶端卻失敗
-  → 先查客戶端是否先問 stat」，但 SOP 自己的觸發條件是「同一類問題第二次出現才寫」，
-  本輪是第一次。下輪若再遇到類似的「客戶端依賴 server 回報的屬性」問題，直接補上。
+第二項「斷點下載進度紀錄」**不實作，因為前提不成立**：SFTP 讀取是無狀態 offset 讀，
+上傳的 chunk 一上傳就進 MongoDB，斷線時 asyncssh 會 flush buffer——**檔案大小就是
+續傳點**，另記一份只會多出一份可能不一致的資料。已用測試釘住而不是加程式碼。
 
 ---
 
 ## 未完成待辦
 
-**沒有 `[now]`。**
+### 一、資料清除 ＋ 實地驗收（**需要你決定**）
 
-### 一、仍然沒被真實環境驗證過的東西
+本輪改了加密方案，Discord 上既有的 9 個附件（3 個測試檔）**再也解不開**——
+這是你選 MAC 方案時就標明的代價。但要清乾淨需要刪除你 DM 裡的那 9 則訊息，
+而這個動作**被權限機制擋下來了**（正確的攔阻，它是破壞性且對外的）。
 
-- **上傳「次數」只對假物件斷言過**。實地驗收量的是**耗時**（0.97 比值）與最終
-  chunk 佈局，因為被取代的訊息會被刪掉，事後從 Discord 數不出中間發生過幾次上傳。
-  耗時比值足以推翻「補零」實作（那會是數十倍），但精確次數仍只有單元測試涵蓋。
-  要真的數，得在 `discord_api.upload_chunk` 加一個計數器或 log。
-- **rate limit bucket 仍未被真實 429 驗證過**（上一輪就記著）。本輪 20MB / 3 則訊息
-  的量級一樣碰不到。
-- **5xx 重試**未實作也未驗證。
+三個選項：
+
+1. **你授權我刪**：我用 bot token 刪掉那 9 則訊息並清空 `nodes`，然後重建服務跑驗收。
+2. **你自己在 Discord 刪**，我只清 MongoDB。
+3. **都不刪**：那 9 則訊息會永遠留在 DM 裡且沒有任何東西指向它們（孤兒）；
+   MongoDB 裡的 3 個舊節點會列得出來但一 stat 或 open 就報完整性錯誤。
+
+清完之後才能重建並跑實地驗收——本輪**所有東西都還沒對真實 Discord 驗證過**。
 
 ### 二、已知的坑
 
-- **稀疏的洞沒有 HMAC 保護**。洞完全由 metadata 定義，能改 MongoDB 的人可以把一個
-  chunk 換成洞，讓那段資料無聲地變成零。與既有的 rollback/replay 缺口是**同一個威脅
-  模型**（防的是「能改 Discord 的人」，不是「能改 MongoDB 的人」），修法也相同
-  ——檔案層級的 MAC。已記進 `ROADMAP.md`，不是新的一條。
-- **跨 handle 不同步**（本輪實地確認，比原本以為的嚴重）。`setstat` 走路徑；同一檔案
-  若正被另一個 handle 開著，那個 handle 不只回報舊大小，還會**在新檔尾之後讀出舊資料**
-  ——它的 chunk metadata 指著已刪除的附件，讀的是自己的解密快取。
-  `remove` / `rename` 早就有同樣問題。
-- **`truncate_to()` 直接清掉整個 chunk 快取**，沒有只清受影響的那幾筆。
-  truncate 不是熱路徑，換取「一定不會讀到舊 chunk」很划算，但如果之後有人
-  在迴圈裡 truncate，這裡會變成重複下載。
-- **測試 208 秒 / 197 項**，又更慢了。
-- **每次客戶端斷線都會留一筆 `WARNING SSH connection error: Connection lost`**。
-  asyncssh 把「TCP 直接斷掉、沒有走 SSH disconnect」視為例外，而多數客戶端就是這樣
-  收尾的。不是錯誤，但會讓 log 裡的真 WARNING 更難找。上一輪就有，未處理。
-- 上一輪的坑大多仍然成立：rate limit bucket 沒被真實 429 驗證過、
-  MongoDB 密碼只在 volume 初始化那次生效、驗證要整塊下載。
-  （附件 URL 過期這條本輪量到視窗是 24 小時，優先度已降低。）
+- **整檔 rollback 仍擋不住**（見 ROADMAP）。這是目前唯一已知的完整性缺口。
+- **跨 handle 不同步**依你指示延後。已實地確認舊 handle 會讀到已刪除附件的舊資料。
+- **列目錄不做完整性驗證**（刻意）。`ls -l` 的大小未經驗證，但 stat/open 會擋。
+- **權限位與時間戳不受 MAC 保護**（刻意，見 ROADMAP 拍板段）。
+- **「連線中斷即銷毀」是盡力而為**，不是安全抹除。
+- **PBKDF2 每次登入約 200ms**（600k 次）。測試以 1000 次跑，靠的是每份包裝記錄
+  自帶參數——不是測試偷改了程式行為。
+- **rate limit bucket 仍未被真實 429 驗證過**（上兩輪就記著）。
 
 ---
 
 ## 本輪不可碰的範圍
 
-- **加密演算法**——未改。`src/crypto.py` 一行未動。截短時重新加密走的是既有的
-  `transform()` / `chunk_tag()`，沒有新的密碼學決定。
-- **`src/db.py`**——一行未改。
-- **認證模型**——未改。
-- **`src/config.py` / `src/discord_api.py` / `src/ratelimit.py` / `src/main.py` /
-  `Dockerfile` / `docker-compose.yml` / `.env.example`**——未改，本輪沒有新設定值。
-- **`todo.md`**——未改，兩項都還是 `[later]`。
-- **`SOP.md`**——刻意未改，理由見上。
-- **`mongo_data` volume 與 Discord 上的既有測試附件**——未動。
-- **ROADMAP 的其他 `[next]`**（5xx 重試、測試加速）——你本輪選了只做 setstat resize，
-  這兩項的**程式碼**未動；本輪只是把其中幾條的實地觀測結果補進 ROADMAP。
+- **跨 handle 狀態同步**——依你指示延後，一行未改。
+- **符號連結**——你選擇不做，維持 `FX_OP_UNSUPPORTED`。
+- **AES-256-CTR 本身**——`transform()` 一行未改。改的是它外面的金鑰來源與認證層。
+- **相依套件**——`requirements.txt` 未改。沒有為 Argon2id 新增任何東西。
+- **`mongo_data` / `host_key_data` volume**——未刪除。
 
 ---
 
 ## 下一步建議任務
 
-**跨 handle 狀態不同步。**
+**先把上面第一項（資料清除授權）處理掉，再跑實地驗收。**
 
-順序理由：本輪把它從「理論上的不一致」量成了「連線 A 會讀到已刪除附件的舊資料」。
-這是清單裡唯一一條**會回傳錯誤資料**的問題——其餘都是「還沒做」或「做了但不夠快」。
-而且 `setstat` 讓它比以前好踩：以前要兩個客戶端同時 `remove`／`rename` 才會遇上，
-現在只要一邊改大小就會。
+理由：本輪 302 項測試全綠、15 個突變全中，但那全部是對假替身跑的。
+上一輪的經驗很清楚——稀疏尾端的效能論證只有真實 Discord 能證實，
+而 `fstat` 那個資料遺失缺陷也是實際跑客戶端才暴露的。
+**在真實驗收之前，我不會說這一輪「做好了」。**
 
-不過先確認你在意：**單一客戶端循序操作永遠不會遇到**，如果這台伺服器就是單人用，
-它的實際優先度可能低於 5xx 重試。這是產品判斷不是技術判斷，我沒有替你決定。
+驗收要涵蓋的新東西：金鑰包裝在真 MongoDB 上的往返、換密碼流程、
+node tag 對真實多 chunk 檔案的驗證、5xx/URL 過期路徑（可能碰不到，要誠實記錄）、
+SIGTERM 排空是否真的把 buffer 寫進 Discord。
 
-之後：rate limit 的真實驗證 → 5xx 重試。
-測試加速（module-scoped server）建議與其他項目分開一輪做，它會動到所有測試檔。
+之後：跨 handle 狀態同步，或 Argon2id——兩者都已在 ROADMAP。
 
 ---
 
 ## 環境備忘
 
-- venv 在 `venv/`。跑測試一律用 `./venv/Scripts/python.exe -m pytest`，
-  裸 `python` 會打到 Microsoft Store 的 stub 並 exit 49（見 `SOP.md`）。
-- 這個 repo **現在是 git repo 了**（上一輪的備忘已過期）。目前在 `master` 分支，
-  **沒有設定 remote**，所以只有本機 commit，沒有推送。
-- 服務目前是**起著的**（本輪 `--build` 重建過）。程式碼是烤進 image 的，
-  **改完 `src/` 一定要 `docker compose up -d --build`**，只 restart 跑的還是舊的。
-- 要停服務：`docker compose down`（**不要加 `-v`**，那會連 `mongo_data` 一起刪掉，
-  你 Discord 上那三個測試檔案的 metadata 就沒了）。
+- venv 在 `venv/`。一律用 `./venv/Scripts/python.exe -m pytest`（見 `SOP.md`）。
+- repo 在 `master`，**沒有 remote**，只有本機 commit。
+- **`.env` 的 `SFTP_PASSWORD` 你本輪已更新為 12 bytes**（新的下限，因為它現在
+  同時是包裝金鑰的密碼）。`AES_SECRET_KEY` 那一行現在沒有作用，可以刪掉。
+- 程式碼是烤進 image 的，改完 `src/` 一定要 `docker compose up -d --build`。
+- `tests/generate_secret.py` 是你加的密碼產生器；pytest 不會收集它（檔名不符 `test_*`）。
