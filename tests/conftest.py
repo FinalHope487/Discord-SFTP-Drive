@@ -100,8 +100,9 @@ async def master_key(fake_db):
 async def vfs(fake_db, fake_discord, master_key):
     import src.vfs as vfs_mod
 
-    await vfs_mod.ensure_root()
-    return vfs_mod.DiscordVFS(master_key)
+    instance = vfs_mod.DiscordVFS(master_key)
+    await instance.ensure_root()
+    return instance
 
 
 @pytest.fixture

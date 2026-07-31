@@ -26,7 +26,6 @@ from src.sftp import (
     active_connections,
     open_files,
 )
-from src.vfs import ensure_root
 
 logging.basicConfig(
     level=logging.INFO,
@@ -147,8 +146,10 @@ async def start_server():
         except keystore.KeystoreError as exc:
             raise ConfigError(str(exc)) from exc
 
-        await ensure_root()
-
+        # The root directory is no longer created here. It carries integrity
+        # tags now, and there is no master key at this point in startup --
+        # the key belongs to a connection, not to the process. The first
+        # authenticated session creates it; see DiscordSSHServer.
         ensure_host_key(SFTP_HOST_KEY_PATH)
 
         port = sftp_port()

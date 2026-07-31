@@ -64,7 +64,14 @@ class FakeCollection:
     async def update_one(self, flt, update):
         for d in self.docs:
             if _matches(d, flt):
-                d.update(copy.deepcopy(update["$set"]))
+                d.update(copy.deepcopy(update.get("$set") or {}))
+                # $unset is modelled because a field that lingers here but
+                # not in MongoDB is a divergence that hides bugs rather than
+                # causing them: the staged directory tag is meant to be
+                # removed once promoted, and a test against a fake that kept
+                # it would pass while the real thing behaved differently.
+                for field in update.get("$unset") or {}:
+                    d.pop(field, None)
                 return
         raise AssertionError(f"update_one matched nothing: {flt}")
 

@@ -4,6 +4,7 @@ import logging
 import random
 import time
 import urllib.parse
+from collections import OrderedDict
 from src.config import (
     DISCORD_BOT_TOKEN,
     DISCORD_USER_ID,
@@ -29,6 +30,13 @@ _BACKOFF_CAP = 8.0
 # Treat one as spent slightly early rather than discovering mid-download that
 # it lapsed between the check and the request.
 _URL_EXPIRY_MARGIN = 300
+
+# Cached attachment URLs. Roughly 200 bytes each, so the old unbounded dict
+# was never going to be a real problem -- a hundred thousand chunks came to
+# about 20MB. It is bounded anyway because "grows forever, but slowly" is a
+# thing nobody notices until the one deployment where it matters, and here
+# the fix costs nothing: a miss is one extra API call.
+_URL_CACHE_SIZE = 4096
 
 _TIMEOUT = aiohttp.ClientTimeout(total=600, connect=15, sock_read=120)
 
@@ -94,7 +102,14 @@ class DiscordAPI:
         }
         self.dm_channel_id = None
         self._limiter = limiter
-        self._url_cache = {}     # message id -> (url, expiry epoch or None)
+        # message id -> (url, expiry epoch or None), least recently used first.
+        #
+        # Bounded, unlike `vfs._node_versions`, and the difference is worth
+        # stating: evicting an entry here costs one extra API call to resolve
+        # the URL again, so the cache is pure optimisation and forgetting is
+        # always safe. Forgetting a node version means "nobody changed this",
+        # which is a wrong answer rather than a slow one.
+        self._url_cache: "OrderedDict[str, tuple]" = OrderedDict()
 
     @property
     def limiter(self):
@@ -244,8 +259,14 @@ class DiscordAPI:
                 f"{len(file_bytes)} were sent",
             )
 
-        self._url_cache[message_id] = (url, _url_expiry(url))
+        self._remember_url(message_id, url)
         return message_id, url, size
+
+    def _remember_url(self, message_id: str, url: str):
+        self._url_cache[message_id] = (url, _url_expiry(url))
+        self._url_cache.move_to_end(message_id)
+        while len(self._url_cache) > _URL_CACHE_SIZE:
+            self._url_cache.popitem(last=False)
 
     async def _safe_delete(self, message_id: str):
         try:
@@ -265,6 +286,7 @@ class DiscordAPI:
             if cached is not None:
                 url, expiry = cached
                 if expiry is None or time.time() < expiry - _URL_EXPIRY_MARGIN:
+                    self._url_cache.move_to_end(message_id)
                     return url
 
         channel_id = await self.get_target_channel_id()
@@ -275,7 +297,7 @@ class DiscordAPI:
                 None, f"message {message_id} has no attachment")
 
         url = result["attachments"][0]["url"]
-        self._url_cache[message_id] = (url, _url_expiry(url))
+        self._remember_url(message_id, url)
         return url
 
     async def delete_message(self, message_id: str):

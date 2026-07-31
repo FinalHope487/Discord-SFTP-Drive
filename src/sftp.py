@@ -32,11 +32,7 @@ from src.vfs import (
     DEFAULT_DIR_MODE,
     DEFAULT_FILE_MODE,
     PERMISSION_MASK,
-    AlreadyExists,
     DiscordVFS,
-    IsADirectory,
-    NotADirectory,
-    NotEmpty,
     NotFound,
     Unsupported,
     VFSError,
@@ -56,9 +52,12 @@ def _to_sftp_error(exc: VFSError) -> asyncssh.SFTPError:
         code = asyncssh.FX_NO_SUCH_FILE
     elif isinstance(exc, Unsupported):
         code = asyncssh.FX_OP_UNSUPPORTED
-    elif isinstance(exc, (AlreadyExists, NotEmpty, NotADirectory, IsADirectory)):
-        code = asyncssh.FX_FAILURE
     else:
+        # Everything else is FX_FAILURE, AlreadyExists / NotEmpty /
+        # NotADirectory / IsADirectory included. SFTP v3 has no more precise
+        # code for any of them -- v4 and v6 do, but this server speaks v3, so
+        # a branch naming them would look like it produced a distinct status
+        # and would not.
         code = asyncssh.FX_FAILURE
     return asyncssh.SFTPError(code, str(exc) or exc.__class__.__name__)
 
@@ -248,9 +247,21 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
         try:
             node = await self._vfs.require_dir(self._decode(path))
             parent = await self._parent_node(node)
-            entries = await self._vfs.children(node["id"])
+            # `entries_of`, not `children`: the latter skips the check that
+            # the directory still holds the entries its tag was made for,
+            # which is the only place a deletion by someone with database
+            # access shows up. Calling `children` here left that protection
+            # working for direct VFS callers and switched off over the actual
+            # protocol -- found in live acceptance, not by the unit tests,
+            # which drove `list_dir` directly.
+            entries = await self._vfs.entries_of(node)
         except asyncssh.SFTPError:
             raise
+        except IntegrityError as exc:
+            # Same reasoning as `_translate`, which an async generator cannot
+            # use: this is a security event, not an unhandled bug.
+            logger.error("Integrity check failed in SFTP scandir: %s", exc)
+            raise asyncssh.SFTPError(asyncssh.FX_FAILURE, str(exc)) from exc
         except VFSError as exc:
             raise _to_sftp_error(exc) from exc
         except Exception as exc:
@@ -420,6 +431,15 @@ class DiscordSSHServer(asyncssh.SSHServer):
             # Startup already proved this works, so reaching here means the
             # keystore changed underneath a running server.
             logger.error("Could not open the master key for %s: %s", username, exc)
+            return False
+
+        # The root directory is tagged, so it cannot be created before a key
+        # exists -- which is to say, not at startup. This is the first moment
+        # one does. It is a single lookup once the tree is there.
+        try:
+            await DiscordVFS(key).ensure_root()
+        except VFSError as exc:
+            logger.error("Cannot serve this tree: %s", exc)
             return False
 
         self._conn.set_extra_info(session_key=key)

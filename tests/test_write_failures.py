@@ -208,6 +208,50 @@ async def test_a_failed_handle_refuses_everything_that_would_write(
     )
 
 
+async def test_a_failed_handle_stops_counting_its_stranded_buffer(
+    vfs, fake_discord
+):
+    """Its length is what committed, not what it was holding.
+
+    The buffered bytes are never going to land -- every write path refuses
+    now -- so counting them reports a size made partly of bytes that exist
+    nowhere. asyncssh sizes a length-less read from this.
+    """
+    await _seed(vfs, "/blob.bin", PAYLOAD)
+    fake_discord.fail_uploads_from = fake_discord.uploads + 1
+
+    handle = await vfs.open("/blob.bin", read=True, write=True, append=True)
+    with pytest.raises(DiscordFailure):
+        await handle.write_at(0, EXTRA)
+
+    assert handle.size == len(PAYLOAD)
+
+
+async def test_reading_a_failed_handle_does_not_resurrect_its_writes(
+    vfs, fake_discord, master_key
+):
+    """A read used to flush, and Discord may have recovered by then.
+
+    That would upload and commit bytes whose write the client was already
+    told had failed. Reads of what did commit still work.
+    """
+    await _seed(vfs, "/blob.bin", PAYLOAD)
+    fake_discord.fail_uploads_from = fake_discord.uploads + 1
+
+    handle = await vfs.open("/blob.bin", read=True, write=True, append=True)
+    with pytest.raises(DiscordFailure):
+        await handle.write_at(0, EXTRA)
+
+    fake_discord.fail_uploads_from = None
+    uploads_before = fake_discord.uploads
+
+    assert await handle.read_at(0, len(PAYLOAD)) == PAYLOAD
+    assert fake_discord.uploads == uploads_before, (
+        "a read on a failed handle uploaded the buffer it had refused to write"
+    )
+    assert await _read_back(master_key, "/blob.bin") == (len(PAYLOAD), PAYLOAD)
+
+
 # --------------------------------------------------------------- SFTP-level
 
 

@@ -74,6 +74,7 @@ memory that a GPU cannot parallelise away.
 
 import hmac
 import os
+import unicodedata
 
 from argon2.low_level import Type as Argon2Type
 from argon2.low_level import hash_secret_raw
@@ -183,15 +184,37 @@ def verify_chunk(key: bytes, nonce: bytes, ciphertext: bytes, tag_hex: str, *,
 # ---------------------------------------------------------------- node tags
 
 
-def node_tag(key: bytes, *, file_id: str, size: int, chunk_tags) -> bytes:
-    """Authentication tag over a file's shape.
+def _name(value: str) -> bytes:
+    """A filename as the tag sees it: NFC-normalised UTF-8.
+
+    Without this, the same name typed on macOS (which hands over NFD) and on
+    Linux (NFC) produces two different tags, and one of the two clients gets
+    a file that reads back as corrupt. That failure would look like tampering
+    and only appear on one platform, which is the worst way to learn about a
+    normalisation bug.
+    """
+    return unicodedata.normalize("NFC", value or "").encode("utf-8")
+
+
+def node_tag(key: bytes, *, file_id: str, parent_id: str, filename: str,
+             size: int, chunk_tags) -> bytes:
+    """Authentication tag over a file: its shape, its name and its place.
 
     Covers the ordered chunk tags rather than the chunk bytes, so it costs the
     same whatever the file's size, and any change to a chunk changes this too.
+
+    `parent_id` and `filename` are in here because contents alone were not
+    enough. Whoever could write to MongoDB could rename a file, or move it to
+    another directory, and every check still passed -- so the bytes of
+    `report-2024.pdf` could be served under the name `report-2026.pdf` with a
+    valid tag on them. Authenticating content while leaving identity
+    unauthenticated is a guarantee that misleads.
     """
     mac = hmac.new(_subkey(key, _MAC_INFO), digestmod="sha256")
-    mac.update(b"node")
+    mac.update(b"node2")
     mac.update(_length_prefixed(file_id.encode("utf-8")))
+    mac.update(_length_prefixed((parent_id or "").encode("utf-8")))
+    mac.update(_length_prefixed(_name(filename)))
     mac.update(size.to_bytes(8, "big"))
     mac.update(len(chunk_tags).to_bytes(8, "big"))
     for tag in chunk_tags:
@@ -199,13 +222,105 @@ def node_tag(key: bytes, *, file_id: str, size: int, chunk_tags) -> bytes:
     return mac.digest()
 
 
-def verify_node(key: bytes, *, file_id: str, size: int, chunk_tags,
-                tag_hex: str):
+def verify_node(key: bytes, *, file_id: str, parent_id: str, filename: str,
+                size: int, chunk_tags, tag_hex: str):
     """Raise `IntegrityError` unless the file's shape is the one recorded."""
     expected = _decode_tag(tag_hex, "file")
-    actual = node_tag(key, file_id=file_id, size=size, chunk_tags=chunk_tags)
+    actual = node_tag(key, file_id=file_id, parent_id=parent_id,
+                      filename=filename, size=size, chunk_tags=chunk_tags)
     if not hmac.compare_digest(expected, actual):
         raise IntegrityError("file failed integrity verification")
+
+
+# ----------------------------------------------------------- directory tags
+#
+# Two tags, deliberately separate, because they cost very different amounts
+# to check.
+#
+# `dir_tag` covers a directory's own identity. Path resolution walks one
+# segment at a time and checks this on every segment, so it has to be O(1) --
+# it reads nothing but the directory's own document.
+#
+# `dir_entries_tag` covers the set of children. Checking it means listing
+# them, so it is checked only when something is listing them anyway. Putting
+# it on the traversal path would turn `/a/b/c/x` into three full directory
+# listings per open.
+
+
+def dir_tag(key: bytes, *, dir_id: str, parent_id: str, filename: str) -> bytes:
+    """Authentication tag over a directory's identity and place.
+
+    Renaming a directory used to change nothing a child could notice: a child
+    records its parent's *id*, not its name, so moving `/private` to `/public`
+    left every tag underneath it valid.
+    """
+    mac = hmac.new(_subkey(key, _MAC_INFO), digestmod="sha256")
+    mac.update(b"dir")
+    mac.update(_length_prefixed(dir_id.encode("utf-8")))
+    mac.update(_length_prefixed((parent_id or "").encode("utf-8")))
+    mac.update(_length_prefixed(_name(filename)))
+    return mac.digest()
+
+
+def verify_dir(key: bytes, *, dir_id: str, parent_id: str, filename: str,
+               tag_hex: str):
+    """Raise `IntegrityError` unless the directory is where it says it is."""
+    expected = _decode_tag(tag_hex, "directory")
+    actual = dir_tag(key, dir_id=dir_id, parent_id=parent_id, filename=filename)
+    if not hmac.compare_digest(expected, actual):
+        raise IntegrityError("directory failed integrity verification")
+
+
+def dir_entries_tag(key: bytes, *, dir_id: str, entries) -> bytes:
+    """Authentication tag over the set of names a directory contains.
+
+    `entries` is any iterable of `(child_id, child_filename)`. Sorted here so
+    the tag depends on the set and not on what order MongoDB handed it back.
+
+    Deliberately *not* covering each child's own tag: that would make every
+    write to any file rewrite its directory's tag, and computing it would mean
+    reading all its siblings. Content is the child's own business; this covers
+    membership.
+
+    What this buys, precisely, is detecting a *deleted* entry. A renamed or
+    moved one is already caught by the child's own tag, and a forged one
+    cannot be produced without the key. It does not catch a child being
+    restored from an older copy of both documents -- that is whole-file
+    rollback, which this project has accepted as a residual risk.
+    """
+    mac = hmac.new(_subkey(key, _MAC_INFO), digestmod="sha256")
+    mac.update(b"dirents")
+    mac.update(_length_prefixed(dir_id.encode("utf-8")))
+    items = sorted((child_id, _name(name)) for child_id, name in entries)
+    mac.update(len(items).to_bytes(8, "big"))
+    for child_id, name in items:
+        mac.update(_length_prefixed(child_id.encode("utf-8")))
+        mac.update(_length_prefixed(name))
+    return mac.digest()
+
+
+def verify_dir_entries(key: bytes, *, dir_id: str, entries, tag_hex: str,
+                       pending_hex: str = None):
+    """Raise `IntegrityError` unless the directory holds exactly these entries.
+
+    Two tags are accepted, and that is the point. A directory's tag and its
+    children live in different documents, so a structural change cannot write
+    both at once; the process could die between them. The writer therefore
+    stores the *next* tag as `pending` first, makes the change, and only then
+    promotes it. Whichever side of the crash the reader arrives on, one of the
+    two matches the children that are actually there.
+
+    It does not weaken anything: both values are produced by code holding the
+    key, so an attacker still cannot make a set of their choosing verify.
+    """
+    actual = dir_entries_tag(key, dir_id=dir_id, entries=entries)
+    for candidate in (tag_hex, pending_hex):
+        if candidate and hmac.compare_digest(_decode_tag(candidate, "directory"),
+                                             actual):
+            return
+    if not tag_hex and not pending_hex:
+        raise IntegrityError("directory has no entry integrity tag")
+    raise IntegrityError("directory entries failed integrity verification")
 
 
 def _decode_tag(tag_hex: str, what: str) -> bytes:

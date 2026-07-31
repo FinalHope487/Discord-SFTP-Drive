@@ -67,11 +67,16 @@ from typing import Optional
 
 from src.config import CHUNK_CACHE_SIZE, MAX_CHUNK_SIZE
 from src.crypto import (
+    IntegrityError,
     chunk_tag,
+    dir_entries_tag,
+    dir_tag,
     generate_nonce,
     node_tag,
     transform,
     verify_chunk,
+    verify_dir,
+    verify_dir_entries,
     verify_node,
 )
 from src.db import db
@@ -80,6 +85,21 @@ from src.discord_api import discord_api
 logger = logging.getLogger(__name__)
 
 ROOT_ID = "root"
+
+# What shape of tag this code writes and is willing to read. Stored on every
+# node so that "made by an older version" and "tampered with" are different
+# errors -- they are the two things that must never be confused, since one is
+# an upgrade step and the other is an attack.
+#
+# It also makes the next change to what the tags cover cheap to detect, the
+# way the `kdf` field on a key record made the move to Argon2id need no
+# migration at all.
+#
+# Version 1 covered (file id, size, chunk tags) and gave directories no tag.
+# Version 2 adds the parent and the filename, tags directories, and tags the
+# set of names a directory holds. There is no compatibility path: refusing an
+# old record outright is the same fail-closed rule the chunk tags follow.
+TAG_VERSION = 2
 
 # node id -> the mac last committed for it, kept for the lifetime of the
 # process. Lets an open handle tell whether another handle changed the node
@@ -234,7 +254,13 @@ class DiscordFile:
         a client that its own last write never happened. asyncssh asks for
         exactly this before a length-less `read()`, and answers such a client
         with EOF.
+
+        Once the handle has failed they stop counting. They are never going to
+        land -- every write path refuses now -- so including them would report
+        a length made partly of bytes that do not exist anywhere.
         """
+        if self._failed:
+            return self._node["size"]
         return self._end_of_file()
 
     def _reindex(self):
@@ -282,6 +308,11 @@ class DiscordFile:
         self._node["chunks"] = latest["chunks"]
         self._node["mac"] = latest["mac"]
         self._node["modified_at"] = latest.get("modified_at")
+        # The tag covers these now, so a rename by another connection moves
+        # the mac. Copying them keeps this handle's next commit from
+        # recomputing the tag against the name the file no longer has.
+        self._node["parent_id"] = latest.get("parent_id")
+        self._node["filename"] = latest.get("filename")
         # Indices are reused as chunks are trimmed and replaced, so a cached
         # entry keyed by index could now hand back a different chunk's bytes.
         self._chunk_cache.clear()
@@ -298,7 +329,13 @@ class DiscordFile:
 
             # Anything still buffered has not been uploaded yet, so a reader
             # would silently miss it. Flushing keeps read-after-write honest.
-            if self._buffer:
+            #
+            # Not on a failed handle. Every write path has already refused,
+            # and the client has already been told its write failed; if
+            # Discord recovered in the meantime this would quietly upload and
+            # commit those bytes anyway, resurrecting a write that was
+            # reported as lost. Reads of what did commit still work.
+            if self._buffer and not self._failed:
                 await self._flush_buffer()
 
             out = bytearray()
@@ -713,30 +750,52 @@ def _content_update(key: bytes, node: dict, *, mtime: int = None) -> dict:
     return {
         "size": node["size"],
         "chunks": node["chunks"],
-        "mac": node_tag(key, file_id=node["id"], size=node["size"],
-                        chunk_tags=_chunk_tags(node)).hex(),
+        "mac": _file_mac(key, node),
+        "tag_version": TAG_VERSION,
         "modified_at": _now() if mtime is None else int(mtime),
     }
 
 
-async def _touch_dir(node_id: str):
-    """Stamp a directory whose set of entries just changed.
+def _file_mac(key: bytes, node: dict) -> str:
+    """The tag for a file node as it currently stands."""
+    return node_tag(key, file_id=node["id"], parent_id=node.get("parent_id") or "",
+                    filename=node.get("filename") or "", size=node["size"],
+                    chunk_tags=_chunk_tags(node)).hex()
 
-    Creating, removing or renaming an entry modifies the *directory*, not the
-    entry -- which is also why renaming a file leaves the file's own mtime
-    alone.
-    """
-    if not node_id:
-        return
-    await db.get_db().nodes.update_one(
-        {"id": node_id, "is_dir": True}, {"$set": {"modified_at": _now()}})
+
+def _dir_mac(key: bytes, node: dict) -> str:
+    """The identity tag for a directory node as it currently stands."""
+    return dir_tag(key, dir_id=node["id"], parent_id=node.get("parent_id") or "",
+                   filename=node.get("filename") or "").hex()
+
+
+def _entries_of(children) -> list:
+    return [(c["id"], c.get("filename") or "") for c in children]
 
 
 def _verify_node(key: bytes, node):
-    """Check a file node's tag, passing directories and misses through."""
-    if node is None or node.get("is_dir"):
+    """Check a node's tag. Misses pass through; nothing else does.
+
+    Directories are checked here too, but only for *identity* -- who they are
+    and where they sit. Their entry set is checked in `list_dir`, because
+    checking it means listing them and this runs once per path segment.
+    """
+    if node is None:
         return node
-    verify_node(key, file_id=node["id"], size=node.get("size", 0),
+
+    if node.get("tag_version") != TAG_VERSION:
+        raise IntegrityError(
+            f"node {node.get('id')!r} carries tag version "
+            f"{node.get('tag_version')!r}, but this server writes and accepts "
+            f"only version {TAG_VERSION}")
+
+    if node.get("is_dir"):
+        verify_dir(key, dir_id=node["id"], parent_id=node.get("parent_id") or "",
+                   filename=node.get("filename") or "", tag_hex=node.get("mac"))
+        return node
+
+    verify_node(key, file_id=node["id"], parent_id=node.get("parent_id") or "",
+                filename=node.get("filename") or "", size=node.get("size", 0),
                 chunk_tags=_chunk_tags(node), tag_hex=node.get("mac"))
     # Every verified read is a trustworthy point-in-time truth, so it is safe
     # to stamp the version cache here regardless of who is asking.
@@ -848,26 +907,29 @@ async def _resize_node(key: bytes, node: dict, size: int):
         await _safe_delete_message(straddler["message_id"])
 
 
-async def ensure_root():
-    """Create the tree's root if it is not there.
+def _new_dir_doc(key: bytes, *, node_id: str, parent_id, filename: str,
+                 permissions: int, now: int) -> dict:
+    """A directory document with both of its tags already in place.
 
-    Deliberately not a method: it runs at startup, before anyone has
-    authenticated, and there is no key at that point. The root is a directory
-    and carries no content tag, so none is needed.
+    An empty directory still needs an entry tag. Leaving it off until the
+    first child would mean "no tag yet" and "someone removed the tag" look
+    identical, and the second one is how an attacker would switch the check
+    off before deleting things.
     """
-    existing = await db.get_db().nodes.find_one({"id": ROOT_ID})
-    if existing:
-        return
-    now = _now()
-    await db.get_db().nodes.insert_one({
-        "id": ROOT_ID,
-        "parent_id": None,
-        "filename": "",
+    node = {
+        "id": node_id,
+        "parent_id": parent_id,
+        "filename": filename,
         "is_dir": True,
         "size": 0,
+        "permissions": permissions,
         "created_at": now,
         "modified_at": now,
-    })
+        "tag_version": TAG_VERSION,
+    }
+    node["mac"] = _dir_mac(key, node)
+    node["entries_mac"] = dir_entries_tag(key, dir_id=node_id, entries=[]).hex()
+    return node
 
 
 class DiscordVFS:
@@ -887,15 +949,29 @@ class DiscordVFS:
         return self._key
 
     async def get_node(self, path: str) -> Optional[dict]:
-        node = await db.get_db().nodes.find_one({"id": ROOT_ID})
+        """Resolve a path, checking every segment on the way down.
+
+        Every segment, not just the last one. Checking only the destination
+        left a renamed directory undetectable from below: `/private/keys.txt`
+        served as `/public/keys.txt` verified perfectly, because the file's
+        own tag records its parent's *id*, which the rename did not touch.
+        The directory whose name actually changed was never looked at.
+
+        This is why a directory's identity tag is separate from its entry
+        tag: identity costs one HMAC over the document already in hand, so
+        paying it per segment is nothing. The entry tag would mean listing
+        every directory on the path, and that is left to `list_dir`.
+        """
+        node = _verify_node(
+            self._key, await db.get_db().nodes.find_one({"id": ROOT_ID}))
         for part in [p for p in normalize_path(path).split("/") if p]:
             if not node or not node.get("is_dir"):
                 return None
-            node = await db.get_db().nodes.find_one({
+            node = _verify_node(self._key, await db.get_db().nodes.find_one({
                 "parent_id": node["id"],
                 "filename": part,
-            })
-        return _verify_node(self._key, node)
+            }))
+        return node
 
     async def get_node_by_id(self, node_id: str) -> Optional[dict]:
         return _verify_node(
@@ -913,13 +989,124 @@ class DiscordVFS:
             raise NotADirectory(normalize_path(path))
         return node
 
+    async def ensure_root(self):
+        """Create the tree's root, or refuse to run against an older one.
+
+        This needs the master key, so it happens once a session has
+        authenticated rather than at startup. A root created before anyone
+        logged in could not carry a tag, and a directory whose missing tag is
+        tolerated is a directory whose entries are not protected.
+        """
+        existing = await db.get_db().nodes.find_one({"id": ROOT_ID})
+        if existing is None:
+            await db.get_db().nodes.insert_one(_new_dir_doc(
+                self._key, node_id=ROOT_ID, parent_id=None, filename="",
+                permissions=DEFAULT_DIR_MODE, now=_now()))
+            return
+
+        if existing.get("tag_version") == TAG_VERSION:
+            return
+
+        # A root from before directories were tagged. Tagging it now is only
+        # honest while it is empty: computing an entry tag over whatever
+        # happens to be there would sign off on a deletion that had already
+        # happened, which is the one thing a backfill must never do.
+        if await self.children(ROOT_ID):
+            raise VFSError(
+                "the root directory predates node tag version "
+                f"{TAG_VERSION} and is not empty. Tagging it now would "
+                "certify its current contents as authentic without any way "
+                "to know they are. Move the data out, let this recreate the "
+                "tree, and move it back in."
+            )
+
+        await db.get_db().nodes.replace_one(
+            {"id": ROOT_ID},
+            _new_dir_doc(self._key, node_id=ROOT_ID, parent_id=None,
+                         filename="", permissions=DEFAULT_DIR_MODE,
+                         now=existing.get("created_at") or _now()))
+
     async def children(self, parent_id: str) -> list:
         cursor = db.get_db().nodes.find({"parent_id": parent_id})
         return await cursor.to_list(length=None)
 
     async def list_dir(self, path: str) -> list:
-        node = await self.require_dir(path)
-        return await self.children(node["id"])
+        """List a directory, checking that nothing has been removed from it.
+
+        This is the one place the entry tag is checked, because it is the one
+        place the entries are being read anyway.
+
+        Note what is *not* checked: each child's own tag. A single corrupted
+        file therefore still lists fine and only fails when opened or
+        stat'ed -- which was the whole reason listing was left unverified
+        before. What is verified is membership, so a file deleted by someone
+        with database access cannot pass unnoticed.
+        """
+        return await self.entries_of(await self.require_dir(path))
+
+    async def entries_of(self, node: dict) -> list:
+        """The verified children of a directory node already in hand.
+
+        Separate from `list_dir` because the SFTP layer resolves the
+        directory itself (it needs the node for `.` and its parent for `..`)
+        and would otherwise have to walk the path a second time -- which is
+        how it came to call `children()` directly and skip this check
+        entirely. Every listing path goes through here now.
+        """
+        entries = await self.children(node["id"])
+        verify_dir_entries(self._key, dir_id=node["id"],
+                           entries=_entries_of(entries),
+                           tag_hex=node.get("entries_mac"),
+                           pending_hex=node.get("entries_mac_pending"))
+        return entries
+
+    async def _stage_entries(self, dir_id: str, *, add=(), remove=()):
+        """Prepare a directory's next entry tag, returning its commit step.
+
+        Two writes, not one, and the order matters. The directory's tag and
+        its children are separate documents, so a structural change cannot
+        update both atomically -- there are no transactions on a standalone
+        MongoDB. Writing the new tag first and the change second would leave a
+        crash looking like a deleted entry; writing it second would leave one
+        looking like an added entry. Either way `ls` breaks on a directory
+        nobody attacked.
+
+        So the new tag is parked in `entries_mac_pending`, the change is made,
+        and only then is it promoted. `verify_dir_entries` accepts either
+        value, so both sides of a crash read as intact. See its docstring for
+        why accepting two does not weaken the check.
+
+        The existing tag is verified first, against the children that are
+        actually there. Skipping that would let the next ordinary `mkdir`
+        launder an earlier deletion into a freshly signed tag.
+        """
+        node = await db.get_db().nodes.find_one({"id": dir_id, "is_dir": True})
+        if node is None:
+            raise NotFound(dir_id)
+
+        current = _entries_of(await self.children(dir_id))
+        verify_dir_entries(self._key, dir_id=dir_id, entries=current,
+                           tag_hex=node.get("entries_mac"),
+                           pending_hex=node.get("entries_mac_pending"))
+
+        dropped = set(remove)
+        entries = [e for e in current if e not in dropped] + list(add)
+        staged = dir_entries_tag(self._key, dir_id=dir_id, entries=entries).hex()
+
+        # The mtime moves with the staging write: creating, removing or
+        # renaming an entry modifies the *directory*, not the entry, which is
+        # also why renaming a file leaves the file's own mtime alone.
+        await db.get_db().nodes.update_one(
+            {"id": dir_id},
+            {"$set": {"entries_mac_pending": staged, "modified_at": _now()}})
+
+        async def commit():
+            await db.get_db().nodes.update_one(
+                {"id": dir_id},
+                {"$set": {"entries_mac": staged},
+                 "$unset": {"entries_mac_pending": ""}})
+
+        return commit
 
     async def makedir(self, path: str, *, permissions: int = None) -> dict:
         normalized = normalize_path(path)
@@ -932,19 +1119,17 @@ class DiscordVFS:
         parent_path, name = split_path(normalized)
         parent = await self.require_dir(parent_path)
 
-        now = _now()
-        node = {
-            "id": str(uuid.uuid4()),
-            "parent_id": parent["id"],
-            "filename": name,
-            "is_dir": True,
-            "size": 0,
-            "permissions": (DEFAULT_DIR_MODE if permissions is None
-                            else int(permissions) & PERMISSION_MASK),
-            "created_at": now,
-            "modified_at": now,
-        }
+        node = _new_dir_doc(
+            self._key, node_id=str(uuid.uuid4()), parent_id=parent["id"],
+            filename=name,
+            permissions=(DEFAULT_DIR_MODE if permissions is None
+                         else int(permissions) & PERMISSION_MASK),
+            now=_now())
+
+        commit = await self._stage_entries(
+            parent["id"], add=[(node["id"], name)])
         await db.get_db().nodes.insert_one(node)
+        await commit()
         return node
 
     async def remove(self, path: str):
@@ -952,12 +1137,15 @@ class DiscordVFS:
         if node["is_dir"]:
             raise IsADirectory(normalize_path(path))
 
+        commit = await self._stage_entries(
+            node["parent_id"], remove=[(node["id"], node["filename"])])
+
         for chunk in node.get("chunks", []):
             await _safe_delete_message(chunk["message_id"])
 
         await db.get_db().nodes.delete_one({"id": node["id"]})
         _node_versions.pop(node["id"], None)
-        await _touch_dir(node.get("parent_id"))
+        await commit()
 
     async def removedir(self, path: str):
         node = await self.require_node(path)
@@ -968,8 +1156,10 @@ class DiscordVFS:
         if await self.children(node["id"]):
             raise NotEmpty(normalize_path(path))
 
+        commit = await self._stage_entries(
+            node["parent_id"], remove=[(node["id"], node["filename"])])
         await db.get_db().nodes.delete_one({"id": node["id"]})
-        await _touch_dir(node.get("parent_id"))
+        await commit()
 
     async def rename(self, old_path: str, new_path: str, *, overwrite: bool = False):
         """Move or rename a node.
@@ -1000,32 +1190,59 @@ class DiscordVFS:
         if existing:
             if not overwrite:
                 raise AlreadyExists(new)
-            await self._discard(existing)
+            if existing["is_dir"] and await self.children(existing["id"]):
+                raise NotEmpty(existing["filename"])
 
-        source_parent = node.get("parent_id")
+        source_parent = node["parent_id"]
+        target_parent = parent["id"]
 
-        # `modified_at` is deliberately absent: moving a file does not modify
-        # it. The directories on either end are what changed, and a client
-        # that compares mtimes to decide what to re-transfer would otherwise
-        # see every moved file as freshly written.
-        await db.get_db().nodes.update_one(
-            {"id": node["id"]},
-            {"$set": {"parent_id": parent["id"], "filename": name}},
-        )
-        await _touch_dir(source_parent)
-        await _touch_dir(parent["id"])
+        # The node's identity is part of its tag now, so a move is a retag.
+        # `modified_at` is still deliberately absent: moving a file does not
+        # modify it. The directories on either end are what changed, and a
+        # client that compares mtimes to decide what to re-transfer would
+        # otherwise see every moved file as freshly written.
+        moved = dict(node, parent_id=target_parent, filename=name)
+        update = {
+            "parent_id": target_parent,
+            "filename": name,
+            "mac": _dir_mac(self._key, moved) if node["is_dir"]
+            else _file_mac(self._key, moved),
+            "tag_version": TAG_VERSION,
+        }
 
-    async def _discard(self, node: dict):
-        """Remove a node that is being replaced, releasing any attachments."""
-        if node["is_dir"]:
-            if await self.children(node["id"]):
-                raise NotEmpty(node["filename"])
+        gone = [(existing["id"], existing["filename"])] if existing else []
+        arriving = [(node["id"], name)]
+
+        # One staging call when both ends are the same directory: each call
+        # recomputes from the children on disk, so a second one would discard
+        # what the first staged.
+        if source_parent == target_parent:
+            commits = [await self._stage_entries(
+                target_parent,
+                add=arriving,
+                remove=gone + [(node["id"], node["filename"])])]
         else:
-            for chunk in node.get("chunks", []):
-                await _safe_delete_message(chunk["message_id"])
+            commits = [
+                await self._stage_entries(
+                    source_parent, remove=[(node["id"], node["filename"])]),
+                await self._stage_entries(
+                    target_parent, add=arriving, remove=gone),
+            ]
 
-        await db.get_db().nodes.delete_one({"id": node["id"]})
-        _node_versions.pop(node["id"], None)
+        if existing:
+            if not existing["is_dir"]:
+                for chunk in existing.get("chunks", []):
+                    await _safe_delete_message(chunk["message_id"])
+            await db.get_db().nodes.delete_one({"id": existing["id"]})
+            _node_versions.pop(existing["id"], None)
+
+        await db.get_db().nodes.update_one({"id": node["id"]}, {"$set": update})
+        node.update(update)
+        if not node["is_dir"]:
+            _node_versions[node["id"]] = update["mac"]
+
+        for commit in commits:
+            await commit()
 
     async def open(self, path: str, *, read: bool, write: bool, create: bool = False,
                    truncate: bool = False, append: bool = False,
@@ -1068,14 +1285,16 @@ class DiscordVFS:
             "created_at": now,
             "modified_at": now,
             "chunks": [],
+            "tag_version": TAG_VERSION,
         }
         # An empty file still needs a tag, or its first read fails the check
         # that every other file passes.
-        node["mac"] = node_tag(self._key, file_id=node["id"], size=0,
-                               chunk_tags=[]).hex()
+        node["mac"] = _file_mac(self._key, node)
+
+        commit = await self._stage_entries(parent["id"], add=[(node["id"], name)])
         await db.get_db().nodes.insert_one(node)
         _node_versions[node["id"]] = node["mac"]
-        await _touch_dir(parent["id"])
+        await commit()
         return node
 
     async def set_metadata(self, path: str, **fields):

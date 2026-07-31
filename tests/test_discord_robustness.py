@@ -219,6 +219,38 @@ async def test_the_attachment_url_is_cached(api, stub):
     assert stub.downloads == 3
 
 
+async def test_the_url_cache_is_bounded_and_evicts_the_oldest(api, stub, monkeypatch):
+    """Bounded, unlike `vfs._node_versions`, and safely so.
+
+    A miss here costs one extra lookup; a miss there would mean "nobody
+    changed this", which is a wrong answer rather than a slow one. That
+    difference is why only one of the two has a cap.
+    """
+    monkeypatch.setattr(api_mod, "_URL_CACHE_SIZE", 3)
+
+    ids = [(await api.upload_chunk(PAYLOAD, f"c{i}.bin"))[0] for i in range(4)]
+
+    assert len(api._url_cache) == 3
+    assert ids[0] not in api._url_cache, "the oldest entry was not evicted"
+
+    # And the evicted one still works -- it just costs a lookup.
+    assert await api.download_attachment(ids[0]) == PAYLOAD
+    assert stub.url_lookups == 1
+
+
+async def test_using_a_cached_url_keeps_it_from_being_evicted(api, stub, monkeypatch):
+    monkeypatch.setattr(api_mod, "_URL_CACHE_SIZE", 2)
+
+    first, second = [(await api.upload_chunk(PAYLOAD, f"c{i}.bin"))[0]
+                     for i in range(2)]
+    await api.download_attachment(first)          # first is now the recent one
+    third, = [(await api.upload_chunk(PAYLOAD, "c2.bin"))[0]]
+
+    assert first in api._url_cache
+    assert third in api._url_cache
+    assert second not in api._url_cache
+
+
 async def test_an_expired_url_is_re_resolved_before_use(api, stub):
     stub.url_lifetime = -60           # already expired when handed over
     message_id, _url, _size = await api.upload_chunk(PAYLOAD, "c.bin")
