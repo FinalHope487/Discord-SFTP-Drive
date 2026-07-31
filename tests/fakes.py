@@ -22,17 +22,28 @@ class FakeCursor:
 
 
 class FakeCollection:
-    def __init__(self):
+    def __init__(self, name="fake"):
         self.docs = []
         self.indexes = []
+        self.dropped_indexes = []
+        self.name = name
+        # Set to a list of exceptions to raise from successive unique-index
+        # creations. Lets a test drive the upgrade path MongoDB takes when an
+        # index of the same shape already exists without `unique`.
+        self.create_index_errors = []
 
     async def create_index(self, keys, **options):
         # Recorded rather than enforced. Uniqueness is MongoDB's job, and a
         # fake that pretended to implement it would prove nothing about the
         # real one -- but that we *asked* for it is our code's job, and a test
         # can check that here.
+        if options.get("unique") and self.create_index_errors:
+            raise self.create_index_errors.pop(0)
         self.indexes.append((keys, options))
-        return "idx"
+        return "generated_name"
+
+    async def drop_index(self, name):
+        self.dropped_indexes.append(name)
 
     async def find_one(self, flt):
         for d in self.docs:
@@ -74,8 +85,8 @@ class FakeCollection:
 
 class FakeDB:
     def __init__(self):
-        self.nodes = FakeCollection()
-        self.keystore = FakeCollection()
+        self.nodes = FakeCollection("nodes")
+        self.keystore = FakeCollection("keystore")
 
     async def command(self, *a, **k):
         return {"ok": 1}

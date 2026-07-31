@@ -284,7 +284,7 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
         if not read and not write:
             read = True
 
-        return await self._vfs.open(
+        file_obj = await self._vfs.open(
             self._decode(path),
             read=read,
             write=write,
@@ -293,6 +293,8 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
             append=bool(pflags & asyncssh.FXF_APPEND),
             exclusive=bool(pflags & asyncssh.FXF_EXCL),
         )
+        _open_files.add(file_obj)
+        return file_obj
 
     @_translate
     async def read(self, file_obj, offset, size):
@@ -305,7 +307,10 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
 
     @_translate
     async def close(self, file_obj):
-        await file_obj.close()
+        try:
+            await file_obj.close()
+        finally:
+            _open_files.discard(file_obj)
 
     @_translate
     async def fsync(self, file_obj):
@@ -344,9 +349,20 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
 # no registry of its own.
 _active_connections = set()
 
+# Open file handles, for the same reason but a more specific one. asyncssh does
+# call close() on each handle when a session ends, but that cleanup is not
+# awaited by `conn.wait_closed()`, so a shutdown that relied on it exited
+# before the flush reached Discord -- which is how a client's last 64KB
+# disappeared even though the drain logs looked correct.
+_open_files = set()
+
 
 def active_connections():
     return frozenset(_active_connections)
+
+
+def open_files():
+    return frozenset(_open_files)
 
 
 class DiscordSSHServer(asyncssh.SSHServer):

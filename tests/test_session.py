@@ -200,9 +200,18 @@ async def test_drain_closes_live_connections(sftp_port, host_key):
     await _closed(conn)
 
 
-async def test_drain_flushes_what_a_live_session_had_buffered(sftp_port, host_key):
-    # The reason shutdown waits at all: a client that has written less than a
-    # chunk has nothing on Discord yet.
+async def test_drain_flushes_what_a_live_session_had_buffered(sftp_port, host_key,
+                                                              fake_discord):
+    """The reason shutdown waits at all: under a chunk, nothing is on Discord.
+
+    The assertion deliberately runs *before* the connection is closed and
+    before any further await. An earlier version checked afterwards and passed
+    for the wrong reason -- asyncssh does call close() on open handles when a
+    session ends, but that cleanup is not awaited by `wait_closed()`, so in the
+    container the process exited first and the bytes were lost. Checking here
+    is what distinguishes "drain flushed it" from "something else got round to
+    it eventually".
+    """
     import src.sftp as sftp_mod
 
     server = await asyncssh.listen(
@@ -215,10 +224,15 @@ async def test_drain_flushes_what_a_live_session_had_buffered(sftp_port, host_ke
     client = await conn.start_sftp_client()
     handle = await client.open("/blob.bin", "wb")
     await handle.write(SMALL)
+    assert not fake_discord.store, "the bytes reached Discord before the drain"
 
     await _drain(server, grace=0.1)
-    await _closed(conn)
 
+    assert fake_discord.store, "the drain returned without flushing the handle"
+    assert SMALL in fake_discord.store.values() or any(
+        len(v) == len(SMALL) for v in fake_discord.store.values())
+
+    await _closed(conn)
     async with connect(sftp_port) as conn2:
         async with conn2.start_sftp_client() as client2:
             async with client2.open("/blob.bin", "rb") as f:

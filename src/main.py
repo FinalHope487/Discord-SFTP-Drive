@@ -19,7 +19,12 @@ from src.config import (
 )
 from src.db import db
 from src.discord_api import ReachabilityError, discord_api
-from src.sftp import DiscordSFTPServer, DiscordSSHServer, active_connections
+from src.sftp import (
+    DiscordSFTPServer,
+    DiscordSSHServer,
+    active_connections,
+    open_files,
+)
 from src.vfs import ensure_root
 
 logging.basicConfig(
@@ -213,6 +218,21 @@ async def _drain(server, grace: float = SHUTDOWN_GRACE_SECONDS):
     deadline = loop.time() + grace
     while active_connections() and loop.time() < deadline:
         await asyncio.sleep(0.2)
+
+    # Flush before closing, not as a side effect of closing. asyncssh does call
+    # close() on every open handle when a session ends, but that cleanup is not
+    # awaited by `conn.wait_closed()`, so the process exited while the upload
+    # was still in flight and the client's last partial chunk was lost. Doing
+    # it explicitly here makes the flush something this function waits for.
+    # `DiscordFile.close()` is idempotent, so asyncssh's later call is a no-op.
+    handles = open_files()
+    if handles:
+        logger.info("Flushing %d open file handle(s)", len(handles))
+        for file_obj in handles:
+            try:
+                await _bounded(file_obj.close(), "a file handle to flush")
+            except Exception:
+                logger.exception("Failed to flush an open file during shutdown")
 
     remaining = active_connections()
     if remaining:

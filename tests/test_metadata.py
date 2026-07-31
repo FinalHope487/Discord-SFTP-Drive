@@ -203,7 +203,7 @@ async def test_the_name_index_is_created_unique(fake_db):
     """Two files sharing a name under one parent make lookups order-dependent.
 
     Enforcement is MongoDB's; asking for it is ours, so that is what is
-    checked here. The live suite covers the enforcement itself.
+    checked here. The live deployment covers the enforcement itself.
     """
     from src.db import Database
 
@@ -211,6 +211,49 @@ async def test_the_name_index_is_created_unique(fake_db):
     by_name = [opts for keys, opts in fake_db.nodes.indexes
                if keys == [("parent_id", 1), ("filename", 1)]]
     assert by_name and all(o.get("unique") for o in by_name)
+
+
+async def test_an_existing_non_unique_index_is_upgraded(fake_db):
+    """What an upgrade actually hits.
+
+    MongoDB will not change an index in place: asking for `unique=True` where
+    a plain index of the same shape exists fails with IndexKeySpecsConflict.
+    Left unhandled the server simply refuses to start -- which is how this was
+    found, on a real deployment, after the unit tests were green.
+    """
+    from pymongo.errors import OperationFailure
+
+    from src.db import Database
+
+    conflict = OperationFailure("index exists", code=86)
+    fake_db.nodes.create_index_errors = [conflict]
+
+    await Database._ensure_indexes()
+
+    assert fake_db.nodes.dropped_indexes == ["generated_name"]
+    by_name = [opts for keys, opts in fake_db.nodes.indexes
+               if keys == [("parent_id", 1), ("filename", 1)]]
+    assert any(o.get("unique") for o in by_name), "the index was never upgraded"
+
+
+async def test_duplicates_block_the_upgrade_with_a_readable_error(fake_db):
+    # The one case that cannot be resolved automatically: which duplicate to
+    # keep is not the server's decision.
+    from pymongo.errors import OperationFailure
+
+    from src.db import Database
+
+    fake_db.nodes.create_index_errors = [
+        OperationFailure("index exists", code=86),
+        OperationFailure("dup key", code=11000),
+    ]
+
+    with pytest.raises(OperationFailure, match="already contains duplicates"):
+        await Database._ensure_indexes()
+
+    # And the collection is not left without an index at all.
+    assert any(keys == [("parent_id", 1), ("filename", 1)]
+               for keys, _ in fake_db.nodes.indexes)
 
 
 async def test_files_and_directories_share_the_namespace(sftp):
