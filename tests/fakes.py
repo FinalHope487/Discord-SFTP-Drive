@@ -24,8 +24,14 @@ class FakeCursor:
 class FakeCollection:
     def __init__(self):
         self.docs = []
+        self.indexes = []
 
-    async def create_index(self, *a, **k):
+    async def create_index(self, keys, **options):
+        # Recorded rather than enforced. Uniqueness is MongoDB's job, and a
+        # fake that pretended to implement it would prove nothing about the
+        # real one -- but that we *asked* for it is our code's job, and a test
+        # can check that here.
+        self.indexes.append((keys, options))
         return "idx"
 
     async def find_one(self, flt):
@@ -46,6 +52,16 @@ class FakeCollection:
                 return
         raise AssertionError(f"update_one matched nothing: {flt}")
 
+    async def replace_one(self, flt, doc, upsert=False):
+        for i, d in enumerate(self.docs):
+            if _matches(d, flt):
+                self.docs[i] = copy.deepcopy(doc)
+                return
+        if upsert:
+            await self.insert_one(dict(doc))
+            return
+        raise AssertionError(f"replace_one matched nothing: {flt}")
+
     async def delete_one(self, flt):
         for i, d in enumerate(self.docs):
             if _matches(d, flt):
@@ -59,6 +75,7 @@ class FakeCollection:
 class FakeDB:
     def __init__(self):
         self.nodes = FakeCollection()
+        self.keystore = FakeCollection()
 
     async def command(self, *a, **k):
         return {"ok": 1}
@@ -83,13 +100,16 @@ class FakeDiscord:
         self.store[mid] = bytes(data)
         return mid, f"https://cdn.test/{mid}", len(data)
 
-    async def get_attachment_url(self, message_id):
+    async def get_attachment_url(self, message_id, *, refresh=False):
         if message_id not in self.store:
             raise RuntimeError("no such message")
         return f"https://cdn.test/{message_id}"
 
     async def download_chunk(self, url):
         return self.store[url.rsplit("/", 1)[1]]
+
+    async def download_attachment(self, message_id):
+        return await self.download_chunk(await self.get_attachment_url(message_id))
 
     async def delete_message(self, message_id):
         self.deleted.append(message_id)

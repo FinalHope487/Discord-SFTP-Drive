@@ -39,9 +39,12 @@ services:
       - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID:-}
       - MONGO_URI=mongodb://${MONGO_ROOT_USERNAME:-discorddrive}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=${MONGO_DB_NAME:-discord_sftp_vfs}
-      - AES_SECRET_KEY=${AES_SECRET_KEY:?set AES_SECRET_KEY in .env}
       - SFTP_USER=${SFTP_USER:?set SFTP_USER in .env}
+      # Also wraps the encryption key; there is no AES_SECRET_KEY any more.
       - SFTP_PASSWORD=${SFTP_PASSWORD:?set SFTP_PASSWORD in .env}
+      # Only needed while changing the password, and only read at startup.
+      - SFTP_PASSWORD_OLD=${SFTP_PASSWORD_OLD:-}
+      - PBKDF2_ITERATIONS=${PBKDF2_ITERATIONS:-600000}
       # The container always listens on 2222; the host-side port is mapped
       # above, so changing SFTP_PORT does not need a rebuild.
       - SFTP_PORT=2222
@@ -60,6 +63,11 @@ services:
     # as the last line of `docker compose logs`. Transient faults still get
     # five attempts.
     restart: on-failure:5
+    # Longer than the server's own 20s drain, or the container would be killed
+    # part way through flushing what clients had written but not yet filled a
+    # chunk with. Docker's default here is 10s, which is shorter than the
+    # drain and would have made it pointless.
+    stop_grace_period: 30s
 
 volumes:
   mongo_data:

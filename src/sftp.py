@@ -25,10 +25,15 @@ import stat
 
 import asyncssh
 
+from src import keystore
 from src.config import SFTP_PASSWORD, SFTP_USER
-from src.crypto import IntegrityError
+from src.crypto import IntegrityError, KeyUnwrapError
 from src.vfs import (
+    DEFAULT_DIR_MODE,
+    DEFAULT_FILE_MODE,
+    PERMISSION_MASK,
     AlreadyExists,
+    DiscordVFS,
     IsADirectory,
     NotADirectory,
     NotEmpty,
@@ -88,22 +93,32 @@ def _translate(func):
 def _attrs(node: dict, size: int = None) -> asyncssh.SFTPAttrs:
     is_dir = node["is_dir"]
     mtime = int(node.get("modified_at") or node.get("created_at") or 0)
-    permissions = (stat.S_IFDIR | 0o755) if is_dir else (stat.S_IFREG | 0o644)
+    # Access time is only tracked when a client sets it. Maintaining a real
+    # one would mean a database write on every read.
+    atime = int(node.get("accessed_at") or mtime)
+
+    default_mode = DEFAULT_DIR_MODE if is_dir else DEFAULT_FILE_MODE
+    mode = int(node.get("permissions", default_mode)) & PERMISSION_MASK
+    file_type = stat.S_IFDIR if is_dir else stat.S_IFREG
+
     return asyncssh.SFTPAttrs(
         size=int(node.get("size", 0)) if size is None else int(size),
         uid=0,
         gid=0,
-        permissions=permissions,
-        atime=mtime,
+        permissions=file_type | mode,
+        atime=atime,
         mtime=mtime,
         nlink=1,
     )
 
 
 class DiscordSFTPServer(asyncssh.SFTPServer):
-    def __init__(self, chan, vfs):
+    def __init__(self, chan, vfs=None):
         super().__init__(chan)
-        self._vfs = vfs
+        # The VFS is built per connection around that session's master key,
+        # which `validate_password` put on the connection. Passing one in is
+        # for tests that drive the VFS directly.
+        self._vfs = vfs or DiscordVFS(chan.get_extra_info("session_key"))
 
     # ------------------------------------------------------------- utilities
 
@@ -155,30 +170,42 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
         # client's own last write read back as EOF.
         return _attrs(file_obj.node, file_obj.size)
 
+    @staticmethod
+    def _metadata_fields(attrs) -> dict:
+        """The parts of an SFTPAttrs this filesystem stores.
+
+        Ownership is not among them: there is one account, so a uid would be
+        a number with nothing behind it.
+        """
+        return {
+            "permissions": getattr(attrs, "permissions", None),
+            "mtime": getattr(attrs, "mtime", None),
+            "atime": getattr(attrs, "atime", None),
+        }
+
     @_translate
     async def setstat(self, path, attrs):
         decoded = self._decode(path)
-        size = getattr(attrs, "size", None)
-        if size is None:
-            # Permissions, ownership and timestamps are not modelled;
-            # accepting them silently keeps post-upload chmod/utimes from
-            # failing the client. The lookup still happens so that a setstat
-            # on a path that does not exist fails as it should.
-            await self._vfs.require_node(decoded)
-            return
 
-        await self._vfs.truncate(decoded, size)
+        size = getattr(attrs, "size", None)
+        if size is not None:
+            await self._vfs.truncate(decoded, size)
+
+        # After the resize, never before: truncating stamps a new mtime, so
+        # doing this first would let it overwrite the time the client asked
+        # for. `put -p` sends both in one call.
+        await self._vfs.set_metadata(decoded, **self._metadata_fields(attrs))
 
     @_translate
     async def fsetstat(self, file_obj, attrs):
         size = getattr(attrs, "size", None)
-        if size is None:
-            return
+        if size is not None:
+            # Goes through the handle rather than the path so that anything
+            # the handle is still buffering is accounted for, and so its
+            # decrypted chunk cache is invalidated.
+            await file_obj.truncate_to(size)
 
-        # Goes through the handle rather than the path so that anything the
-        # handle is still buffering is accounted for, and so its decrypted
-        # chunk cache is invalidated.
-        await file_obj.truncate_to(size)
+        await file_obj.set_metadata(**self._metadata_fields(attrs))
 
     @_translate
     async def statvfs(self, path):
@@ -237,7 +264,8 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
 
     @_translate
     async def mkdir(self, path, attrs):
-        await self._vfs.makedir(self._decode(path))
+        await self._vfs.makedir(self._decode(path),
+                                permissions=getattr(attrs, "permissions", None))
 
     @_translate
     async def rmdir(self, path):
@@ -311,16 +339,42 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
         raise asyncssh.SFTPError(asyncssh.FX_OP_UNSUPPORTED, "hard links are not supported")
 
 
+# Live connections, so shutdown can let them finish rather than cutting them
+# off mid-upload. A set of the connection objects themselves: asyncssh gives
+# no registry of its own.
+_active_connections = set()
+
+
+def active_connections():
+    return frozenset(_active_connections)
+
+
 class DiscordSSHServer(asyncssh.SSHServer):
+    def __init__(self):
+        self._conn = None
+
     def connection_made(self, conn):
+        self._conn = conn
+        _active_connections.add(conn)
         peer = conn.get_extra_info("peername")
         logger.info("SSH connection received from %s", peer[0] if peer else "unknown")
 
     def connection_lost(self, exc):
-        if exc:
-            logger.warning("SSH connection error: %s", exc)
-        else:
+        _active_connections.discard(self._conn)
+        # Best effort at not leaving the session's master key reachable for
+        # longer than the session. Python cannot overwrite the bytes object
+        # itself, so this drops the reference rather than erasing the key.
+        if self._conn is not None:
+            self._conn.set_extra_info(session_key=None)
+            self._conn = None
+
+        if isinstance(exc, ConnectionResetError) or exc is None:
+            # Most clients drop the TCP connection instead of sending an SSH
+            # disconnect, which asyncssh reports as an error. Logging that at
+            # warning level buried the warnings that mean something.
             logger.info("SSH connection closed")
+        else:
+            logger.warning("SSH connection error: %s", exc)
 
     def begin_auth(self, username):
         return True  # authentication is required
@@ -328,8 +382,27 @@ class DiscordSSHServer(asyncssh.SSHServer):
     def password_auth_supported(self):
         return True
 
-    def validate_password(self, username, password):
+    async def validate_password(self, username, password):
+        """Check the credentials and, if they hold, open this session's key.
+
+        The password does two jobs now. Comparing it is the cheap early
+        reject; opening the wrapped master key is the one that matters, since
+        a password that cannot do that cannot read a byte regardless of what
+        else it satisfies.
+        """
         # Constant-time on both fields so neither leaks through timing.
         user_ok = hmac.compare_digest(username.encode(), SFTP_USER.encode())
         pass_ok = hmac.compare_digest(password.encode(), SFTP_PASSWORD.encode())
-        return user_ok and pass_ok
+        if not (user_ok and pass_ok):
+            return False
+
+        try:
+            key = await keystore.open_master_key(password)
+        except (KeyUnwrapError, keystore.KeystoreError) as exc:
+            # Startup already proved this works, so reaching here means the
+            # keystore changed underneath a running server.
+            logger.error("Could not open the master key for %s: %s", username, exc)
+            return False
+
+        self._conn.set_extra_info(session_key=key)
+        return True

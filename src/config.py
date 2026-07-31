@@ -31,20 +31,23 @@ DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "discord_sftp_vfs")
 
-# AES-256 needs exactly 32 bytes. Encode first, then size: slicing the str
-# before encoding could still yield more than 32 bytes for non-ASCII keys.
-# Anything shorter than 32 bytes is rejected in validate() rather than padded
-# with NULs, which would quietly weaken the key.
-AES_KEY_BYTES = 32
-_RAW_AES_KEY = os.getenv("AES_SECRET_KEY")
-AES_SECRET_KEY = (
-    _RAW_AES_KEY.encode("utf-8")[:AES_KEY_BYTES] if _RAW_AES_KEY else None
-)
-
 SFTP_USER = os.getenv("SFTP_USER")
 SFTP_PASSWORD = os.getenv("SFTP_PASSWORD")
+
+# Only needed while changing the password: it lets the server open the
+# existing wrapped master key once and re-wrap it under the new one. There is
+# no AES_SECRET_KEY any more -- the data key is random, lives in the database
+# wrapped under the password, and never appears in the environment.
+SFTP_PASSWORD_OLD = os.getenv("SFTP_PASSWORD_OLD")
+
 SFTP_PORT = os.getenv("SFTP_PORT", "2222")
 SFTP_HOST_KEY_PATH = os.getenv("SFTP_HOST_KEY_PATH", "host_key")
+
+# Cost of turning the password into a key-encryption key. Left as a string
+# for the same reason as SFTP_PORT; see `pbkdf2_iterations()`. Lowering it
+# only affects keys wrapped from then on, because each stored record carries
+# the parameters it was made with.
+PBKDF2_ITERATIONS = os.getenv("PBKDF2_ITERATIONS", "600000")
 
 MAX_CHUNK_SIZE = 9 * 1024 * 1024  # 9MB, under Discord's 10MiB attachment cap
 
@@ -63,7 +66,12 @@ CHUNK_CACHE_SIZE = 2
 
 # Unset or empty are the same failure: `FOO=` in a .env file is a typo, not a
 # deliberate empty password.
-_REQUIRED = ("DISCORD_BOT_TOKEN", "SFTP_USER", "SFTP_PASSWORD", "AES_SECRET_KEY")
+_REQUIRED = ("DISCORD_BOT_TOKEN", "SFTP_USER", "SFTP_PASSWORD")
+
+# The password is now the only thing standing between an attacker with the
+# database and every file in it, so it gets a length floor that a login
+# credential alone would not need.
+MIN_PASSWORD_BYTES = 12
 
 
 def check(env=None):
@@ -79,14 +87,16 @@ def check(env=None):
         if not env.get(name):
             problems.append(f"{name} is not set")
 
-    raw_key = env.get("AES_SECRET_KEY")
-    if raw_key:
-        size = len(raw_key.encode("utf-8"))
-        if size < AES_KEY_BYTES:
+    password = env.get("SFTP_PASSWORD")
+    if password:
+        size = len(password.encode("utf-8"))
+        if size < MIN_PASSWORD_BYTES:
             problems.append(
-                f"AES_SECRET_KEY is {size} bytes; AES-256 needs at least "
-                f"{AES_KEY_BYTES}. Generate one with: "
-                f'python -c "import secrets; print(secrets.token_hex(16))"'
+                f"SFTP_PASSWORD is {size} bytes; at least {MIN_PASSWORD_BYTES} "
+                "are required. It is no longer only a login credential -- it "
+                "wraps the key that every stored file is encrypted with. "
+                'Generate one with: python -c "import secrets; '
+                'print(secrets.token_urlsafe(24))"'
             )
 
     # DM mode and channel mode are alternatives, but with neither there is
@@ -106,6 +116,18 @@ def check(env=None):
         else:
             if not 1 <= port <= 65535:
                 problems.append(f"SFTP_PORT out of range: {port}")
+
+    raw_iterations = env.get("PBKDF2_ITERATIONS")
+    if raw_iterations:
+        try:
+            iterations = int(raw_iterations)
+        except ValueError:
+            problems.append(
+                f"PBKDF2_ITERATIONS is not an integer: {raw_iterations!r}")
+        else:
+            if iterations < 1:
+                problems.append(
+                    f"PBKDF2_ITERATIONS must be at least 1: {iterations}")
 
     raw_concurrency = env.get("DISCORD_MAX_CONCURRENCY")
     if raw_concurrency:
@@ -145,3 +167,8 @@ def sftp_port():
 def discord_max_concurrency():
     """In-flight Discord request cap. Safe once `validate()` has passed."""
     return int(DISCORD_MAX_CONCURRENCY)
+
+
+def pbkdf2_iterations():
+    """Key-derivation cost for newly wrapped keys. Safe after `validate()`."""
+    return int(PBKDF2_ITERATIONS)

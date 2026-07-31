@@ -16,13 +16,18 @@ a real `.env` cannot leak in either.
 import os
 
 TEST_USER = "testuser"
-TEST_PASSWORD = "testpass"
+TEST_PASSWORD = "testpassword-long-enough"
 
-os.environ["AES_SECRET_KEY"] = "test-key-0123456789abcdef01234567"
 os.environ["DISCORD_BOT_TOKEN"] = "test-token"
 os.environ["DISCORD_USER_ID"] = "100000000000000000"
 os.environ["SFTP_USER"] = TEST_USER
 os.environ["SFTP_PASSWORD"] = TEST_PASSWORD
+
+# PBKDF2 at the production cost is ~200ms, and a login happens in almost every
+# test in this suite. The stored key record carries the parameters it was made
+# with, so a low count here is a property of these fixtures, not of the code
+# under test.
+os.environ["PBKDF2_ITERATIONS"] = "1000"
 
 import asyncssh  # noqa: E402
 import pytest  # noqa: E402
@@ -69,39 +74,78 @@ def fake_db(monkeypatch):
 
 
 @pytest.fixture
-async def vfs(fake_db, fake_discord):
-    import src.vfs as vfs_mod
+async def master_key(fake_db):
+    """Bootstrap the keystore the way a first startup would, and open it.
 
-    instance = vfs_mod.DiscordVFS()
-    await instance.ensure_root()
-    return instance
+    Real wrap/unwrap rather than a hard-coded key: the password path is what
+    every connection in this suite exercises, so a fixture that bypassed it
+    would leave it untested everywhere.
+    """
+    from src import keystore
+    from src.config import pbkdf2_iterations
+
+    await keystore.ensure_usable(TEST_PASSWORD, iterations=pbkdf2_iterations())
+    return await keystore.open_master_key(TEST_PASSWORD)
 
 
 @pytest.fixture
-async def sftp(vfs, host_key):
+async def vfs(fake_db, fake_discord, master_key):
+    import src.vfs as vfs_mod
+
+    await vfs_mod.ensure_root()
+    return vfs_mod.DiscordVFS(master_key)
+
+
+@pytest.fixture
+async def sftp_port(vfs, host_key):
+    """A live server on a loopback port; the caller opens its own connections.
+
+    Depends on `vfs` for its side effect: that fixture bootstraps the keystore,
+    without which no login can produce a key.
+
+    Deliberately the real protocol stack rather than direct VFS calls: the
+    bugs this suite exists to catch were server-side method signatures that
+    asyncssh never invoked, which no VFS-level test would have noticed.
+
+    `gss_host=None` on both ends is what makes a per-test server affordable.
+    Left at its default, asyncssh derives the GSS host name via
+    `socket.getfqdn()`, and that reverse lookup costs about a second on this
+    machine -- twice per test, which was the whole runtime of the suite. It
+    matches production, where GSSAPI is off for the same reason.
+    """
+    import src.sftp as sftp_mod
+
+    # Matches production: no VFS is injected, so the connection's own login
+    # has to produce a working key or nothing in the test works.
+    server = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_factory=sftp_mod.DiscordSSHServer,
+        sftp_factory=sftp_mod.DiscordSFTPServer,
+        server_host_keys=[host_key],
+        gss_host=None,
+    )
+    try:
+        yield server.get_addresses()[0][1]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+def connect(port):
+    """An SSH connection to the test server, as an async context manager."""
+    return asyncssh.connect("127.0.0.1", port, known_hosts=None, gss_host=None,
+                            **SFTP_CREDENTIALS)
+
+
+@pytest.fixture
+async def sftp(sftp_port):
     """A live SFTP client talking to a real asyncssh server over loopback.
 
     Deliberately the real protocol stack rather than direct VFS calls: the
     bugs this suite exists to catch were server-side method signatures that
     asyncssh never invoked, which no VFS-level test would have noticed.
     """
-    import src.sftp as sftp_mod
-
-    server = await asyncssh.listen(
-        "127.0.0.1",
-        0,
-        server_factory=sftp_mod.DiscordSSHServer,
-        sftp_factory=lambda chan: sftp_mod.DiscordSFTPServer(chan, vfs),
-        server_host_keys=[host_key],
-    )
-    port = server.get_addresses()[0][1]
-
-    try:
-        async with asyncssh.connect(
-            "127.0.0.1", port, known_hosts=None, **SFTP_CREDENTIALS
-        ) as conn:
-            async with conn.start_sftp_client() as client:
-                yield client
-    finally:
-        server.close()
-        await server.wait_closed()
+    async with connect(sftp_port) as conn:
+        async with conn.start_sftp_client() as client:
+            yield client

@@ -1,16 +1,26 @@
 import asyncio
 import logging
 import os
+import signal
 import stat
 import sys
 
 import asyncssh
 
-from src.config import SFTP_HOST_KEY_PATH, ConfigError, sftp_port, validate
+from src import keystore
+from src.config import (
+    SFTP_HOST_KEY_PATH,
+    SFTP_PASSWORD,
+    SFTP_PASSWORD_OLD,
+    ConfigError,
+    pbkdf2_iterations,
+    sftp_port,
+    validate,
+)
 from src.db import db
 from src.discord_api import ReachabilityError, discord_api
-from src.sftp import DiscordSFTPServer, DiscordSSHServer
-from src.vfs import DiscordVFS
+from src.sftp import DiscordSFTPServer, DiscordSSHServer, active_connections
+from src.vfs import ensure_root
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +32,14 @@ logger = logging.getLogger(__name__)
 # A private key readable by anyone who can reach the file is a key anyone can
 # use to impersonate this server, and clients cannot tell the difference.
 _HOST_KEY_MODE = 0o600
+
+# How long a stopping server waits for live sessions before closing them.
+# Must stay under docker-compose's `stop_grace_period`, or the container is
+# killed part way through this and the wait bought nothing.
+SHUTDOWN_GRACE_SECONDS = 20
+
+# How long to wait for a connection to actually finish closing, once asked.
+CLOSE_TIMEOUT_SECONDS = 5
 
 
 def ensure_host_key(path: str):
@@ -110,8 +128,19 @@ async def start_server():
     try:
         await check_discord_reachable()
 
-        vfs = DiscordVFS()
-        await vfs.ensure_root()
+        # Before the socket opens: a password that cannot open the master key
+        # means every read fails after a successful login, which reads as data
+        # loss from the client side.
+        try:
+            await keystore.ensure_usable(
+                SFTP_PASSWORD,
+                old_password=SFTP_PASSWORD_OLD,
+                iterations=pbkdf2_iterations(),
+            )
+        except keystore.KeystoreError as exc:
+            raise ConfigError(str(exc)) from exc
+
+        await ensure_root()
 
         ensure_host_key(SFTP_HOST_KEY_PATH)
 
@@ -120,17 +149,98 @@ async def start_server():
             "",
             port,
             server_factory=DiscordSSHServer,
-            sftp_factory=lambda chan: DiscordSFTPServer(chan, vfs),
+            # No VFS is passed: each connection builds its own around the
+            # master key that its own login unwrapped.
+            sftp_factory=DiscordSFTPServer,
             server_host_keys=[SFTP_HOST_KEY_PATH],
+            # Password is the only authentication this server implements, so
+            # GSSAPI/Kerberos is turned off rather than left at its default.
+            # It is inert as things stand (asyncssh reports gss_available
+            # False without the optional gssapi/sspi packages), but leaving it
+            # on would mean a future dependency that happens to pull one in
+            # silently adds an auth path that never goes through
+            # validate_password.
+            #
+            # It also costs real time: working out the default gss_host calls
+            # socket.getfqdn(), whose reverse lookup takes about a second here.
+            gss_host=None,
         )
         logger.info("SFTP server listening on port %s", port)
 
-        await asyncio.Event().wait()
+        await _wait_for_shutdown()
     finally:
         if server is not None:
-            server.close()
+            await _drain(server)
         await discord_api.close()
         await db.close()
+
+
+async def _wait_for_shutdown():
+    """Block until the process is asked to stop.
+
+    Without this the container's SIGTERM killed the process outright: whatever
+    a client had written but not yet filled a chunk with was still sitting in
+    a buffer, and nothing flushed it.
+    """
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            # Windows' proactor loop has no add_signal_handler. SIGINT still
+            # arrives there as KeyboardInterrupt, which __main__ handles.
+            logger.debug("No signal handler for %s on this platform", sig)
+
+    await stop.wait()
+    logger.info("Shutdown requested; no longer accepting connections")
+
+
+async def _drain(server, grace: float = SHUTDOWN_GRACE_SECONDS):
+    """Stop listening, then let live sessions finish before closing them.
+
+    Closing a connection makes asyncssh run its SFTP cleanup, which calls
+    `close()` on every open handle and so flushes any buffered bytes to
+    Discord. Waiting first is what gives an upload already in flight the
+    chance to finish rather than being cut in half.
+    """
+    server.close()
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + grace
+    while active_connections() and loop.time() < deadline:
+        await asyncio.sleep(0.2)
+
+    remaining = active_connections()
+    if remaining:
+        logger.warning("Closing %d connection(s) still active after %.0fs",
+                       len(remaining), grace)
+    for conn in remaining:
+        conn.close()
+
+    # Every wait from here on is bounded. Blocking on a close that never
+    # completes would hold the process open until the container kills it
+    # outright -- the abrupt shutdown this whole function exists to avoid --
+    # so one stuck connection must not be able to prevent the orderly exit.
+    if remaining:
+        await _bounded(
+            asyncio.wait([asyncio.create_task(conn.wait_closed())
+                          for conn in remaining],
+                         timeout=CLOSE_TIMEOUT_SECONDS),
+            "connections to close")
+
+    await _bounded(server.wait_closed(), "the listener to close")
+    logger.info("Shutdown complete")
+
+
+async def _bounded(awaitable, what: str):
+    try:
+        await asyncio.wait_for(awaitable, CLOSE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("Gave up waiting %.0fs for %s", CLOSE_TIMEOUT_SECONDS, what)
 
 
 if __name__ == "__main__":

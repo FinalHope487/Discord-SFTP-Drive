@@ -6,14 +6,13 @@ directly rather than reimporting the module under a mutated environment.
 
 import pytest
 
-from src.config import AES_KEY_BYTES, ConfigError, check, validate
+from src.config import MIN_PASSWORD_BYTES, ConfigError, check, validate
 
 VALID = {
     "DISCORD_BOT_TOKEN": "token",
     "DISCORD_USER_ID": "100000000000000000",
     "SFTP_USER": "user",
-    "SFTP_PASSWORD": "password",
-    "AES_SECRET_KEY": "x" * AES_KEY_BYTES,
+    "SFTP_PASSWORD": "x" * MIN_PASSWORD_BYTES,
     "SFTP_PORT": "2222",
 }
 
@@ -33,36 +32,55 @@ def test_validate_accepts_a_complete_environment():
 
 
 @pytest.mark.parametrize(
-    "name", ["DISCORD_BOT_TOKEN", "SFTP_USER", "SFTP_PASSWORD", "AES_SECRET_KEY"]
+    "name", ["DISCORD_BOT_TOKEN", "SFTP_USER", "SFTP_PASSWORD"]
 )
 def test_each_secret_is_required(name):
     assert any(name in p for p in check(env(**{name: None})))
 
 
 @pytest.mark.parametrize(
-    "name", ["DISCORD_BOT_TOKEN", "SFTP_USER", "SFTP_PASSWORD", "AES_SECRET_KEY"]
+    "name", ["DISCORD_BOT_TOKEN", "SFTP_USER", "SFTP_PASSWORD"]
 )
 def test_empty_counts_as_unset(name):
     # `FOO=` in a .env file is a typo, not a deliberate empty password.
     assert any(name in p for p in check(env(**{name: ""})))
 
 
-def test_missing_aes_key_is_a_hard_failure():
-    # The regression that matters most: this used to fall back to a public
-    # constant, so the server ran and encrypted nothing.
-    with pytest.raises(ConfigError, match="AES_SECRET_KEY"):
-        validate(env(AES_SECRET_KEY=None))
+def test_missing_password_is_a_hard_failure():
+    # It is the only secret left that can open stored data, so a server that
+    # started without one would be a server with no key at all.
+    with pytest.raises(ConfigError, match="SFTP_PASSWORD"):
+        validate(env(SFTP_PASSWORD=None))
 
 
-def test_short_aes_key_is_rejected_not_padded():
-    problems = check(env(AES_SECRET_KEY="tooshort"))
-    assert any("AES_SECRET_KEY" in p and "8 bytes" in p for p in problems)
+def test_a_short_password_is_rejected():
+    # It stopped being only a login credential when it started wrapping the
+    # master key: whoever gets the database gets to guess against it offline.
+    problems = check(env(SFTP_PASSWORD="short"))
+    assert any("SFTP_PASSWORD" in p and "5 bytes" in p for p in problems)
 
 
-def test_multibyte_aes_key_is_measured_in_bytes():
-    # 16 characters, 48 bytes once encoded -- long enough. Measuring
-    # characters instead would have wrongly rejected it.
-    assert check(env(AES_SECRET_KEY="金鑰" * 8)) == []
+def test_a_multibyte_password_is_measured_in_bytes():
+    # Four characters, twelve bytes once encoded. Counting characters would
+    # have wrongly rejected it.
+    assert check(env(SFTP_PASSWORD="密碼密碼")) == []
+
+
+def test_no_aes_key_is_required_any_more():
+    # The key is random and lives wrapped in the database; nothing in the
+    # environment needs to carry it.
+    assert check(env()) == []
+    assert not any("AES" in p for p in check(env(SFTP_PASSWORD=None)))
+
+
+def test_non_numeric_iteration_count_is_reported():
+    assert any("PBKDF2_ITERATIONS" in p
+               for p in check(env(PBKDF2_ITERATIONS="lots")))
+
+
+def test_zero_iterations_is_rejected():
+    assert any("PBKDF2_ITERATIONS" in p
+               for p in check(env(PBKDF2_ITERATIONS="0")))
 
 
 def test_a_destination_channel_is_required():
@@ -86,7 +104,8 @@ def test_out_of_range_port_is_rejected():
 
 def test_all_problems_are_reported_at_once():
     # One problem per restart would be a miserable way to configure a server.
-    problems = check(env(DISCORD_BOT_TOKEN=None, SFTP_PASSWORD=None, AES_SECRET_KEY=None))
+    problems = check(env(DISCORD_BOT_TOKEN=None, SFTP_PASSWORD=None,
+                         SFTP_PORT="70000"))
     assert len(problems) == 3
 
 

@@ -20,14 +20,25 @@ Node schema (collection `nodes`):
         index       int   position in the chunk sequence
         message_id  str   Discord message holding the attachment
         nonce       str   hex, this chunk's AES-CTR initial counter block
-        hmac        str   hex, HMAC-SHA256 over nonce||ciphertext
+        hmac        str   hex, tag over this chunk's bytes and its position
         offset      int   plaintext offset of this chunk within the file
         size        int   plaintext length of this chunk
+    mac         str   files only; hex, tag over (id, size, ordered chunk tags)
 
-`hmac` is required. It lives here rather than alongside the ciphertext on
-Discord on purpose: that is what stops whoever serves the bytes from also
-producing a tag for them. A chunk without one is rejected rather than read
-unverified -- see `crypto.verify_chunk`.
+Both tags are required, and both live here rather than alongside the
+ciphertext on Discord on purpose: that is what stops whoever serves the bytes
+from also producing a tag for them. Anything missing one is rejected rather
+than read unverified.
+
+They cover different failures. A chunk tag says "these bytes belong at this
+offset in this file"; it cannot notice a chunk that is simply absent, because
+there is nothing left to check. `mac` covers the file's shape, so deleting a
+trailing chunk or replacing one with a hole fails too -- see `crypto`.
+
+`mac` is checked on single-node lookups (`stat`, `open`, `rename`, `remove`),
+not while listing a directory. Listing is bulk metadata, and one tampered file
+should not make its whole directory unlistable; anything that actually reads
+or opens the file goes through a checked path.
 
 Holes
 -----
@@ -54,8 +65,15 @@ import uuid
 from collections import OrderedDict
 from typing import Optional
 
-from src.config import AES_SECRET_KEY, CHUNK_CACHE_SIZE, MAX_CHUNK_SIZE
-from src.crypto import chunk_tag, generate_nonce, transform, verify_chunk
+from src.config import CHUNK_CACHE_SIZE, MAX_CHUNK_SIZE
+from src.crypto import (
+    chunk_tag,
+    generate_nonce,
+    node_tag,
+    transform,
+    verify_chunk,
+    verify_node,
+)
 from src.db import db
 from src.discord_api import discord_api
 
@@ -124,6 +142,36 @@ def _now() -> int:
     return int(time.time())
 
 
+# Mode bits without the file-type bits, which are the server's to decide.
+PERMISSION_MASK = 0o7777
+DEFAULT_FILE_MODE = 0o644
+DEFAULT_DIR_MODE = 0o755
+
+
+async def _apply_metadata(node: dict, *, permissions=None, mtime=None,
+                          atime=None):
+    """Persist the POSIX metadata this filesystem models.
+
+    Deliberately outside the file tag. That tag authenticates contents, and a
+    mode or timestamp is not content; covering them would mean every `chmod`
+    rewrote an integrity tag over bytes it did not touch. Someone who can
+    rewrite the database can still change these -- the same limit as the
+    recorded rollback gap.
+    """
+    update = {}
+    if permissions is not None:
+        update["permissions"] = int(permissions) & PERMISSION_MASK
+    if mtime is not None:
+        update["modified_at"] = int(mtime)
+    if atime is not None:
+        update["accessed_at"] = int(atime)
+    if not update:
+        return
+
+    node.update(update)
+    await db.get_db().nodes.update_one({"id": node["id"]}, {"$set": update})
+
+
 class DiscordFile:
     """An open file handle.
 
@@ -141,6 +189,7 @@ class DiscordFile:
     def __init__(self, vfs: "DiscordVFS", node: dict, *, readable: bool,
                  writable: bool, append: bool = False):
         self._vfs = vfs
+        self._key = vfs.key
         self._node = node
         self._readable = readable
         self._writable = writable
@@ -151,6 +200,10 @@ class DiscordFile:
         self._lock = asyncio.Lock()
         self._closed = False
         self._failed = False
+
+        # An mtime the client asked for on this handle, still unspent. See
+        # `_effective_mtime`.
+        self._pinned_mtime = None
 
         self._reindex()
 
@@ -247,7 +300,7 @@ class DiscordFile:
             self._chunk_cache.move_to_end(key)
             return cached
 
-        plaintext = await _fetch_chunk(chunk)
+        plaintext = await _fetch_chunk(self._key, self._node["id"], chunk)
 
         self._chunk_cache[key] = plaintext
         self._chunk_cache.move_to_end(key)
@@ -281,6 +334,10 @@ class DiscordFile:
                 return 0
             if offset < 0:
                 raise Unsupported(f"negative write offset: {offset}")
+
+            # A write after the client set a time is a genuine new
+            # modification, so the requested time no longer applies.
+            self._pinned_mtime = None
 
             # O_APPEND means the offset the client sends is advisory; POSIX
             # requires every write to go to the end regardless. That is the
@@ -363,8 +420,10 @@ class DiscordFile:
         ciphertexts XOR them together and recover both plaintexts.
         """
         nonce = generate_nonce()
-        ciphertext = transform(AES_SECRET_KEY, nonce, plaintext)
-        tag = chunk_tag(AES_SECRET_KEY, nonce, ciphertext)
+        ciphertext = transform(self._key, nonce, plaintext)
+        tag = chunk_tag(self._key, nonce, ciphertext, file_id=self._node["id"],
+                        index=chunk["index"], offset=chunk["offset"],
+                        size=len(plaintext))
         filename = f"{self._node['id']}_chunk_{chunk['index']}.bin"
 
         message_id, _url, _size = await discord_api.upload_chunk(ciphertext, filename)
@@ -377,7 +436,7 @@ class DiscordFile:
         try:
             await db.get_db().nodes.update_one(
                 {"id": self._node["id"]},
-                {"$set": {"chunks": self._node["chunks"], "modified_at": _now()}},
+                {"$set": _content_update(self._key, self._node, mtime=self._effective_mtime())},
             )
         except Exception:
             # All three move together: a chunk left with the new nonce and the
@@ -404,10 +463,16 @@ class DiscordFile:
         if not data:
             return
 
-        nonce = generate_nonce()
-        ciphertext = transform(AES_SECRET_KEY, nonce, data)
-        tag = chunk_tag(AES_SECRET_KEY, nonce, ciphertext)
+        # New chunks land where the existing ones stop, which is not the file
+        # size when a hole follows them.
+        offset = self._covered_end()
+        previous_size = self._node["size"]
         index = len(self._node["chunks"])
+
+        nonce = generate_nonce()
+        ciphertext = transform(self._key, nonce, data)
+        tag = chunk_tag(self._key, nonce, ciphertext, file_id=self._node["id"],
+                        index=index, offset=offset, size=len(data))
         filename = f"{self._node['id']}_chunk_{index}.bin"
 
         try:
@@ -415,11 +480,6 @@ class DiscordFile:
         except Exception:
             await self._rollback()
             raise
-
-        # New chunks land where the existing ones stop, which is not the file
-        # size when a hole follows them.
-        offset = self._covered_end()
-        previous_size = self._node["size"]
 
         chunk = {
             "index": index,
@@ -437,11 +497,7 @@ class DiscordFile:
         try:
             await db.get_db().nodes.update_one(
                 {"id": self._node["id"]},
-                {"$set": {
-                    "size": self._node["size"],
-                    "chunks": self._node["chunks"],
-                    "modified_at": _now(),
-                }},
+                {"$set": _content_update(self._key, self._node, mtime=self._effective_mtime())},
             )
         except Exception:
             # The attachment exists but nothing references it — drop it before
@@ -468,22 +524,44 @@ class DiscordFile:
         for chunk in self._node.get("chunks", []):
             await _safe_delete_message(chunk["message_id"])
 
+        self._node["chunks"] = []
+        self._node["size"] = 0
+
         try:
             if self._node.get("_created_by_handle"):
                 await db.get_db().nodes.delete_one({"id": self._node["id"]})
             else:
                 await db.get_db().nodes.update_one(
                     {"id": self._node["id"]},
-                    {"$set": {"size": 0, "chunks": [], "modified_at": _now()}},
+                    {"$set": _content_update(self._key, self._node, mtime=self._effective_mtime())},
                 )
         except Exception:
             logger.exception("Rollback bookkeeping failed for node %s", self._node["id"])
 
-        self._node["chunks"] = []
-        self._node["size"] = 0
         self._reindex()
 
     # -------------------------------------------------------------- resizing
+
+    def _effective_mtime(self):
+        """The timestamp a content write on this handle should record.
+
+        Normally "now". But small writes sit in the buffer until close, so a
+        client that writes, sets the mtime, and closes -- which is exactly
+        `put -p` -- would have that final flush stamp over the time it just
+        asked for. The flush is finishing a write that already happened, not
+        making a new one, so a pinned time wins.
+
+        A further write *after* the request does make a new modification, and
+        clears the pin.
+        """
+        return self._pinned_mtime
+
+    async def set_metadata(self, **fields):
+        """`fchmod` / `futimes` on this handle."""
+        async with self._lock:
+            await _apply_metadata(self._node, **fields)
+            if fields.get("mtime") is not None:
+                self._pinned_mtime = int(fields["mtime"])
 
     async def truncate_to(self, size: int):
         """`ftruncate` on this handle."""
@@ -499,7 +577,7 @@ class DiscordFile:
             # place them past the new end.
             await self._flush_buffer()
 
-            await _resize_node(self._node, size)
+            await _resize_node(self._key, self._node, size)
 
             # Indices are handed out as `len(chunks)` and so get reused once
             # the tail is dropped; a stale entry would then hand back another
@@ -520,11 +598,12 @@ class DiscordFile:
             if not self._writable or self._failed:
                 return
 
+            # Just the flush. Closing is not a modification -- every path that
+            # actually changes the file stamps `modified_at` itself -- and
+            # stamping here would discard an mtime the client set through
+            # fsetstat just before closing, which is exactly what `put -p`
+            # does.
             await self._flush_buffer()
-            await db.get_db().nodes.update_one(
-                {"id": self._node["id"]},
-                {"$set": {"modified_at": _now()}},
-            )
 
 
 async def _safe_delete_message(message_id: str):
@@ -547,20 +626,71 @@ def _covered_end(node: dict) -> int:
     return last["offset"] + last["size"]
 
 
-async def _fetch_chunk(chunk: dict) -> bytes:
-    """Download, authenticate and decrypt one chunk."""
-    url = await discord_api.get_attachment_url(chunk["message_id"])
-    ciphertext = await discord_api.download_chunk(url)
+def _chunk_tags(node: dict):
+    """This file's chunk tags, in offset order -- the node tag's input."""
+    return [c["hmac"] for c in sorted(node.get("chunks") or [],
+                                      key=lambda c: c["offset"])]
+
+
+def _content_update(key: bytes, node: dict, *, mtime: int = None) -> dict:
+    """The `$set` for any change to a file's contents.
+
+    `size`, `chunks` and `mac` always move together. A tag written a moment
+    behind either of the other two is a file that fails to open.
+
+    `mtime` exists for the case where the client already said what the time
+    should be -- see `DiscordFile._effective_mtime`.
+    """
+    return {
+        "size": node["size"],
+        "chunks": node["chunks"],
+        "mac": node_tag(key, file_id=node["id"], size=node["size"],
+                        chunk_tags=_chunk_tags(node)).hex(),
+        "modified_at": _now() if mtime is None else int(mtime),
+    }
+
+
+async def _touch_dir(node_id: str):
+    """Stamp a directory whose set of entries just changed.
+
+    Creating, removing or renaming an entry modifies the *directory*, not the
+    entry -- which is also why renaming a file leaves the file's own mtime
+    alone.
+    """
+    if not node_id:
+        return
+    await db.get_db().nodes.update_one(
+        {"id": node_id, "is_dir": True}, {"$set": {"modified_at": _now()}})
+
+
+def _verify_node(key: bytes, node):
+    """Check a file node's tag, passing directories and misses through."""
+    if node is None or node.get("is_dir"):
+        return node
+    verify_node(key, file_id=node["id"], size=node.get("size", 0),
+                chunk_tags=_chunk_tags(node), tag_hex=node.get("mac"))
+    return node
+
+
+async def _fetch_chunk(key: bytes, file_id: str, chunk: dict) -> bytes:
+    """Download, authenticate and decrypt one chunk.
+
+    Resolving the URL and fetching it are one call so that an expired
+    signature is retried rather than surfacing here as a read failure.
+    """
+    ciphertext = await discord_api.download_attachment(chunk["message_id"])
     nonce = bytes.fromhex(chunk["nonce"])
 
     # Before decryption, not after: the whole point of encrypt-then-MAC is
     # that forged bytes never reach the cipher.
-    verify_chunk(AES_SECRET_KEY, nonce, ciphertext, chunk.get("hmac"))
+    verify_chunk(key, nonce, ciphertext, chunk.get("hmac"), file_id=file_id,
+                 index=chunk["index"], offset=chunk["offset"],
+                 size=chunk["size"])
 
-    return transform(AES_SECRET_KEY, nonce, ciphertext)
+    return transform(key, nonce, ciphertext)
 
 
-async def _resize_node(node: dict, size: int):
+async def _resize_node(key: bytes, node: dict, size: int):
     """Set a file's length to exactly `size`.
 
     Growing is free: the file's recorded length is authoritative and the
@@ -590,12 +720,14 @@ async def _resize_node(node: dict, size: int):
 
     replacement_id = None
     if straddler is not None:
-        plaintext = await _fetch_chunk(straddler)
+        plaintext = await _fetch_chunk(key, node["id"], straddler)
         trimmed = plaintext[:size - straddler["offset"]]
 
         nonce = generate_nonce()
-        ciphertext = transform(AES_SECRET_KEY, nonce, trimmed)
-        tag = chunk_tag(AES_SECRET_KEY, nonce, ciphertext)
+        ciphertext = transform(key, nonce, trimmed)
+        tag = chunk_tag(key, nonce, ciphertext, file_id=node["id"],
+                        index=straddler["index"], offset=straddler["offset"],
+                        size=len(trimmed))
         filename = f"{node['id']}_chunk_{straddler['index']}.bin"
 
         replacement_id, _url, _size = await discord_api.upload_chunk(ciphertext, filename)
@@ -607,19 +739,20 @@ async def _resize_node(node: dict, size: int):
             size=len(trimmed),
         ))
 
+    previous_chunks, previous_size = node["chunks"], node["size"]
+    node["chunks"], node["size"] = keep, size
+
     try:
         await db.get_db().nodes.update_one(
             {"id": node["id"]},
-            {"$set": {"size": size, "chunks": keep, "modified_at": _now()}},
+            {"$set": _content_update(key, node)},
         )
     except Exception:
+        node["chunks"], node["size"] = previous_chunks, previous_size
         # Nothing points at the replacement yet, so it would be an orphan.
         if replacement_id:
             await _safe_delete_message(replacement_id)
         raise
-
-    node["chunks"] = keep
-    node["size"] = size
 
     # Same ordering as `_replace_chunk`: not until the metadata write lands is
     # anything still referencing these. Deleting first would turn a failed
@@ -630,23 +763,43 @@ async def _resize_node(node: dict, size: int):
         await _safe_delete_message(straddler["message_id"])
 
 
-class DiscordVFS:
-    """Directory tree operations. One instance is shared by every connection."""
+async def ensure_root():
+    """Create the tree's root if it is not there.
 
-    async def ensure_root(self):
-        existing = await db.get_db().nodes.find_one({"id": ROOT_ID})
-        if existing:
-            return
-        now = _now()
-        await db.get_db().nodes.insert_one({
-            "id": ROOT_ID,
-            "parent_id": None,
-            "filename": "",
-            "is_dir": True,
-            "size": 0,
-            "created_at": now,
-            "modified_at": now,
-        })
+    Deliberately not a method: it runs at startup, before anyone has
+    authenticated, and there is no key at that point. The root is a directory
+    and carries no content tag, so none is needed.
+    """
+    existing = await db.get_db().nodes.find_one({"id": ROOT_ID})
+    if existing:
+        return
+    now = _now()
+    await db.get_db().nodes.insert_one({
+        "id": ROOT_ID,
+        "parent_id": None,
+        "filename": "",
+        "is_dir": True,
+        "size": 0,
+        "created_at": now,
+        "modified_at": now,
+    })
+
+
+class DiscordVFS:
+    """Directory tree operations, bound to one connection's master key.
+
+    One instance per connection rather than one per process: the key is the
+    session's, and it goes away when the session does.
+    """
+
+    def __init__(self, key: bytes):
+        if not key:
+            raise ValueError("a DiscordVFS needs the session's master key")
+        self._key = key
+
+    @property
+    def key(self) -> bytes:
+        return self._key
 
     async def get_node(self, path: str) -> Optional[dict]:
         node = await db.get_db().nodes.find_one({"id": ROOT_ID})
@@ -657,10 +810,11 @@ class DiscordVFS:
                 "parent_id": node["id"],
                 "filename": part,
             })
-        return node
+        return _verify_node(self._key, node)
 
     async def get_node_by_id(self, node_id: str) -> Optional[dict]:
-        return await db.get_db().nodes.find_one({"id": node_id})
+        return _verify_node(
+            self._key, await db.get_db().nodes.find_one({"id": node_id}))
 
     async def require_node(self, path: str) -> dict:
         node = await self.get_node(path)
@@ -682,7 +836,7 @@ class DiscordVFS:
         node = await self.require_dir(path)
         return await self.children(node["id"])
 
-    async def makedir(self, path: str) -> dict:
+    async def makedir(self, path: str, *, permissions: int = None) -> dict:
         normalized = normalize_path(path)
         if normalized == "/":
             raise AlreadyExists("/")
@@ -700,6 +854,8 @@ class DiscordVFS:
             "filename": name,
             "is_dir": True,
             "size": 0,
+            "permissions": (DEFAULT_DIR_MODE if permissions is None
+                            else int(permissions) & PERMISSION_MASK),
             "created_at": now,
             "modified_at": now,
         }
@@ -715,6 +871,7 @@ class DiscordVFS:
             await _safe_delete_message(chunk["message_id"])
 
         await db.get_db().nodes.delete_one({"id": node["id"]})
+        await _touch_dir(node.get("parent_id"))
 
     async def removedir(self, path: str):
         node = await self.require_node(path)
@@ -726,6 +883,7 @@ class DiscordVFS:
             raise NotEmpty(normalize_path(path))
 
         await db.get_db().nodes.delete_one({"id": node["id"]})
+        await _touch_dir(node.get("parent_id"))
 
     async def rename(self, old_path: str, new_path: str, *, overwrite: bool = False):
         """Move or rename a node.
@@ -758,14 +916,18 @@ class DiscordVFS:
                 raise AlreadyExists(new)
             await self._discard(existing)
 
+        source_parent = node.get("parent_id")
+
+        # `modified_at` is deliberately absent: moving a file does not modify
+        # it. The directories on either end are what changed, and a client
+        # that compares mtimes to decide what to re-transfer would otherwise
+        # see every moved file as freshly written.
         await db.get_db().nodes.update_one(
             {"id": node["id"]},
-            {"$set": {
-                "parent_id": parent["id"],
-                "filename": name,
-                "modified_at": _now(),
-            }},
+            {"$set": {"parent_id": parent["id"], "filename": name}},
         )
+        await _touch_dir(source_parent)
+        await _touch_dir(parent["id"])
 
     async def _discard(self, node: dict):
         """Remove a node that is being replaced, releasing any attachments."""
@@ -815,19 +977,34 @@ class DiscordVFS:
             "filename": name,
             "is_dir": False,
             "size": 0,
+            "permissions": DEFAULT_FILE_MODE,
             "created_at": now,
             "modified_at": now,
             "chunks": [],
         }
+        # An empty file still needs a tag, or its first read fails the check
+        # that every other file passes.
+        node["mac"] = node_tag(self._key, file_id=node["id"], size=0,
+                               chunk_tags=[]).hex()
         await db.get_db().nodes.insert_one(node)
+        await _touch_dir(parent["id"])
         return node
+
+    async def set_metadata(self, path: str, **fields):
+        """`chmod` / `utimes` by path, for SFTP `setstat`.
+
+        The lookup happens even when there is nothing to apply, so a setstat
+        on a path that does not exist still fails.
+        """
+        node = await self.require_node(path)
+        await _apply_metadata(node, **fields)
 
     async def truncate(self, path: str, size: int):
         """`truncate` by path, for SFTP `setstat`."""
         node = await self.require_node(path)
         if node["is_dir"]:
             raise IsADirectory(normalize_path(path))
-        await _resize_node(node, size)
+        await _resize_node(self._key, node, size)
 
     async def _truncate(self, node: dict):
         """Drop the file's contents, releasing the Discord messages too.
@@ -835,4 +1012,4 @@ class DiscordVFS:
         The old code cleared `chunks` in MongoDB only, leaving every previous
         attachment referenced by nothing.
         """
-        await _resize_node(node, 0)
+        await _resize_node(self._key, node, 0)

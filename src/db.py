@@ -26,8 +26,14 @@ class Database:
     async def _ensure_indexes(cls):
         # Path resolution walks one segment at a time; without these every
         # segment is a collection scan.
-        await cls.db.nodes.create_index([("parent_id", 1), ("filename", 1)])
-        await cls.db.nodes.create_index("id")
+        #
+        # Unique, not merely indexed: two nodes sharing a name under the same
+        # parent make lookups depend on insertion order, and the loser becomes
+        # a file that exists on Discord but can never be addressed again.
+        await cls.db.nodes.create_index([("parent_id", 1), ("filename", 1)],
+                                        unique=True)
+        await cls.db.nodes.create_index("id", unique=True)
+        await cls.db.keystore.create_index("id", unique=True)
 
     @classmethod
     def get_db(cls):

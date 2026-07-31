@@ -117,15 +117,15 @@ async def test_survives_three_consecutive_429s(api, discord_stub):
 
 
 async def test_exhausted_retries_raise_a_retry_error(api, discord_stub):
-    # Specifically not a RuntimeError about consumed form data, which is how
-    # the original bug surfaced.
+    # A typed DiscordAPIError, and specifically not a RuntimeError about
+    # consumed form data, which is how the original bug surfaced.
     discord_stub.fail_count = None
-    with pytest.raises(Exception, match="Max retries exceeded"):
+    with pytest.raises(api_mod.DiscordAPIError, match="gave up on"):
         await api.upload_chunk(PAYLOAD, "c0.bin")
 
 
 async def test_exhaustion_uses_the_whole_retry_budget(api, discord_stub):
     discord_stub.fail_count = None
-    with pytest.raises(Exception, match="Max retries exceeded"):
+    with pytest.raises(api_mod.DiscordAPIError, match="gave up on"):
         await api.upload_chunk(PAYLOAD, "c0.bin")
     assert discord_stub.calls == MAX_ATTEMPTS

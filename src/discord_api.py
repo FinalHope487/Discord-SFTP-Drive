@@ -1,6 +1,9 @@
 import aiohttp
 import asyncio
 import logging
+import random
+import time
+import urllib.parse
 from src.config import (
     DISCORD_BOT_TOKEN,
     DISCORD_USER_ID,
@@ -10,6 +13,53 @@ from src.config import (
 from src.ratelimit import RateLimiter, route_key
 
 logger = logging.getLogger(__name__)
+
+# Server-side faults and transport failures are retried; a 4xx other than 429
+# is the caller's problem and retrying it just wastes the budget.
+_RETRYABLE_STATUS = (500, 502, 503, 504)
+_MAX_ATTEMPTS = 5
+
+# Equal jitter: half the delay fixed, half random. Without the random half,
+# every chunk of a multi-part upload that fails together also retries together,
+# reproducing the burst that caused the failure.
+_BACKOFF_BASE = 0.5
+_BACKOFF_CAP = 8.0
+
+# Discord signs attachment URLs with an expiry (24h when this was measured).
+# Treat one as spent slightly early rather than discovering mid-download that
+# it lapsed between the check and the request.
+_URL_EXPIRY_MARGIN = 300
+
+_TIMEOUT = aiohttp.ClientTimeout(total=600, connect=15, sock_read=120)
+
+
+class DiscordAPIError(RuntimeError):
+    """A Discord request failed. `status` is None for transport failures."""
+
+    def __init__(self, status, message):
+        super().__init__(f"Discord API error {status}: {message}"
+                         if status else f"Discord API error: {message}")
+        self.status = status
+
+
+def _backoff(attempt: int) -> float:
+    ceiling = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** attempt))
+    return random.uniform(ceiling / 2, ceiling)
+
+
+def _url_expiry(url: str):
+    """When a signed attachment URL stops working, or None if it says nothing.
+
+    Discord puts the expiry in the `ex` query parameter as hex epoch seconds.
+    """
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    raw = query.get("ex", [None])[0]
+    if not raw:
+        return None
+    try:
+        return int(raw, 16)
+    except ValueError:
+        return None
 
 # Discord permission bits we actually depend on. Named here rather than
 # inlined because a bare `1 << 15` at the call site says nothing about why
@@ -37,12 +87,14 @@ class ReachabilityError(RuntimeError):
 class DiscordAPI:
     def __init__(self, limiter=None):
         self.session = None
+        self.cdn_session = None
         self.base_url = "https://discord.com/api/v10"
         self.headers = {
             "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
         }
         self.dm_channel_id = None
         self._limiter = limiter
+        self._url_cache = {}     # message id -> (url, expiry epoch or None)
 
     @property
     def limiter(self):
@@ -71,12 +123,25 @@ class DiscordAPI:
 
     async def get_session(self):
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(headers=self.headers)
+            self.session = aiohttp.ClientSession(headers=self.headers,
+                                                 timeout=_TIMEOUT)
         return self.session
 
+    async def get_cdn_session(self):
+        """Separate session for attachment downloads, with no credentials.
+
+        The API session carries the bot token on every request. Attachment
+        URLs point at a different host and are already signed, so sending the
+        token there buys nothing and widens where it can end up.
+        """
+        if self.cdn_session is None or self.cdn_session.closed:
+            self.cdn_session = aiohttp.ClientSession(timeout=_TIMEOUT)
+        return self.cdn_session
+
     async def close(self):
-        if self.session and not self.session.closed:
-            await self.session.close()
+        for session in (self.session, self.cdn_session):
+            if session and not session.closed:
+                await session.close()
 
     async def _request(self, method, endpoint, *, data_factory=None, **kwargs):
         """`data_factory`, if given, is called to build a fresh `data=` value
@@ -90,39 +155,68 @@ class DiscordAPI:
         url = f"{self.base_url}{endpoint}"
         route = route_key(method, endpoint)
 
-        retries = 5
-        for attempt in range(retries):
+        last = None
+        for attempt in range(_MAX_ATTEMPTS):
             request_kwargs = dict(kwargs)
             if data_factory is not None:
                 request_kwargs["data"] = data_factory()
 
-            # The slot is taken per attempt, not around the whole loop: a 429
-            # means waiting, and holding a concurrency slot while waiting would
-            # block requests to unrelated routes that are still within budget.
-            async with self.limiter.slot(route):
-                async with session.request(method, url, **request_kwargs) as response:
-                    self.limiter.update(route, response.headers)
+            try:
+                # The slot is taken per attempt, not around the whole loop: a
+                # 429 means waiting, and holding a concurrency slot while
+                # waiting would block requests to unrelated routes that are
+                # still within budget.
+                async with self.limiter.slot(route):
+                    async with session.request(method, url, **request_kwargs) as response:
+                        self.limiter.update(route, response.headers)
 
-                    if response.status == 429:
-                        data = await response.json()
-                        retry_after = data.get("retry_after", 1.0)
-                        self.limiter.note_429(response.headers, retry_after)
-                        logger.warning(
-                            "Rate limited by Discord on %s. Retrying after %ss.",
-                            route, retry_after)
-                        sleep_for = retry_after
-                    else:
-                        if not response.ok:
+                        if response.status == 429:
+                            data = await response.json()
+                            retry_after = float(data.get("retry_after", 1.0))
+                            self.limiter.note_429(response.headers, retry_after)
+                            logger.warning(
+                                "Rate limited by Discord on %s. Retrying after %ss.",
+                                route, retry_after)
+                            last = DiscordAPIError(429, "rate limited")
+                            sleep_for = retry_after
+                        elif response.status in _RETRYABLE_STATUS:
+                            # Discord's own fault, and usually brief. Left
+                            # unretried these surfaced to the client as a
+                            # failed upload.
                             text = await response.text()
-                            logger.error(f"Discord API Error {response.status}: {text}")
-                            response.raise_for_status()
-
-                        if response.status == 204: # No content
+                            last = DiscordAPIError(response.status, text)
+                            sleep_for = _backoff(attempt)
+                            logger.warning(
+                                "Discord returned %s on %s (attempt %d/%d); "
+                                "retrying in %.1fs",
+                                response.status, route, attempt + 1,
+                                _MAX_ATTEMPTS, sleep_for)
+                        elif not response.ok:
+                            text = await response.text()
+                            logger.error("Discord API Error %s: %s",
+                                         response.status, text)
+                            raise DiscordAPIError(response.status, text)
+                        elif response.status == 204:   # No content
                             return None
-                        return await response.json()
+                        else:
+                            return await response.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                # A dropped connection or a stalled socket mid-upload used to
+                # fail the whole write. DiscordAPIError deliberately is not an
+                # aiohttp.ClientError, so genuine 4xx still escape here.
+                last = exc
+                sleep_for = _backoff(attempt)
+                logger.warning(
+                    "Transport failure on %s (attempt %d/%d): %s; retrying in %.1fs",
+                    route, attempt + 1, _MAX_ATTEMPTS, exc, sleep_for)
 
-            await asyncio.sleep(sleep_for)
-        raise Exception("Max retries exceeded for Discord API")
+            if attempt + 1 < _MAX_ATTEMPTS:
+                await asyncio.sleep(sleep_for)
+
+        raise DiscordAPIError(
+            getattr(last, "status", None),
+            f"gave up on {route} after {_MAX_ATTEMPTS} attempts: {last}",
+        ) from last
 
     async def upload_chunk(self, file_bytes: bytes, filename: str):
         def build_form_data():
@@ -138,28 +232,109 @@ class DiscordAPI:
         attachment = result["attachments"][0]
         url = attachment["url"]
         size = attachment["size"]
-        
+
+        if size != len(file_bytes):
+            # Caught here rather than left to the HMAC on the next read: the
+            # chunk is still referenced by nothing, so it can be dropped
+            # instead of becoming a file that fails to open much later.
+            await self._safe_delete(message_id)
+            raise DiscordAPIError(
+                None,
+                f"Discord stored {size} bytes for {filename} but "
+                f"{len(file_bytes)} were sent",
+            )
+
+        self._url_cache[message_id] = (url, _url_expiry(url))
         return message_id, url, size
 
-    async def get_attachment_url(self, message_id: str):
+    async def _safe_delete(self, message_id: str):
+        try:
+            await self.delete_message(message_id)
+        except Exception:
+            logger.warning("Could not delete Discord message %s", message_id,
+                           exc_info=True)
+
+    async def get_attachment_url(self, message_id: str, *, refresh: bool = False):
+        """A usable download URL, re-resolved when the cached one has lapsed.
+
+        Caching matters: without it every chunk read costs an extra API call
+        purely to learn a URL that is valid for a day.
+        """
+        if not refresh:
+            cached = self._url_cache.get(message_id)
+            if cached is not None:
+                url, expiry = cached
+                if expiry is None or time.time() < expiry - _URL_EXPIRY_MARGIN:
+                    return url
+
         channel_id = await self.get_target_channel_id()
         endpoint = f"/channels/{channel_id}/messages/{message_id}"
         result = await self._request("GET", endpoint)
         if not result.get("attachments"):
-            raise Exception("No attachments found on the message")
-        return result["attachments"][0]["url"]
+            raise DiscordAPIError(
+                None, f"message {message_id} has no attachment")
+
+        url = result["attachments"][0]["url"]
+        self._url_cache[message_id] = (url, _url_expiry(url))
+        return url
 
     async def delete_message(self, message_id: str):
         channel_id = await self.get_target_channel_id()
         endpoint = f"/channels/{channel_id}/messages/{message_id}"
         await self._request("DELETE", endpoint)
+        self._url_cache.pop(message_id, None)
+
+    async def download_attachment(self, message_id: str) -> bytes:
+        """A chunk's stored bytes, re-signing the URL if it has expired.
+
+        The expiry check above is a prediction; this is what happens when it
+        is wrong. A signature that lapsed between resolving the URL and using
+        it comes back as a 403/404 from the CDN, which is a stale URL rather
+        than missing data, so it is resolved again instead of failing the read.
+        """
+        for attempt in range(2):
+            url = await self.get_attachment_url(message_id, refresh=attempt > 0)
+            try:
+                return await self.download_chunk(url)
+            except DiscordAPIError as exc:
+                if attempt == 0 and exc.status in (403, 404):
+                    logger.info(
+                        "Attachment URL for %s was rejected (%s); re-resolving",
+                        message_id, exc.status)
+                    continue
+                raise
+        raise AssertionError("unreachable")
 
     async def download_chunk(self, url: str) -> bytes:
-        session = await self.get_session()
-        async with session.get(url) as response:
-            if not response.ok:
-                response.raise_for_status()
-            return await response.read()
+        session = await self.get_cdn_session()
+
+        last = None
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                async with session.get(url) as response:
+                    if response.ok:
+                        return await response.read()
+                    text = await response.text()
+                    error = DiscordAPIError(response.status, text)
+                    if response.status not in _RETRYABLE_STATUS:
+                        raise error
+                    last = error
+                    logger.warning(
+                        "CDN returned %s (attempt %d/%d)",
+                        response.status, attempt + 1, _MAX_ATTEMPTS)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                last = exc
+                logger.warning("Transport failure downloading a chunk "
+                               "(attempt %d/%d): %s", attempt + 1,
+                               _MAX_ATTEMPTS, exc)
+
+            if attempt + 1 < _MAX_ATTEMPTS:
+                await asyncio.sleep(_backoff(attempt))
+
+        raise DiscordAPIError(
+            getattr(last, "status", None),
+            f"gave up downloading after {_MAX_ATTEMPTS} attempts: {last}",
+        ) from last
 
     # ------------------------------------------------------------ reachability
 

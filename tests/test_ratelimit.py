@@ -198,12 +198,15 @@ class BucketStub:
     async def handle(self, request):
         reader = await request.multipart()
         field = await reader.next()
-        await field.read()
+        body = await field.read()
         self.times.append(time.monotonic())
 
+        # Report the size actually received. It used to be a hard-coded 1,
+        # which no longer passes: the client now checks that Discord stored as
+        # many bytes as it sent.
         return web.json_response(
             {"id": f"msg-{len(self.times)}",
-             "attachments": [{"url": "https://cdn.test/x", "size": 1}]},
+             "attachments": [{"url": "https://cdn.test/x", "size": len(body)}]},
             headers={
                 "X-RateLimit-Bucket": "bucket-a",
                 "X-RateLimit-Remaining": "0",
