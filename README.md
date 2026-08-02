@@ -106,4 +106,5 @@ documented residual risk rather than an oversight. Everything else — altered
 bytes, reordered or missing chunks, renames, moves, name swaps, deletions —
 is caught.
 
-There is no off-machine backup of this repository yet.
+The repository is mirrored to a GitHub remote; the history, and the reasoning
+that lives in its commit messages, exist somewhere other than this machine.

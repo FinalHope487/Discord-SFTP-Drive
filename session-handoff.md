@@ -2,7 +2,7 @@
 
 依 `.claude/templates/session-handoff.md` 產出。**最後更新 2026-08-01。**
 
-> **`ROADMAP.md` 現在沒有 `[now]`，唯一的 `[next]` 是「推一個 remote」（等你開好 GitHub MCP）。**
+> **`ROADMAP.md` 現在沒有 `[now]`，唯一的 `[next]` 是 Client UI（2026-08-02 列入）。**
 > 371 項自動化測試全過，pyflakes 乾淨，production image 內同樣 371 過。
 > 實地驗收 17/17，收尾對帳 0 孤兒、0 懸空引用。
 
@@ -37,12 +37,16 @@ H2 那一段已入庫：`5392704`（程式碼）、`881d0d5`（文件）。
 
 ## 未完成待辦
 
-1. **repo 沒有 remote**（`ROADMAP.md` 唯一的 `[next]`）。你說要先開 GitHub MCP。
-   所有 commit 仍只存在這台機器，而這一段動了加密層且**沒有 migration 可以退回去**。
+1. **Client UI**（2026-08-02 起是 `ROADMAP.md` 唯一的 `[next]`）。**形態已拍板**：同 process
+   的 aiohttp API + 靜態 SPA、完整檔案管理、先跑多使用者 §5 前三步且金鑰按模型 B 鋪路。
+   五步的實作順序寫在 `ROADMAP.md` 該條裡。**唯一還沒拍板的是 session 怎麼持有 master key**
+   ——那要在第 4 步（HTTP API 層）動工前先出方案。
+   ~~repo 沒有 remote~~ — 已於 2026-08-02 用 GitHub CLI 推上 `origin`，這條關閉。
 2. **`BLUEPRINT.md` 該重新產出**。它以 `e288ff7` 為準，H1 與 H2 落地後 §4.3 / §4.4
    描述的 tag 涵蓋範圍已明顯落後。排在 remote 之後（它會產生一份大檔）。
-3. **仍未拍板的 `[later]`**：`SFTP_PASSWORD` 走 docker secret 還是明確接受風險；
-   多使用者（`design-multi-user.md` §6 三個決策點）。其餘見 `ROADMAP.md`。
+3. ~~**仍未拍板的 `[later]`**~~ — 2026-08-02 全部收掉：`SFTP_PASSWORD` **要做 docker secret，
+   但排在 Client UI 之後**；`design-multi-user.md` §6 三個決策點全部拍板（模型 B／
+   `users` collection／分四步）。其餘 `[later]` 見 `ROADMAP.md`，都是已評估的殘留項。
 4. **仍未被真實環境驗證的東西**：5xx 與傳輸層重試（要 Discord 自己故障）、
    附件 URL 真的過期（要等 24 小時）、`_rollback` 的保護（要 Discord 連續失敗五次以上）。
 
