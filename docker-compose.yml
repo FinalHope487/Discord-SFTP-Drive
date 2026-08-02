@@ -46,6 +46,17 @@ services:
     build: .
     ports:
       - "${SFTP_PORT:-2222}:2222"
+      # NOTE THE 127.0.0.1. That prefix is what keeps the web UI off the
+      # network, and it is doing the work that WEB_HOST cannot: inside the
+      # container the API must bind 0.0.0.0 or nothing outside the container
+      # could reach it at all, so the container's own bind address protects
+      # nothing. This mapping is the boundary.
+      #
+      # The session cookie stands for an unwrapped master key, so widening
+      # this to "${WEB_PORT:-8080}:8080" puts that within reach of anything on
+      # the LAN. See .env.example for what to put in front of it first, and
+      # for the phone-friendly setup.
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:8080"
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:?set DISCORD_BOT_TOKEN in .env}
       # One of these two is required; the server validates that at startup,
@@ -78,6 +89,27 @@ services:
       # The container always listens on 2222; the host-side port is mapped
       # above, so changing SFTP_PORT does not need a rebuild.
       - SFTP_PORT=2222
+      # The web API, same story: always 8080 inside, mapped above. 0.0.0.0
+      # here is not a widening -- it is the only address reachable from
+      # outside the container, and the `ports:` mapping is what decides who
+      # outside can reach it.
+      - WEB_ENABLED=${WEB_ENABLED:-1}
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8080
+      # Ceilings on how long a session may hold an unwrapped master key in
+      # memory. The UI may ask for shorter and gets it; asking for longer is
+      # clamped back to these, because a lifetime the browser can extend is a
+      # lifetime controlled by whoever stole the cookie.
+      - WEB_SESSION_IDLE_SECONDS=${WEB_SESSION_IDLE_SECONDS:-600}
+      - WEB_SESSION_ABSOLUTE_SECONDS=${WEB_SESSION_ABSOLUTE_SECONDS:-7200}
+      # Argon2id runs twice per sign-in at 64 MiB each. asyncssh bounds its
+      # own concurrency; an HTTP endpoint does not, so this does.
+      - WEB_LOGIN_CONCURRENCY=${WEB_LOGIN_CONCURRENCY:-2}
+      - WEB_LOGIN_QUEUE=${WEB_LOGIN_QUEUE:-16}
+      # Browsers treat http://localhost as a secure context, so this costs
+      # nothing on the default mapping. Only turn it off for a plaintext
+      # binding you have decided to accept.
+      - WEB_COOKIE_SECURE=${WEB_COOKIE_SECURE:-1}
       # On a volume, not the container filesystem. Without this the key is
       # regenerated on every `docker compose up --build` and every client
       # reports a host key mismatch -- which is indistinguishable from the

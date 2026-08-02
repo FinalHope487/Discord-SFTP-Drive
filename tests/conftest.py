@@ -37,6 +37,13 @@ os.environ["ARGON2_TIME_COST"] = "1"
 os.environ["ARGON2_MEMORY_KIB"] = "64"
 os.environ["ARGON2_PARALLELISM"] = "1"
 
+# The web tests talk plain HTTP to 127.0.0.1, and a correct client will not
+# send a Secure cookie over that -- so leaving the production default on would
+# not test stricter behaviour, it would test a client that never authenticates.
+# The flag itself is asserted directly in `test_web.py` instead, under both
+# settings, which is the part that could actually regress.
+os.environ["WEB_COOKIE_SECURE"] = "0"
+
 import asyncssh  # noqa: E402
 import pytest  # noqa: E402
 

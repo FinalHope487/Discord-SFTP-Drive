@@ -13,11 +13,15 @@ from src.config import (
     SFTP_PASSWORD,
     SFTP_PASSWORD_OLD,
     SFTP_USER,
+    WEB_HOST,
     ConfigError,
     kdf_settings,
     kdf_upgrade,
     sftp_port,
     validate,
+    web_cookie_secure,
+    web_enabled,
+    web_port,
 )
 from src.db import db
 from src.discord_api import ReachabilityError, discord_api
@@ -132,6 +136,7 @@ async def start_server():
     # by that path prints an "Unclosed client session" traceback that buries
     # the actual configuration error.
     server = None
+    web_runner = None
     try:
         await check_discord_reachable()
 
@@ -191,12 +196,57 @@ async def start_server():
         )
         logger.info("SFTP server listening on port %s", port)
 
+        # In this process, on this loop, sharing the same per-session
+        # DiscordVFS machinery and the same `_node_versions`. A separate
+        # service against the same MongoDB would be the second replica
+        # README.md forbids.
+        web_runner = await _start_web()
+
         await _wait_for_shutdown()
     finally:
+        if web_runner is not None:
+            # Before the SFTP drain: cleanup drops every session, and a
+            # session dropped while its upload is still buffered would lose
+            # the tail of that upload.
+            await _bounded(web_runner.cleanup(), "the web API to stop")
         if server is not None:
             await _drain(server)
         await discord_api.close()
         await db.close()
+
+
+async def _start_web():
+    """Bring up the HTTP API, or say plainly why there is none."""
+    if not web_enabled():
+        logger.info("Web API disabled (WEB_ENABLED=0)")
+        return None
+
+    from aiohttp import web as aiohttp_web
+
+    from src.web import create_app
+
+    runner = aiohttp_web.AppRunner(create_app(), access_log=None)
+    await runner.setup()
+    site = aiohttp_web.TCPSite(runner, WEB_HOST, web_port())
+    await site.start()
+
+    logger.info("Web API listening on %s:%s", WEB_HOST, web_port())
+
+    # Deliberately not a warning about the bind address. Under compose the
+    # container has to bind 0.0.0.0 to be reachable at all, and what keeps it
+    # off the network is the host-side publish -- `127.0.0.1:8080:8080` --
+    # which this process cannot see. Warning on the bind address would fire
+    # on every correct deployment and mean nothing.
+    #
+    # Secure cookies are something it *can* see, and turning them off is an
+    # explicit decision to let the session id travel in the clear.
+    if not web_cookie_secure():
+        logger.warning(
+            "WEB_COOKIE_SECURE is off, so the session cookie will be sent "
+            "over plaintext HTTP. That cookie stands for an unwrapped master "
+            "key: anyone who can watch the traffic can use it. Only sensible "
+            "behind TLS-terminating infrastructure or on a trusted link.")
+    return runner
 
 
 async def _wait_for_shutdown():

@@ -70,6 +70,45 @@ ARGON2_PARALLELISM = os.getenv("ARGON2_PARALLELISM", str(crypto.DEFAULT_ARGON2_P
 # operator still chooses when it happens.
 KDF_UPGRADE = os.getenv("KDF_UPGRADE", "0")
 
+# ------------------------------------------------------------------- web API
+#
+# The HTTP API runs in this process, beside the SFTP server, sharing one
+# DiscordVFS-per-session and one `_node_versions`. That is not for convenience:
+# a separate process against the same MongoDB is the second replica README.md
+# forbids, and it would serve stale chunk layouts with no error and no log.
+
+WEB_ENABLED = os.getenv("WEB_ENABLED", "1")
+
+# Loopback by default, and the compose file does not publish the port. Reaching
+# it from another machine means an SSH tunnel, which this deployment already
+# has the credentials for. `.env.example` documents what to change for phones
+# and what the server has to absorb in exchange.
+WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
+WEB_PORT = os.getenv("WEB_PORT", "8080")
+
+# How long a session may hold an unwrapped master key in memory.
+#
+# Both are *ceilings*. A client may ask for less at login and gets it; asking
+# for more is clamped back to these. The distinction matters: a session
+# lifetime is a security control, so letting the browser extend it would hand
+# that control to whoever stole the cookie.
+WEB_SESSION_IDLE_SECONDS = os.getenv("WEB_SESSION_IDLE_SECONDS", "600")
+WEB_SESSION_ABSOLUTE_SECONDS = os.getenv("WEB_SESSION_ABSOLUTE_SECONDS", "7200")
+
+# Argon2id runs twice per login at 64 MiB each. asyncssh caps its own
+# concurrent connections; an HTTP endpoint has no such thing, so 100 parallel
+# login attempts would be 6.4 GB of allocation from an attacker who never has
+# to guess anything. This bounds it, and anything beyond the queue depth is
+# refused with 503 rather than queued indefinitely.
+WEB_LOGIN_CONCURRENCY = os.getenv("WEB_LOGIN_CONCURRENCY", "2")
+WEB_LOGIN_QUEUE = os.getenv("WEB_LOGIN_QUEUE", "16")
+
+# Cookies are marked Secure by default. Browsers treat http://localhost as a
+# secure context, so this costs nothing on the default loopback binding; it
+# only has to be turned off for a plaintext binding on a LAN, which is exactly
+# the deployment that should have to make that choice explicitly.
+WEB_COOKIE_SECURE = os.getenv("WEB_COOKIE_SECURE", "1")
+
 MAX_CHUNK_SIZE = 9 * 1024 * 1024  # 9MB, under Discord's 10MiB attachment cap
 
 # How many Discord requests may be in flight at once. Firing every chunk of a
@@ -105,6 +144,16 @@ _KDF_COST_VARIABLES = {
     "ARGON2_TIME_COST": 1,
     "ARGON2_MEMORY_KIB": 8,
     "ARGON2_PARALLELISM": 1,
+}
+
+# Same treatment for the web settings whose only sensible floor is 1. A zero
+# session lifetime is a server nobody can log into; a zero login concurrency is
+# a login endpoint that blocks for ever.
+_WEB_INTEGER_FLOORS = {
+    "WEB_SESSION_IDLE_SECONDS": 1,
+    "WEB_SESSION_ABSOLUTE_SECONDS": 1,
+    "WEB_LOGIN_CONCURRENCY": 1,
+    "WEB_LOGIN_QUEUE": 1,
 }
 
 
@@ -184,6 +233,44 @@ def check(env=None):
                 f"Argon2 requires for ARGON2_PARALLELISM={lanes} "
                 f"(at least {8 * lanes})")
 
+    for name, floor in _WEB_INTEGER_FLOORS.items():
+        raw = env.get(name)
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            problems.append(f"{name} is not an integer: {raw!r}")
+        else:
+            if value < floor:
+                problems.append(f"{name} must be at least {floor}: {value}")
+
+    raw_web_port = env.get("WEB_PORT")
+    if raw_web_port:
+        try:
+            port = int(raw_web_port)
+        except ValueError:
+            problems.append(f"WEB_PORT is not an integer: {raw_web_port!r}")
+        else:
+            if not 1 <= port <= 65535:
+                problems.append(f"WEB_PORT out of range: {port}")
+
+    # An idle ceiling above the absolute one can never be reached, so it is a
+    # setting that silently does nothing -- the shape of configuration error
+    # this file exists to refuse.
+    try:
+        idle = int(env.get("WEB_SESSION_IDLE_SECONDS") or WEB_SESSION_IDLE_SECONDS)
+        absolute = int(env.get("WEB_SESSION_ABSOLUTE_SECONDS")
+                       or WEB_SESSION_ABSOLUTE_SECONDS)
+    except ValueError:
+        pass  # already reported above
+    else:
+        if idle > absolute:
+            problems.append(
+                f"WEB_SESSION_IDLE_SECONDS ({idle}) is above "
+                f"WEB_SESSION_ABSOLUTE_SECONDS ({absolute}), so the idle "
+                "timeout can never be reached and does nothing")
+
     raw_concurrency = env.get("DISCORD_MAX_CONCURRENCY")
     if raw_concurrency:
         try:
@@ -244,6 +331,33 @@ def kdf_settings():
 def kdf_upgrade():
     """Whether startup may re-wrap the stored key onto the configured KDF."""
     return KDF_UPGRADE.strip().lower() in _TRUTHY
+
+
+def web_enabled():
+    return WEB_ENABLED.strip().lower() in _TRUTHY
+
+
+def web_port():
+    return int(WEB_PORT)
+
+
+def web_cookie_secure():
+    return WEB_COOKIE_SECURE.strip().lower() in _TRUTHY
+
+
+def web_session_limits():
+    """The ceilings on how long a session may hold a key. Ints, after validate()."""
+    return {
+        "idle": int(WEB_SESSION_IDLE_SECONDS),
+        "absolute": int(WEB_SESSION_ABSOLUTE_SECONDS),
+    }
+
+
+def web_login_limits():
+    return {
+        "concurrency": int(WEB_LOGIN_CONCURRENCY),
+        "queue": int(WEB_LOGIN_QUEUE),
+    }
 
 
 def password_hash_settings():

@@ -19,6 +19,7 @@ Three rules the rest of the code depends on:
   once per password -- would not have done.
 """
 
+import asyncio
 import logging
 
 from src.crypto import (
@@ -160,7 +161,11 @@ async def open_master_key(record_id: str, password: str) -> bytes:
     record = await load_record(record_id)
     if record is None:
         raise KeystoreError(f"no master key has been created for {record_id!r}")
-    return unwrap_master_key(password, record)
+    # Off the event loop, for the same reason as the password check in
+    # `users.authenticate`: deriving the KEK is memory-hard C that does not
+    # yield, and a login must not be able to stall every other connection for
+    # the ~125ms it takes.
+    return await asyncio.to_thread(unwrap_master_key, password, record)
 
 
 async def rewrap(record_id: str, old_password: str, new_password: str, *,

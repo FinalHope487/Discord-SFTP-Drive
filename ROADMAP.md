@@ -24,15 +24,14 @@
     改名到帳號 id 底下——**只動 `id` 一個欄位，不重包**，所以不需要密碼也不冒險。
   - ~~3. root 改 per-user~~ **已完成**。`DiscordVFS(key, root_id)`，`root_id` 沒有預設值；
     `extra_info` 從 `session_key` 換成帶 key／root_id／username 的 `users.Session`。
-  - **4. HTTP API 層**（下一步）：`aiohttp` app 掛進 `main.py`，與 SFTP server 同 process、
-    共用同一個 `DiscordVFS` 與 `_node_versions`。前端是純靜態 SPA，可獨立改版不必重建 image。
-  - **5. 前端**：完整檔案管理（瀏覽／上傳／下載／刪除／建目錄／改名）。
-  - **動第 4 步之前必須先拍板的一件事**：session 怎麼持有 master key。金鑰是**每連線**的，
-    `validate_password` 解開後掛在該條 SSH 連線上；HTTP 沒有這個生命週期，而每個 request
-    重跑 Argon2id 不可行（登入現在是兩次 Argon2——密碼雜湊一次、解 KEK 一次），所以需要一個
-    帶 TTL 的記憶體 session。這動到認證流程與金鑰處理，照 `CLAUDE.md` 要先出方案再拍板。
-  - **會被順帶掀出來的**：寫入路徑從一條變兩條，`_rollback()` 的附件釋放責任（見下方拍板決策，
-    寫在 docstring 裡的那條）在新路徑上要自己負責；跨 handle 同步的邊角要在 HTTP 路徑再驗一次。
+  - ~~4. HTTP API 層~~ **已完成**（`src/web.py` / `websession.py` / `webauth.py`）。
+    `aiohttp` app 掛在 `main.py`，與 SFTP server 同 process、共用 `_node_versions`。
+    session 持有金鑰的方案已拍板並落地，見下方決策。
+  - **5. 前端**（下一步）：純靜態 SPA，完整檔案管理（瀏覽／上傳／下載／刪除／建目錄／改名）。
+    API 已經齊了：`/api/login` `/api/logout` `/api/session` `/api/files` `/api/stat`
+    `/api/file`（GET/PUT/DELETE）`/api/dir`（POST/DELETE）`/api/rename`。
+  - **已知代價，前端要一起處理**：寫入路徑現在是兩條，`_rollback()` 的附件釋放責任
+    （見下方拍板決策，寫在 docstring 裡的那條）在 HTTP 路徑上也要自己負責。
 
 - [later] **重新產出 `BLUEPRINT.md`**。它以 `e288ff7`（Argon2id 上線那次）為準，之後 H1 與 H2 都落地了，
   §3 / §4 描述的 tag 涵蓋範圍與 `_rollback()` 行為都已不同。目前靠開頭的狀態橫幅與逐條註記
@@ -212,6 +211,31 @@
   認證、金鑰與樹根，出事時分不出是哪一層——而這三層裡有兩層寫壞的後果是**所有位元組
   永遠讀不出來**。**第 4 步（真正開放第二個帳號）是獨立決定，前三步不預先承諾它。**
 
+- **HTTP session 把 master key 留在 process 記憶體，瀏覽器只拿到不透明 id**（2026-08-02 決定）。
+  兩條被否決的路要記下來免得再想一遍：**把金鑰加密塞進 cookie**，等於偷到 cookie 就是偷到
+  金鑰本身，而且金鑰每個 request 都過一次網路；**每個 request 重新推導**是每次兩輪 Argon2、
+  約 250ms，那不是設計而是故障。**重啟後所有 session 失效也是刻意的**——要讓 session 活過重啟，
+  就得把 master key 寫在某個比密碼更弱的東西底下，而那正是 keystore 存在的理由。
+
+- **session 存活時間是伺服器定的上限，client 只能往短調**（2026-08-02 決定）。
+  `.env` 定 10 分鐘 idle / 2 小時絕對上限；client 可以要求更短並且拿得到，要求更長會被夾回來。
+  **這個不對稱就是重點**：瀏覽器能延長的期限，等於是被偷走那個 cookie 的人在控制。
+  兩個期限缺一不可——idle 每次請求重設，絕對上限不會，沒有後者的話一個開著背景輪詢的分頁
+  可以讓金鑰無限期留在記憶體裡。
+
+- **登入鎖來源，永遠不鎖帳號**（2026-08-02 決定）。只有一個帳號，所以帳號鎖定等於
+  「任何人打錯幾次密碼就能把擁有者鎖在門外」的 DoS。鎖定的鍵是 (來源位址 + 裝置 id)：
+  裝置 id 讓鎖定夠精準，不會因為一個瀏覽器出事就鎖掉整個住處。**但裝置 id 不是安全邊界**
+  ——cookie 誰都能清掉，所以底下疊了一層純位址的計數，清 cookie 只會讓它更快到達而不是逃掉。
+  登入成功只清該裝置的計數，不清位址的：共用位址的攻擊者不該靠登入自己的帳號拿到免費重置。
+
+- **登入端點有並發上限與佇列上限**（2026-08-02 決定）。一次登入跑兩輪 Argon2id、各 64 MiB。
+  asyncssh 有自己的連線上限，所以 SFTP 那條路是**碰巧**有界的；HTTP 沒有，100 個並發登入
+  就是 6.4 GB，而攻擊者不需要猜對任何東西，死掉的行程還會把 SFTP 一起帶走。
+  超過佇列深度回 503 而不是繼續排——無上限的佇列是同一個故障多繞幾步。
+  **順帶把 Argon2 移出 event loop**（`asyncio.to_thread`）：它是不讓步的 memory-hard C，
+  在 loop 上跑等於一次登入凍住所有連線 125ms。這條同時修好了 SFTP 那邊本來就有的問題。
+
 - **Client UI 第一版就做完整檔案管理，不只唯讀**（2026-08-02 決定）。
   瀏覽／上傳／下載／刪除／建目錄／改名。**代價是寫入路徑從一條變兩條**：`_rollback()`
   的附件釋放責任（見上方拍板決策）在 HTTP 路徑上要自己負責，跨 handle 同步的邊角也要在
@@ -225,6 +249,20 @@
 只記「日期 / 做了什麼 / 測試數」，加上不在別處的教訓。
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
+
+**2026-08-02 · HTTP API 層（Client UI 第 4 步）** — 455 項測試（+59），突變 15/15，
+image 內同樣 455 過，**實地驗收 25/25，已上線**。`src/web.py`（aiohttp app）、
+`websession.py`（session store）、`webauth.py`（登入節流與鎖定）。
+- 決策與理由在上面那一節。這裡只記三件不在別處的：
+- **loopback 是靠 host 端的 publish 做的，不是靠容器內的 bind**。容器內必須綁 0.0.0.0 才
+  可能被連到，所以 `WEB_HOST` 保護不了任何東西；`docker-compose.yml` 的
+  `127.0.0.1:8080:8080` 才是邊界。因此啟動時**刻意不對 bind 位址發警告**——那會在每個
+  正確部署上都叫一次。改為在 `WEB_COOKIE_SECURE` 被關掉時警告，那是伺服器真的看得到的決定。
+- **aiohttp 的 Application 在 startup 之後是凍結的**，所以 sweeper task 不能寫回 app；
+  它放在一個啟動前就建好的 dict 裡。key 一律用 `web.AppKey`，因為 `pytest.ini` 把
+  `src.*` 的 DeprecationWarning 設成 error，而裸字串 key 已經被 aiohttp 標為 deprecated。
+- **手機怎麼連**寫在 `.env.example` 末段，三條路各自標明伺服器端要吞下什麼。
+  **自簽憑證刻意不提供**——它會訓練使用者按掉那個本來應該有意義的警告。
 
 **2026-08-02 · 多使用者結構的前三步（Client UI 的前置）** — 396 項測試（+25），突變 10/10，
 image 內同樣 396 過，**實地驗收 20/20，已上線並完成遷移**。

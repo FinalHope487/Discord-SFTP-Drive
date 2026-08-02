@@ -36,6 +36,15 @@ Then connect on the port you set (2222 by default):
 sftp -P 2222 <SFTP_USER>@localhost
 ```
 
+There is also a web API on `http://127.0.0.1:8080`, served from the same
+process — deliberately, since a second process against the same MongoDB is the
+replica problem described below. It is published on the host's loopback only,
+so nothing on the network can reach it; `.env.example` covers what to change
+to use it from a phone and what each option costs. Signing in unwraps the
+master key into that process's memory for as long as the session lasts, which
+is why the session has both an idle timeout and an absolute ceiling, and why
+the browser can shorten them but not extend them.
+
 **Back up `SFTP_PASSWORD`.** It wraps the key every stored file is encrypted
 with; losing it means losing the files, not just the login.
 
@@ -74,7 +83,7 @@ larger cache. It is on the roadmap and is not done.
 ./venv/Scripts/python.exe -m pytest
 ```
 
-396 tests, about 30 seconds, no credentials or network required — MongoDB and
+455 tests, about 30 seconds, no credentials or network required — MongoDB and
 the Discord API are faked. A green suite is not a substitute for a run against
 real infrastructure; the fakes model neither rate limits nor attachment URL
 expiry, and several of the bugs in the history here were only ever found by
@@ -101,11 +110,12 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 | [`design-node-identity-integrity.md`](design-node-identity-integrity.md) | Built, and its banner lists the four places the plan and the result diverged. |
 | [`CLAUDE.md`](CLAUDE.md) | Collaboration rules for AI-assisted work on this repo. |
 
-Source lives in `src/`: `sftp.py` is the protocol surface, `vfs.py` the
-filesystem, `crypto.py` and `keystore.py` the encryption and key handling,
-`users.py` accounts and the password check, `discord_api.py` and
-`ratelimit.py` the Discord client, `db.py` MongoDB, `config.py` the settings,
-`main.py` startup and shutdown.
+Source lives in `src/`: `sftp.py` is the protocol surface, `web.py` the HTTP
+one with `websession.py` and `webauth.py` behind it, `vfs.py` the filesystem,
+`crypto.py` and `keystore.py` the encryption and key handling, `users.py`
+accounts and the password check, `discord_api.py` and `ratelimit.py` the
+Discord client, `db.py` MongoDB, `config.py` the settings, `main.py` startup
+and shutdown.
 
 ## Status
 

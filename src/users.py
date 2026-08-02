@@ -27,6 +27,7 @@ built with the same cost parameters before reporting the failure. This is a
 new attack surface that arrived with the collection, not a pre-existing one.
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -126,13 +127,19 @@ async def authenticate(username: str, password: str):
     settings = password_hash_settings()
     record = await find(username)
 
+    # Off the event loop. Argon2 is memory-hard C that does not yield, so
+    # verifying in place blocks every other connection for its whole duration
+    # -- about 125ms at production cost. That was survivable while the only
+    # way in was SSH, whose own connection limits bounded it; an HTTP endpoint
+    # anyone can POST to makes it a way to stall the SFTP server from outside.
     if record is None or record.get("disabled"):
         # Spend the same time as a real check. See the module docstring: the
         # collection lookup is what made this necessary.
-        _verify(_dummy(settings), password, settings)
+        await asyncio.to_thread(_verify, _dummy(settings), password, settings)
         return None
 
-    if not _verify(record.get("password_hash"), password, settings):
+    if not await asyncio.to_thread(_verify, record.get("password_hash"),
+                                   password, settings):
         return None
 
     return record
