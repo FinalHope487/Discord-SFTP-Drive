@@ -44,6 +44,17 @@ class Database:
         await cls._unique_index(cls.db.nodes, "id")
         await cls._unique_index(cls.db.keystore, "id")
 
+        # Accounts. `username` is what a login resolves, and two rows sharing
+        # one would make which account a password opens depend on insertion
+        # order -- with a master key each, that is not an ambiguity, it is one
+        # user reaching another's tree.
+        #
+        # The (parent_id, filename) index above needs nothing added for
+        # per-account trees: each root is its own parent_id, so the same
+        # filename under two of them is already two distinct keys.
+        await cls._unique_index(cls.db.users, "username")
+        await cls._unique_index(cls.db.users, "id")
+
     @classmethod
     async def _unique_index(cls, collection, keys):
         """Create a unique index, replacing a non-unique one of the same shape.

@@ -15,7 +15,7 @@ half down: this is meant to cost nothing in the common case.
 
 import os
 
-from src.vfs import DiscordVFS
+from src.vfs import ROOT_ID, DiscordVFS
 from tests.conftest import TEST_CHUNK_SIZE, connect
 
 PAYLOAD = os.urandom(TEST_CHUNK_SIZE + 1000)
@@ -36,7 +36,7 @@ async def test_a_truncate_by_another_handle_is_seen_on_the_next_read(vfs, master
     reader = await vfs.open("/blob.bin", read=True, write=False)
     assert await reader.read_at(0, len(PAYLOAD)) == PAYLOAD
 
-    other = DiscordVFS(master_key)
+    other = DiscordVFS(master_key, ROOT_ID)
     await other.truncate("/blob.bin", 4096)
 
     # Old behaviour: the reader's cached chunk list still claimed the file was
@@ -52,7 +52,7 @@ async def test_a_truncates_new_size_is_seen_via_refresh(vfs, master_key):
     reader = await vfs.open("/blob.bin", read=True, write=False)
     assert reader.size == len(PAYLOAD)
 
-    other = DiscordVFS(master_key)
+    other = DiscordVFS(master_key, ROOT_ID)
     await other.truncate("/blob.bin", 4096)
 
     # This is what `fstat` calls before reading `.size` -- see src/sftp.py.
@@ -67,7 +67,7 @@ async def test_an_overwrite_by_another_handle_is_seen_on_the_next_read(vfs, mast
     assert await reader.read_at(0, 10) == PAYLOAD[:10]
 
     replacement = os.urandom(10)
-    writer = DiscordVFS(master_key)
+    writer = DiscordVFS(master_key, ROOT_ID)
     handle = await writer.open("/blob.bin", read=False, write=True)
     await handle.write_at(0, replacement)
     await handle.close()
@@ -98,7 +98,7 @@ async def test_an_actual_change_costs_exactly_one_database_round_trip(
     reader = await vfs.open("/blob.bin", read=True, write=False)
     await reader.read_at(0, 10)
 
-    other = DiscordVFS(master_key)
+    other = DiscordVFS(master_key, ROOT_ID)
     await other.truncate("/blob.bin", 4096)
 
     before = fake_db.nodes.find_one_calls

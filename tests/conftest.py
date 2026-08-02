@@ -82,25 +82,44 @@ def fake_db(monkeypatch):
 
 
 @pytest.fixture
-async def master_key(fake_db):
-    """Bootstrap the keystore the way a first startup would, and open it.
+async def account(fake_db):
+    """The environment's account and its key, exactly as startup builds them.
+
+    Both halves, in the order `main.start_server` does them: the row first,
+    then the wrapped key under that row's id. A fixture that bootstrapped the
+    keystore alone would leave every login in this suite failing at the
+    account lookup, and one that stubbed the row would leave the password
+    hashing untested everywhere.
+    """
+    from src import keystore, users
+    from src.config import kdf_settings
+    from src.vfs import ROOT_ID
+
+    user = await users.sync_env_user(TEST_USER, TEST_PASSWORD, root_id=ROOT_ID)
+    await keystore.ensure_usable(users.keystore_id(user), TEST_PASSWORD,
+                                 settings=kdf_settings())
+    return user
+
+
+@pytest.fixture
+async def master_key(account):
+    """This account's master key, opened the way a login opens it.
 
     Real wrap/unwrap rather than a hard-coded key: the password path is what
     every connection in this suite exercises, so a fixture that bypassed it
     would leave it untested everywhere.
     """
-    from src import keystore
-    from src.config import kdf_settings
+    from src import keystore, users
 
-    await keystore.ensure_usable(TEST_PASSWORD, settings=kdf_settings())
-    return await keystore.open_master_key(TEST_PASSWORD)
+    return await keystore.open_master_key(users.keystore_id(account),
+                                          TEST_PASSWORD)
 
 
 @pytest.fixture
-async def vfs(fake_db, fake_discord, master_key):
+async def vfs(fake_db, fake_discord, master_key, account):
     import src.vfs as vfs_mod
 
-    instance = vfs_mod.DiscordVFS(master_key)
+    instance = vfs_mod.DiscordVFS(master_key, account["root_id"])
     await instance.ensure_root()
     return instance
 

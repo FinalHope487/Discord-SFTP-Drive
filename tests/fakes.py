@@ -99,6 +99,7 @@ class FakeDB:
     def __init__(self):
         self.nodes = FakeCollection("nodes")
         self.keystore = FakeCollection("keystore")
+        self.users = FakeCollection("users")
 
     async def command(self, *a, **k):
         return {"ok": 1}

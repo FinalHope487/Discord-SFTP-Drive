@@ -97,7 +97,7 @@ async def test_a_renamed_file_still_reads_back(vfs, master_key):
     await _write(vfs, "/before.txt", PAYLOAD)
     await vfs.rename("/before.txt", "/after.txt")
 
-    reader = await DiscordVFS(master_key).open("/after.txt", read=True, write=False)
+    reader = await DiscordVFS(master_key, ROOT_ID).open("/after.txt", read=True, write=False)
     assert await reader.read_at(0, len(PAYLOAD)) == PAYLOAD
     assert await vfs.get_node("/before.txt") is None
 
@@ -107,7 +107,7 @@ async def test_a_file_moved_between_directories_still_reads_back(vfs, master_key
     await _write(vfs, "/note.txt", PAYLOAD)
     await vfs.rename("/note.txt", "/archive/note.txt")
 
-    reader = await DiscordVFS(master_key).open("/archive/note.txt", read=True,
+    reader = await DiscordVFS(master_key, ROOT_ID).open("/archive/note.txt", read=True,
                                                write=False)
     assert await reader.read_at(0, len(PAYLOAD)) == PAYLOAD
 
@@ -156,7 +156,7 @@ async def test_a_renamed_directory_still_works(vfs, master_key):
     await _write(vfs, "/private/keys.txt", PAYLOAD)
     await vfs.rename("/private", "/public")
 
-    other = DiscordVFS(master_key)
+    other = DiscordVFS(master_key, ROOT_ID)
     reader = await other.open("/public/keys.txt", read=True, write=False)
     assert await reader.read_at(0, len(PAYLOAD)) == PAYLOAD
     assert len(await other.list_dir("/public")) == 1
@@ -265,7 +265,7 @@ async def test_a_crash_between_the_two_writes_still_lists(vfs, fake_db, master_k
     directory["entries_mac_pending"] = directory["entries_mac"]
     directory["entries_mac"] = before
 
-    assert len(await DiscordVFS(master_key).list_dir("/d")) == 1
+    assert len(await DiscordVFS(master_key, ROOT_ID).list_dir("/d")) == 1
 
 
 async def test_a_deletion_cannot_be_laundered_by_a_later_mkdir(vfs, fake_db):
@@ -336,7 +336,7 @@ async def test_a_root_predating_tags_is_refused_while_it_holds_data(
     })
 
     with pytest.raises(Exception, match="predates node tag version"):
-        await DiscordVFS(master_key).ensure_root()
+        await DiscordVFS(master_key, ROOT_ID).ensure_root()
 
 
 async def test_an_empty_root_predating_tags_is_upgraded(fake_db, master_key):
@@ -346,7 +346,7 @@ async def test_an_empty_root_predating_tags_is_upgraded(fake_db, master_key):
         "size": 0, "created_at": 1, "modified_at": 1,
     })
 
-    vfs = DiscordVFS(master_key)
+    vfs = DiscordVFS(master_key, ROOT_ID)
     await vfs.ensure_root()
 
     assert (await vfs.get_node("/"))["tag_version"] == TAG_VERSION

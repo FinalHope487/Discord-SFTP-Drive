@@ -19,14 +19,13 @@ were silent failures rather than obvious ones:
 """
 
 import functools
-import hmac
 import logging
 import stat
 
 import asyncssh
 
-from src import keystore
-from src.config import SFTP_PASSWORD, SFTP_USER
+from src import keystore, users
+from src.config import SFTP_USER
 from src.crypto import IntegrityError, KeyUnwrapError
 from src.vfs import (
     DEFAULT_DIR_MODE,
@@ -114,10 +113,14 @@ def _attrs(node: dict, size: int = None) -> asyncssh.SFTPAttrs:
 class DiscordSFTPServer(asyncssh.SFTPServer):
     def __init__(self, chan, vfs=None):
         super().__init__(chan)
-        # The VFS is built per connection around that session's master key,
-        # which `validate_password` put on the connection. Passing one in is
-        # for tests that drive the VFS directly.
-        self._vfs = vfs or DiscordVFS(chan.get_extra_info("session_key"))
+        # The VFS is built per connection around that session's key *and its
+        # tree*, both of which `validate_password` put on the connection. The
+        # two travel together because a key opened for one account against
+        # another account's root is not a recoverable state -- see
+        # `users.Session`. Passing a VFS in is for tests that drive it directly.
+        session = chan.get_extra_info("session")
+        self._vfs = vfs or DiscordVFS(session.key, session.root_id)
+        self._username = session.username if session else SFTP_USER
 
     # ------------------------------------------------------------- utilities
 
@@ -132,11 +135,13 @@ class DiscordSFTPServer(asyncssh.SFTPServer):
         return path.encode("utf-8", errors="surrogateescape")
 
     def format_user(self, uid):
-        # Never consult the host's account database.
-        return SFTP_USER
+        # Never consult the host's account database. The name comes from the
+        # session, so a listing shows whoever is logged in rather than
+        # whatever `SFTP_USER` happens to say.
+        return self._username
 
     def format_group(self, gid):
-        return SFTP_USER
+        return self._username
 
     async def _parent_node(self, node: dict) -> dict:
         if not node.get("parent_id"):
@@ -394,7 +399,7 @@ class DiscordSSHServer(asyncssh.SSHServer):
         # longer than the session. Python cannot overwrite the bytes object
         # itself, so this drops the reference rather than erasing the key.
         if self._conn is not None:
-            self._conn.set_extra_info(session_key=None)
+            self._conn.set_extra_info(session=None)
             self._conn = None
 
         if isinstance(exc, ConnectionResetError) or exc is None:
@@ -414,22 +419,32 @@ class DiscordSSHServer(asyncssh.SSHServer):
     async def validate_password(self, username, password):
         """Check the credentials and, if they hold, open this session's key.
 
-        The password does two jobs now. Comparing it is the cheap early
-        reject; opening the wrapped master key is the one that matters, since
-        a password that cannot do that cannot read a byte regardless of what
-        else it satisfies.
+        Three steps rather than the two this used to be, because the account
+        is a row now instead of a pair of module constants:
+
+        1. look the account up and verify the stored password hash --
+           `users.authenticate` spends the same time on a username that does
+           not exist, which the old `compare_digest` got for free and a
+           database lookup does not;
+        2. open *that account's* wrapped master key. This is still the check
+           that matters: a password that cannot do it cannot read a byte
+           whatever else it satisfies;
+        3. make sure the account's own tree exists.
         """
-        # Constant-time on both fields so neither leaks through timing.
-        user_ok = hmac.compare_digest(username.encode(), SFTP_USER.encode())
-        pass_ok = hmac.compare_digest(password.encode(), SFTP_PASSWORD.encode())
-        if not (user_ok and pass_ok):
+        user = await users.authenticate(username, password)
+        if user is None:
+            # No detail, deliberately: which of the two failed is exactly what
+            # the dummy verification in `users.authenticate` exists to hide.
+            logger.info("Password authentication refused for %r", username)
             return False
 
         try:
-            key = await keystore.open_master_key(password)
+            key = await keystore.open_master_key(users.keystore_id(user),
+                                                 password)
         except (KeyUnwrapError, keystore.KeystoreError) as exc:
-            # Startup already proved this works, so reaching here means the
-            # keystore changed underneath a running server.
+            # Startup already proved this works for the environment's account,
+            # so reaching here means the keystore changed underneath a running
+            # server.
             logger.error("Could not open the master key for %s: %s", username, exc)
             return False
 
@@ -437,10 +452,11 @@ class DiscordSSHServer(asyncssh.SSHServer):
         # exists -- which is to say, not at startup. This is the first moment
         # one does. It is a single lookup once the tree is there.
         try:
-            await DiscordVFS(key).ensure_root()
+            await DiscordVFS(key, user["root_id"]).ensure_root()
         except VFSError as exc:
             logger.error("Cannot serve this tree: %s", exc)
             return False
 
-        self._conn.set_extra_info(session_key=key)
+        self._conn.set_extra_info(session=users.Session(
+            key=key, root_id=user["root_id"], username=user["username"]))
         return True

@@ -19,7 +19,7 @@ import os
 import asyncssh
 import pytest
 
-from src import keystore
+from src import keystore, users
 from src.main import _drain
 from src.sftp import active_connections
 from tests.conftest import TEST_CHUNK_SIZE, TEST_PASSWORD, TEST_USER, connect
@@ -71,7 +71,8 @@ async def test_a_login_cannot_succeed_without_the_key(sftp_port, fake_db, caplog
             pass
 
 
-async def test_the_session_key_is_the_stored_master_key(sftp_port, master_key):
+async def test_the_session_key_is_the_stored_master_key(sftp_port, master_key,
+                                                        account):
     """The session must use the key from the keystore, not one of its own.
 
     Asserting the keystore is unchanged is not enough: a login that invented
@@ -87,9 +88,10 @@ async def test_the_session_key_is_the_stored_master_key(sftp_port, master_key):
             async with client.open("/blob.bin", "wb") as f:
                 await f.write(SMALL)
 
-    assert await keystore.open_master_key(TEST_PASSWORD) == master_key
+    assert await keystore.open_master_key(
+        users.keystore_id(account), TEST_PASSWORD) == master_key
 
-    handle = await vfs_mod.DiscordVFS(master_key).open(
+    handle = await vfs_mod.DiscordVFS(master_key, account["root_id"]).open(
         "/blob.bin", read=True, write=False)
     assert await handle.read_at(0, len(SMALL)) == SMALL
 
@@ -115,10 +117,10 @@ async def test_the_session_key_is_dropped_when_the_connection_ends(sftp_port):
         async with conn.start_sftp_client() as client:
             await client.listdir("/")
         server_side = next(iter(active_connections()))
-        assert server_side.get_extra_info("session_key")
+        assert server_side.get_extra_info("session").key
 
     await asyncio.sleep(0.05)
-    assert server_side.get_extra_info("session_key") is None
+    assert server_side.get_extra_info("session") is None
 
 
 # ------------------------------------------------- ending without a close

@@ -39,6 +39,20 @@ sftp -P 2222 <SFTP_USER>@localhost
 **Back up `SFTP_PASSWORD`.** It wraps the key every stored file is encrypted
 with; losing it means losing the files, not just the login.
 
+The account itself lives in the database rather than in the environment: on
+startup `SFTP_USER` and `SFTP_PASSWORD` are synchronised into a `users` row
+holding an Argon2id hash, the id of that account's tree, and — through it —
+that account's own wrapped master key. The environment is still authoritative
+and there is still exactly one account, so nothing about running it changes.
+What changed is that a second row would be a second account with a key of its
+own, rather than a schema change. Adding one is not implemented.
+
+One consequence worth knowing before restoring a backup: **`users` and
+`keystore` have to travel together.** The account row is what says which
+wrapped key belongs to this deployment, so restoring one collection without
+the other leaves a key nothing points at. The server refuses to start rather
+than creating a fresh one on top of data it could not read.
+
 ## Run exactly one replica
 
 Do not `--scale` the service, do not point a second copy at the same MongoDB,
@@ -60,14 +74,14 @@ larger cache. It is on the roadmap and is not done.
 ./venv/Scripts/python.exe -m pytest
 ```
 
-371 tests, about 30 seconds, no credentials or network required — MongoDB and
+396 tests, about 30 seconds, no credentials or network required — MongoDB and
 the Discord API are faked. A green suite is not a substitute for a run against
 real infrastructure; the fakes model neither rate limits nor attachment URL
 expiry, and several of the bugs in the history here were only ever found by
 hand against a real bot token.
 
-The same suite runs inside the production image, which is the point of pinning
-both to the same Python version:
+A green suite is also not a substitute for running it inside the production
+image, which is the point of pinning both to the same Python version:
 
 ```bash
 docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-server \
@@ -83,14 +97,15 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 | [`SOP.md`](SOP.md) | Recurring problems and the order to check things in. Environment traps, mostly. |
 | [`missing_info.md`](missing_info.md) | The original open questions and what each was finally decided to be. |
 | [`session-handoff.md`](session-handoff.md) | Where the last session stopped: live data state, what is not committed, environment notes. Rewritten each session. |
-| [`design-multi-user.md`](design-multi-user.md) | A proposal, not a description. Multi-user support is not built. |
+| [`design-multi-user.md`](design-multi-user.md) | Part proposal, part description: the structural steps have landed, opening a second account has not. Its banner says which is which. |
 | [`design-node-identity-integrity.md`](design-node-identity-integrity.md) | Built, and its banner lists the four places the plan and the result diverged. |
 | [`CLAUDE.md`](CLAUDE.md) | Collaboration rules for AI-assisted work on this repo. |
 
 Source lives in `src/`: `sftp.py` is the protocol surface, `vfs.py` the
 filesystem, `crypto.py` and `keystore.py` the encryption and key handling,
-`discord_api.py` and `ratelimit.py` the Discord client, `db.py` MongoDB,
-`config.py` the settings, `main.py` startup and shutdown.
+`users.py` accounts and the password check, `discord_api.py` and
+`ratelimit.py` the Discord client, `db.py` MongoDB, `config.py` the settings,
+`main.py` startup and shutdown.
 
 ## Status
 

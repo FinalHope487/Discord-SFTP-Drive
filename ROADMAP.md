@@ -15,24 +15,22 @@
 
 <!-- 格式：- [標記] 說明（可附上下文/來源 session） -->
 
-- [next] **Client UI**（2026-08-02 列入，形態已拍板，見下方決策）。目前唯一的對外介面是 SFTP
-  協定，`src/` 裡沒有任何 HTTP／API 層，所以這不是「加一個前端」，是要先長出一層 API。
-  **實作順序**（前三步是 `design-multi-user.md` §5，行為完全不變，可各自單獨驗證與 commit）：
-  1. `users` collection 與密碼雜湊（Argon2id `PasswordHasher`，**不重用 `derive_kek`**），
-     啟動時把 env 的 `SFTP_USER` / `SFTP_PASSWORD` 同步進去，`validate_password` 改成查資料庫。
-     **要記得補「帳號不存在時仍跑一次假驗證」**——換成 DB 查詢之後就不再是常數時間了，
-     這是目前不存在的新攻擊面。
-  2. `keystore` 的 id 從 `"master"` 改成 per-user（單筆 migration）。**按模型 B**，所以第 4 步
-     建帳號時是 `generate_master_key()` 產新的一把，不是把既有那把重包一份。
-  3. root 從常數變成 per-user；`DiscordVFS` 收 `root_id`，`session_key` 這個 `extra_info`
-     改成同時帶 key 與 root_id 的小物件。
-  4. **HTTP API 層**：`aiohttp` app 掛進 `main.py`，與 SFTP server 同 process、共用同一個
-     `DiscordVFS` 與 `_node_versions`。前端是純靜態 SPA，可獨立改版不必重建 image。
-  5. **前端**：完整檔案管理（瀏覽／上傳／下載／刪除／建目錄／改名）。
-  - **尚未拍板、要動工前才需要決定的**：session 怎麼持有 master key。金鑰目前是**每連線**的，
+- [now] **Client UI**（2026-08-02 列入，形態已拍板；**第 1～3 步已於同日落地**）。
+  唯一的對外介面仍是 SFTP 協定，`src/` 裡還沒有任何 HTTP／API 層，所以這不是「加一個前端」，
+  是要先長出一層 API。
+  - ~~1. `users` collection 與密碼雜湊~~ **已完成**（`src/users.py`）。Argon2id
+    `PasswordHasher`，與 `derive_kek` 各走各的；帳號不存在與帳號停用都照樣跑一次假驗證。
+  - ~~2. `keystore` 改 per-user~~ **已完成**。`adopt_legacy_record()` 把舊的 `"master"`
+    改名到帳號 id 底下——**只動 `id` 一個欄位，不重包**，所以不需要密碼也不冒險。
+  - ~~3. root 改 per-user~~ **已完成**。`DiscordVFS(key, root_id)`，`root_id` 沒有預設值；
+    `extra_info` 從 `session_key` 換成帶 key／root_id／username 的 `users.Session`。
+  - **4. HTTP API 層**（下一步）：`aiohttp` app 掛進 `main.py`，與 SFTP server 同 process、
+    共用同一個 `DiscordVFS` 與 `_node_versions`。前端是純靜態 SPA，可獨立改版不必重建 image。
+  - **5. 前端**：完整檔案管理（瀏覽／上傳／下載／刪除／建目錄／改名）。
+  - **動第 4 步之前必須先拍板的一件事**：session 怎麼持有 master key。金鑰是**每連線**的，
     `validate_password` 解開後掛在該條 SSH 連線上；HTTP 沒有這個生命週期，而每個 request
-    重跑 Argon2id 是 125ms，不可行，所以需要一個帶 TTL 的記憶體 session。這動到認證流程與
-    金鑰處理，照 `CLAUDE.md` 是必須先出方案再拍板的那一層。**排在第 4 步之前問。**
+    重跑 Argon2id 不可行（登入現在是兩次 Argon2——密碼雜湊一次、解 KEK 一次），所以需要一個
+    帶 TTL 的記憶體 session。這動到認證流程與金鑰處理，照 `CLAUDE.md` 要先出方案再拍板。
   - **會被順帶掀出來的**：寫入路徑從一條變兩條，`_rollback()` 的附件釋放責任（見下方拍板決策，
     寫在 docstring 裡的那條）在新路徑上要自己負責；跨 handle 同步的邊角要在 HTTP 路徑再驗一次。
 
@@ -227,6 +225,23 @@
 只記「日期 / 做了什麼 / 測試數」，加上不在別處的教訓。
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
+
+**2026-08-02 · 多使用者結構的前三步（Client UI 的前置）** — 396 項測試（+25），突變 10/10。
+`users` collection、per-account keystore 記錄、per-account root。**行為完全不變**：仍是一個
+使用者、仍由 `SFTP_USER` / `SFTP_PASSWORD` 決定，只是憑證從模組常數變成一列資料。
+- **最值得記的一條，是複查時才發現的**：帳號變成一列資料之後，「這個部署對應哪把 master key」
+  的連結改走 `users`。所以**只清掉 `users` 而 `keystore` 還在**，會產生新的帳號 id、底下沒有記錄，
+  然後 `ensure_usable` 會若無其事地 bootstrap 一把新的 master key **蓋在只有舊金鑰讀得懂的資料上**
+  ——不會報錯，只是從此再也解不開。已加守衛：keystore 非空但這個帳號沒有記錄時直接拒絕啟動。
+  `bootstrap` 本身刻意不加守衛，因為「在既有記錄旁邊多一筆」正是第 4 步建帳號要做的事。
+- 舊 `"master"` 記錄的遷移**只改 `id` 一個欄位**。密文、salt、nonce、MAC、KDF 參數全部原樣搬過去，
+  所以不需要密碼、也不可能讓記錄變得打不開——這才是它敢在啟動時自動跑的全部理由。
+  有一條測試專門釘住「它沒有重包」。
+- 登入現在跑**兩次 Argon2**（驗密碼雜湊一次、解 KEK 一次），照 `design-multi-user.md` §3.2 的
+  三步走。上線成本約從 125ms 變 250ms。**這是照方案實作，不是疏忽**；要合併成一次的話那是
+  偏離已拍板的方案，要先問。
+- 既有的 root 節點沿用 `"root"` 這個 id 指派給 env 帳號，所以**一個 tag 都不用重算**——
+  目錄的 tag 蓋住自己的 id，換 id 就等於整棵樹重簽。
 
 **2026-08-02 · repo 有 remote 了** — `origin` 指向 `github.com/FinalHope487/Discord-SFTP-Drive`
 （GitHub CLI 建立），`master` 已追蹤並推上去。連續四輪掛在 `[next]` 的那條備份缺口就此關閉；

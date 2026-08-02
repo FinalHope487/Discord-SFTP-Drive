@@ -7,11 +7,12 @@ import sys
 
 import asyncssh
 
-from src import keystore
+from src import keystore, users
 from src.config import (
     SFTP_HOST_KEY_PATH,
     SFTP_PASSWORD,
     SFTP_PASSWORD_OLD,
+    SFTP_USER,
     ConfigError,
     kdf_settings,
     kdf_upgrade,
@@ -26,6 +27,7 @@ from src.sftp import (
     active_connections,
     open_files,
 )
+from src.vfs import ROOT_ID
 
 logging.basicConfig(
     level=logging.INFO,
@@ -133,11 +135,25 @@ async def start_server():
     try:
         await check_discord_reachable()
 
+        # The environment's credentials become a row before anything consults
+        # them, so `validate_password` has one code path whether an account
+        # came from `.env` or (later) from an admin tool. `ROOT_ID` is the
+        # tree this account already owns; keeping that id is what made trees
+        # per-account without touching a single integrity tag.
+        user = await users.sync_env_user(SFTP_USER, SFTP_PASSWORD,
+                                         root_id=ROOT_ID)
+        record_id = users.keystore_id(user)
+
+        # A rename of one field, not a re-wrap -- see the function's docstring
+        # for why it is safe to do without asking and without the password.
+        await keystore.adopt_legacy_record(record_id)
+
         # Before the socket opens: a password that cannot open the master key
         # means every read fails after a successful login, which reads as data
         # loss from the client side.
         try:
             await keystore.ensure_usable(
+                record_id,
                 SFTP_PASSWORD,
                 old_password=SFTP_PASSWORD_OLD,
                 settings=kdf_settings(),

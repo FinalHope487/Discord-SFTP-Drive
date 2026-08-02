@@ -244,3 +244,26 @@ def kdf_settings():
 def kdf_upgrade():
     """Whether startup may re-wrap the stored key onto the configured KDF."""
     return KDF_UPGRADE.strip().lower() in _TRUTHY
+
+
+def password_hash_settings():
+    """Cost for the stored account password hash. Safe after `validate()`.
+
+    Always Argon2id, whatever `KDF` says, and deliberately a separate function
+    from `kdf_settings()` even though both read the same variables. They are
+    different jobs: `derive_kek` produces a key, this produces a verifier, and
+    the one thing they must not do is share a derivation. Reusing `derive_kek`
+    for both would mean the value stored for checking a password and the key
+    that decrypts everything came out of the same function on the same inputs.
+
+    PBKDF2 is not offered here. The stored record's self-describing `kdf`
+    field exists so an existing *wrapped key* keeps opening after the default
+    moves; a password hash has no such legacy, so there is nothing to be
+    compatible with. Argon2's own PHC string carries its parameters anyway,
+    which is why raising these costs later needs no migration either.
+    """
+    return {
+        "time_cost": int(ARGON2_TIME_COST),
+        "memory_cost": int(ARGON2_MEMORY_KIB),
+        "parallelism": int(ARGON2_PARALLELISM),
+    }

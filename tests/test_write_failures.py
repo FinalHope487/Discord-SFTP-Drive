@@ -26,7 +26,7 @@ import os
 import asyncssh
 import pytest
 
-from src.vfs import DiscordVFS, VFSError
+from src.vfs import ROOT_ID, DiscordVFS, VFSError
 from tests.conftest import TEST_CHUNK_SIZE, connect
 from tests.fakes import DiscordFailure
 
@@ -53,7 +53,7 @@ async def _read_back(master_key, path):
     references, a stale mac -- fails here rather than passing on a cached
     in-memory copy.
     """
-    handle = await DiscordVFS(master_key).open(path, read=True, write=False)
+    handle = await DiscordVFS(master_key, ROOT_ID).open(path, read=True, write=False)
     return handle.size, await handle.read_at(0, handle.size)
 
 

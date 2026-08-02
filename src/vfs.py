@@ -84,6 +84,12 @@ from src.discord_api import discord_api
 
 logger = logging.getLogger(__name__)
 
+# The root of the account that `SFTP_USER` / `SFTP_PASSWORD` describes. Not
+# "the" root any more: a tree belongs to an account, and `DiscordVFS` is told
+# which one it is serving. This constant is only the id the single pre-existing
+# account keeps, so that making roots per-account needed no migration -- the
+# tag over a directory covers its id, and leaving that id alone left every tag
+# under it valid.
 ROOT_ID = "root"
 
 # What shape of tag this code writes and is willing to read. Stored on every
@@ -933,20 +939,33 @@ def _new_dir_doc(key: bytes, *, node_id: str, parent_id, filename: str,
 
 
 class DiscordVFS:
-    """Directory tree operations, bound to one connection's master key.
+    """Directory tree operations, bound to one connection's key and root.
 
     One instance per connection rather than one per process: the key is the
     session's, and it goes away when the session does.
+
+    `root_id` has no default, and that is the point. A default would mean a
+    caller who forgot it silently got somebody else's tree, and with one key
+    per account the mismatch would not even fail loudly -- path resolution
+    would start at a directory this key cannot verify, which reads as
+    tampering rather than as a bug here.
     """
 
-    def __init__(self, key: bytes):
+    def __init__(self, key: bytes, root_id: str):
         if not key:
             raise ValueError("a DiscordVFS needs the session's master key")
+        if not root_id:
+            raise ValueError("a DiscordVFS needs the id of the tree it serves")
         self._key = key
+        self._root_id = root_id
 
     @property
     def key(self) -> bytes:
         return self._key
+
+    @property
+    def root_id(self) -> str:
+        return self._root_id
 
     async def get_node(self, path: str) -> Optional[dict]:
         """Resolve a path, checking every segment on the way down.
@@ -963,7 +982,7 @@ class DiscordVFS:
         every directory on the path, and that is left to `list_dir`.
         """
         node = _verify_node(
-            self._key, await db.get_db().nodes.find_one({"id": ROOT_ID}))
+            self._key, await db.get_db().nodes.find_one({"id": self._root_id}))
         for part in [p for p in normalize_path(path).split("/") if p]:
             if not node or not node.get("is_dir"):
                 return None
@@ -997,10 +1016,10 @@ class DiscordVFS:
         logged in could not carry a tag, and a directory whose missing tag is
         tolerated is a directory whose entries are not protected.
         """
-        existing = await db.get_db().nodes.find_one({"id": ROOT_ID})
+        existing = await db.get_db().nodes.find_one({"id": self._root_id})
         if existing is None:
             await db.get_db().nodes.insert_one(_new_dir_doc(
-                self._key, node_id=ROOT_ID, parent_id=None, filename="",
+                self._key, node_id=self._root_id, parent_id=None, filename="",
                 permissions=DEFAULT_DIR_MODE, now=_now()))
             return
 
@@ -1011,7 +1030,7 @@ class DiscordVFS:
         # honest while it is empty: computing an entry tag over whatever
         # happens to be there would sign off on a deletion that had already
         # happened, which is the one thing a backfill must never do.
-        if await self.children(ROOT_ID):
+        if await self.children(self._root_id):
             raise VFSError(
                 "the root directory predates node tag version "
                 f"{TAG_VERSION} and is not empty. Tagging it now would "
@@ -1021,8 +1040,8 @@ class DiscordVFS:
             )
 
         await db.get_db().nodes.replace_one(
-            {"id": ROOT_ID},
-            _new_dir_doc(self._key, node_id=ROOT_ID, parent_id=None,
+            {"id": self._root_id},
+            _new_dir_doc(self._key, node_id=self._root_id, parent_id=None,
                          filename="", permissions=DEFAULT_DIR_MODE,
                          now=existing.get("created_at") or _now()))
 
@@ -1151,7 +1170,7 @@ class DiscordVFS:
         node = await self.require_node(path)
         if not node["is_dir"]:
             raise NotADirectory(normalize_path(path))
-        if node["id"] == ROOT_ID:
+        if node["id"] == self._root_id:
             raise Unsupported("cannot remove the root directory")
         if await self.children(node["id"]):
             raise NotEmpty(normalize_path(path))
