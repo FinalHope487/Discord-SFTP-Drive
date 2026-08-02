@@ -2,19 +2,21 @@
 
 依 `.claude/templates/session-handoff.md` 產出。**最後更新 2026-08-02。**
 
-> **`ROADMAP.md` 的 `[now]` 是 Client UI，第 1～3 步已落地，下一步是第 4 步（HTTP API 層）。**
-> 396 項自動化測試全過（+25），突變測試 10/10，pyflakes 乾淨。
-> **但這一段完全沒有碰過線上環境**——Docker Desktop 沒在跑，image 內的 suite 與實地驗收都還沒做。
+> **`ROADMAP.md` 的 `[now]` 是 Client UI，第 1～3 步已落地並上線，下一步是第 4 步（HTTP API 層）。**
+> 396 項自動化測試全過（+25），突變 10/10，pyflakes 乾淨，image 內同樣 396 過，
+> **實地驗收 20/20，遷移已在線上跑完。**
 
 ---
 
 ## 目前狀態
 
-**程式碼層面：多使用者的結構三步已完成，行為與上一版完全相同。**
-仍是一個使用者、仍由 `SFTP_USER` / `SFTP_PASSWORD` 決定，只是憑證從模組常數變成 `users` 的一列。
+**服務跑在新程式碼上，帳號已是資料庫裡的一列，遷移已完成。**
+行為與上一版完全相同：仍是一個使用者、仍由 `SFTP_USER` / `SFTP_PASSWORD` 決定。
 
-**部署層面：什麼都沒動。** 線上跑的還是上一版的 image、上一版的資料形狀。
-`git` 上有兩個未 push 的 commit（`2981dce` 文件、以及本輪的實作 commit）。
+線上 `nodes` 只剩 root（驗收用的檔案已清乾淨），Discord 上 0 個附件，
+`keystore` 一筆記錄在 `user:a00e0bf3-…` 底下，`users` 一列。
+
+`git` 上有兩個 commit（`2981dce` 文件、`ed1e3d6` 實作），**都還沒 push**。
 
 改動內容與決策理由不在這裡複述——**看 `ROADMAP.md` 的「已拍板的長期決策」與「變更紀錄」**。
 方案與實作的兩處出入在 `design-multi-user.md` 開頭的橫幅。
@@ -39,40 +41,51 @@
 | `src/db.py` | `users` 的 `username` / `id` 唯一索引 |
 | `src/config.py` | `password_hash_settings()` |
 
-### 驗證方式（三層做完，第四、五層沒做）
+### 驗證方式（五層全做完）
 
 ```bash
-./venv/Scripts/python.exe -m pytest        # 396 passed, ~30s
+./venv/Scripts/python.exe -m pytest        # 396 passed, ~25s
 ```
 
 1. **396 項單元/整合測試**，`tests/test_users.py` 24 項是本輪新增的。
 2. **突變測試 10/10**：把十個保護逐一拿掉，每一個都有測試會失敗——包含「模型 A（所有帳號
    共用一把 key）」與「路徑解析從共用 root 出發」。腳本在 scratchpad，未留在 repo。
 3. **pyflakes 乾淨。**
-4. **production image 內跑同一份 suite——沒做**，Docker Desktop 沒在跑。
-5. **實地驗收——沒做**，見下。
+4. **production image 內跑同一份 suite**：396 passed（3.12.13 / Linux）。
+5. **實地驗收 20/20**（真 bot token、真 MongoDB、12 MiB 跨兩個 chunk）：遷移前後
+   keystore 記錄的 fingerprint 相同（`263b893e0206501d`）、舊密碼仍登得進去、
+   密碼錯與帳號不存在都被拒、上傳／讀回／改名／刪除全正常、2/2 附件已釋放。
+   **第二次重啟確認兩條遷移都是 no-op。**
 
 ---
 
 ## 未完成待辦
 
-1. **image 內的 suite 沒跑過。** 開 Docker Desktop 後 `docker compose build`，再照
-   `README.md` 的指令在 image 內跑一次。**只 build 不 up**，理由見下一項。
-2. **實地驗收沒做，而且它不是唯讀的。** 新程式碼一啟動就會對線上 MongoDB 做兩件寫入：
-   建 `users` 那一列、把 keystore 的 `"master"` 改名成 `user:<uuid>`。
-   **這是 `CLAUDE.md` 的高風險項，要先問過才能跑。**
-   - 改名只動 `id` 一個欄位，密文原樣，所以風險很低——但它仍然是**沒有反向 migration** 的。
-   - 驗收要確認的最小集合：舊密碼仍登得進去、既有 root 仍列得出來、上傳/下載/刪除仍正常、
-     重啟第二次時 `adopt_legacy_record` 是 no-op。
-3. **Client UI 第 4 步（HTTP API 層）**，動工前要先拍板 session 怎麼持有 master key。
-4. **登入現在跑兩次 Argon2**（約 250ms）。照方案實作，不是疏忽；要合併成一次是偏離已拍板方案。
+1. **兩個 commit 都還沒 push。**
+2. **Client UI 第 4 步（HTTP API 層）**，動工前要先拍板 session 怎麼持有 master key。
+3. **登入現在跑兩次 Argon2**（實測約 250ms）。照方案實作，不是疏忽；要合併成一次是
+   偏離已拍板方案，要先問。
+4. **`SFTP_PASSWORD` 走 docker secret**：已拍板要做，排在 Client UI 之後。
 5. **仍未被真實環境驗證的舊項目**：5xx 與傳輸層重試、附件 URL 真的過期、`_rollback` 的保護。
+
+---
+
+## 資料狀態
+
+- **遷移已跑完，而且是不可逆的**：`keystore` 的 `"master"` 已改名成
+  `user:a00e0bf3-cf35-4014-a951-84937c307b26`，`users` 多了一列。沒有反向 migration。
+- **master key 沒有變**，fingerprint 遷移前後皆為 `263b893e0206501d`。
+  `chunk_tag` 一個都沒改，所以一個 chunk 都不需要重傳。
+- **root 節點沒有動**：仍是 `id="root"`、`tag_version=2`。
+- **驗收期間建立的檔案與目錄已全部刪除**，Discord 附件一併釋放，對帳 1 個節點、0 孤兒。
+- `mongo_data` / `host_key_data` volume 未刪除，host key 沒換。
+- **`users` 與 `keystore` 從此必須一起備份、一起還原**。帳號那一列是「這個部署對應哪把
+  master key」的唯一連結；只還原一邊會讓伺服器拒絕啟動（這是刻意的，見 `README.md`）。
 
 ---
 
 ## 本輪不可碰的範圍
 
-- **線上 MongoDB 與 Discord**：一個 byte 都沒動過。沒有重啟服務，沒有跑任何遷移。
 - **`crypto.py`**：加密與 tag 的邏輯完全沒動。`chunk_tag` / `node_tag` / `dir_tag` 的涵蓋範圍
   一如既往，所以**一個 chunk 都不需要重傳**。
 - **既有 root 節點的 id**：刻意沿用 `"root"`。方案原本寫的是改成 `"root:<user_id>"`，
@@ -86,12 +99,13 @@
 
 ## 下一步建議任務
 
-**先驗證，再往前。** 這一段是純結構搬移、行為理應不變，而「理應不變」正是最值得
-拿真實環境對一次的東西——上一輪的實地驗收就抓到過兩個單元測試結構上抓不到的 bug。
+驗證五層都做完了，結構已經就位，接下來是 Client UI 的第 4 步。
 
-1. 開 Docker Desktop，`docker compose build`，在 image 內跑 396 項。
-2. **問過之後**再重啟服務，做上面第 2 項列的實地驗收。
-3. 兩者都過了，再開 Client UI 第 4 步，並在動工前把 session 持有金鑰的方案拿出來拍板。
+1. **push 那兩個 commit**。加密層與認證層都動過而且沒有反向 migration，
+   這是這輪唯一還沒做的收尾。
+2. **把「session 怎麼持有 master key」的方案拿出來拍板**，然後才動 HTTP API 層。
+   這是 `CLAUDE.md` 明列的高風險項（認證流程 + 金鑰處理）。
+3. 第 4 步落地後再做前端。前端是純靜態 SPA，可獨立改版，所以刻意排在最後。
 
 ---
 
