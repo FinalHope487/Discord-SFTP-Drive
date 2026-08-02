@@ -21,7 +21,7 @@ description: 全掃專案並產出 BLUEPRINT.md 專案藍圖（工具鏈／工�
 - **主 agent 直接全掃，不要委派 subagent。**（專案規模不大，拼接落差的成本高於好處。）
 - 掃描範圍：`src/`、`tests/`、`Dockerfile`、`docker-compose.yml`、`requirements*.txt`、
   `pytest.ini`、`.env.example`、`.gitignore`、`.vscode/`、`.claude/`，
-  以及既有文件 `README.md`、`CLAUDE.md`、`SOP.md`、`ROADMAP.md`、`missing_info.md`、
+  以及既有文件 `README.md`、`CLAUDE.md`、`SOP.md`、`ROADMAP.md`、
   `design-multi-user.md`、`design-node-identity-integrity.md`、`session-handoff.md`。
 - 跳過：`venv/`、`.pytest_cache/`、`.git/` 內容物。
 - 讀 `git log` 近 20～30 筆掌握演進脈絡；不要只靠文件，**文件可能落後於程式碼**。
@@ -36,7 +36,7 @@ description: 全掃專案並產出 BLUEPRINT.md 專案藍圖（工具鏈／工�
 若不存在就直接建立。
 
 **寫入邊界（硬性）**：這個指令只能寫 `BLUEPRINT.md` 和 `BLUEPRINT.md.bak`，
-其他所有檔案一律唯讀。掃到值得記進 `ROADMAP.md` / `missing_info.md` 的事，
+其他所有檔案一律唯讀。掃到值得記進 `ROADMAP.md` 的事，
 **不要自己寫進去**，在對話裡列出來讓我決定。
 
 ## 藍圖結構
@@ -63,7 +63,7 @@ description: 全掃專案並產出 BLUEPRINT.md 專案藍圖（工具鏈／工�
 - KDF（Argon2id）參數與選擇理由
 - 金鑰的產生、保存、輪替與使用範圍
 - 加密與完整性驗證的實際涵蓋範圍——**明確寫出哪些部分「沒有」被保護**
-- `missing_info.md` 已記錄的缺口，逐條標注：已修復 / 仍存在 / 已改變形態
+- `ROADMAP.md` 已記錄的缺口，逐條標注：已修復 / 仍存在 / 已改變形態
 
 ### 5. 工作流程
 - 從零把環境跑起來的步驟（可直接照做）
@@ -96,7 +96,7 @@ description: 全掃專案並產出 BLUEPRINT.md 專案藍圖（工具鏈／工�
 如果某一級一項都沒有，就寫「無」。
 
 ### 8. 已知未決事項
-`ROADMAP.md` / `missing_info.md` / 兩份 `design-*.md` 裡尚未收斂的決策點，
+`ROADMAP.md` / 兩份 `design-*.md` 裡尚未收斂的決策點，
 以及這次掃描新發現、但屬於「需要我拍板」的問題。
 
 ---
@@ -106,4 +106,4 @@ description: 全掃專案並產出 BLUEPRINT.md 專案藍圖（工具鏈／工�
 在對話裡簡短說明（不要重貼藍圖內容）：
 1. 藍圖寫到哪、舊版是否已備份成 `.bak`
 2. 這次掃描發現的**文件與程式碼不一致**之處，逐條列出
-3. 建議追加進 `ROADMAP.md` / `missing_info.md` 的項目——**只列，不寫入**
+3. 建議追加進 `ROADMAP.md` 的項目——**只列，不寫入**
