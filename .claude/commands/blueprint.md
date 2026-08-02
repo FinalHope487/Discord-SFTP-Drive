@@ -21,8 +21,8 @@ description: 全掃專案並產出 BLUEPRINT.md 專案藍圖（工具鏈／工�
 - **主 agent 直接全掃，不要委派 subagent。**（專案規模不大，拼接落差的成本高於好處。）
 - 掃描範圍：`src/`、`tests/`、`Dockerfile`、`docker-compose.yml`、`requirements*.txt`、
   `pytest.ini`、`.env.example`、`.gitignore`、`.vscode/`、`.claude/`，
-  以及既有文件 `CLAUDE.md`、`SOP.md`、`ROADMAP.md`、`todo.md`、`missing_info.md`、
-  `design-multi-user.md`、`session-handoff.md`。
+  以及既有文件 `README.md`、`CLAUDE.md`、`SOP.md`、`ROADMAP.md`、`missing_info.md`、
+  `design-multi-user.md`、`design-node-identity-integrity.md`、`session-handoff.md`。
 - 跳過：`venv/`、`.pytest_cache/`、`.git/` 內容物。
 - 讀 `git log` 近 20～30 筆掌握演進脈絡；不要只靠文件，**文件可能落後於程式碼**。
 - **以程式碼為準**。文件與實作衝突時，寫下實際行為，並把衝突本身列成一個缺點項。
@@ -96,7 +96,7 @@ description: 全掃專案並產出 BLUEPRINT.md 專案藍圖（工具鏈／工�
 如果某一級一項都沒有，就寫「無」。
 
 ### 8. 已知未決事項
-`todo.md` / `ROADMAP.md` / `missing_info.md` 裡尚未收斂的決策點，
+`ROADMAP.md` / `missing_info.md` / 兩份 `design-*.md` 裡尚未收斂的決策點，
 以及這次掃描新發現、但屬於「需要我拍板」的問題。
 
 ---

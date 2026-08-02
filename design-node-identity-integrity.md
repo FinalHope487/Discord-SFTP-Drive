@@ -1,7 +1,7 @@
 # 方案：把「身分與位置」納入完整性保護
 
-> 對應 `BLUEPRINT.md` §7.2 H2、`ROADMAP.md` 的 `[next]`「檔名與位置不受完整性保護」。
-> 寫於 2026-08-01。
+> 對應 `BLUEPRINT.md` §7.2 H2。寫於 2026-08-01，**同日拍板同日落地**，
+> 所以 `ROADMAP.md` 上那條 `[next]`「檔名與位置不受完整性保護」已經不在待辦裡了。
 
 > ## ✅ 已實作（2026-08-01，同日拍板同日落地）
 >
@@ -39,7 +39,7 @@
 | `chunk_tag` | `(file_id, index, offset, size, nonce, ciphertext)` |
 | `node_tag` | `(file_id, size, 有序 chunk tag 列表)` |
 
-`_verify_node()`（`src/vfs.py:735`）對 `is_dir` 直接 `return`——**目錄完全沒有 tag。**
+`_verify_node()`（`src/vfs.py`）對 `is_dir` 直接 `return`——**目錄完全沒有 tag。**
 
 ### 1.1 今天驗得過的竄改
 
@@ -140,7 +140,7 @@ def dir_tag(key, *, dir_id, parent_id, filename) -> bytes:
 ### 4.2 坑一：驗證子項集合的成本落在路徑查詢上
 
 儲存一個「子項摘要」欄位不等於保護了子項集合——攻擊者刪掉一個子項、不動那個欄位就好。
-**要有意義就必須在驗證時從實際子項重算**，而 `get_node()`（`src/vfs.py:889`）是逐段
+**要有意義就必須在驗證時從實際子項重算**，而 `get_node()`（`src/vfs.py`）是逐段
 走路徑的，所以 `/a/b/c/file.txt` 會變成**每次 open 都要把 a、b、c 三個目錄的子項全部列出來**。
 一個一萬筆的目錄就是每次路徑查詢讀一萬份文件。不可接受。
 
@@ -156,7 +156,7 @@ def dir_tag(key, *, dir_id, parent_id, filename) -> bytes:
 
 ### 4.3 坑二：`ensure_root()` 沒有金鑰
 
-`ensure_root()`（`src/vfs.py:851`）在**任何人認證之前**跑，那時沒有 master key，
+`ensure_root()`（`src/vfs.py`）在**任何人認證之前**跑，那時沒有 master key，
 所以 root 目錄不可能在建立當下帶 tag。docstring 現在寫「root 是目錄、不帶 content tag，
 所以不需要」——這條方案會讓那句話失效。
 

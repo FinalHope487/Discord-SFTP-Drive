@@ -78,10 +78,11 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 
 | File | What it holds |
 | --- | --- |
-| [`BLUEPRINT.md`](BLUEPRINT.md) | Architecture, data flow, security design, and a frank list of the known weaknesses. Long; start here for "how does it work". |
-| [`ROADMAP.md`](ROADMAP.md) | What is planned, and — more useful — every settled decision with the reasoning behind it. Start here for "why is it like that". |
+| [`ROADMAP.md`](ROADMAP.md) | What is planned, every settled decision with the reasoning behind it, and a short changelog. Start here for "why is it like that". |
+| [`BLUEPRINT.md`](BLUEPRINT.md) | Architecture, data flow, security design, and a frank list of the known weaknesses. Long; start here for "how does it work" — but §4.3/§4.4 and §7.2 predate the integrity work and have not been regenerated, so `ROADMAP.md` wins on any conflict. |
 | [`SOP.md`](SOP.md) | Recurring problems and the order to check things in. Environment traps, mostly. |
 | [`missing_info.md`](missing_info.md) | The original open questions and what each was finally decided to be. |
+| [`session-handoff.md`](session-handoff.md) | Where the last session stopped: live data state, what is not committed, environment notes. Rewritten each session. |
 | [`design-multi-user.md`](design-multi-user.md) | A proposal, not a description. Multi-user support is not built. |
 | [`design-node-identity-integrity.md`](design-node-identity-integrity.md) | Built, and its banner lists the four places the plan and the result diverged. |
 | [`CLAUDE.md`](CLAUDE.md) | Collaboration rules for AI-assisted work on this repo. |
@@ -94,8 +95,8 @@ filesystem, `crypto.py` and `keystore.py` the encryption and key handling,
 ## Status
 
 Working and in real use against a real bot token, single user, single replica.
-The known gaps are written down rather than glossed over — see §7.2 of
-`BLUEPRINT.md` and the `[later]` items in `ROADMAP.md`.
+The known gaps are written down rather than glossed over — see the `[later]`
+and `[parked]` items in `ROADMAP.md`.
 
 The one worth knowing up front: whoever can write to MongoDB can restore a
 file, and its parent directory, to an older copy of both, and it will verify.
