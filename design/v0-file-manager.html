@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discord Drive · 垃圾桶功能架構與參考畫面</title>
+<style>
+:root {
+  --ground: #0A0B0C;
+  --s1: #141517;
+  --s2: #1C1D20;
+  --s3: #25262A;
+  --hair: rgba(255,255,255,.07);
+  --hair-strong: rgba(255,255,255,.13);
+
+  --text: #F2F3F4;
+  --text-2: #9BA1A6;
+  --text-3: #6A7075;
+
+  --accent: #3AA8C1;
+  --accent-dim: rgba(58,168,193,.14);
+
+  /* Reserved. Red means one thing in this interface and nothing else. */
+  --integrity: #E5484D;
+  --warn: #E0A93B;
+
+  --r-s: 6px; --r-m: 10px; --r-l: 14px;
+  --row: 32px;
+
+  --sans: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+
+  --fast: 150ms ease-out;
+  --move: 320ms cubic-bezier(.22,1,.36,1);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--ground); color: var(--text);
+  font: 400 13px/1.55 var(--sans); -webkit-font-smoothing: antialiased;
+  text-wrap: pretty;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-s); }
+
+/* ---------------------------------------------------------------- shell */
+.app { display: grid; grid-template-columns: 232px 1fr; grid-template-rows: 48px 1fr 28px; height: 100%; }
+
+.topbar {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 12px;
+  padding: 0 12px; border-bottom: 1px solid var(--hair); background: var(--s1);
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: -.01em; }
+.mark { width: 18px; height: 18px; border-radius: var(--r-s); border: 1px solid var(--hair-strong);
+        display: grid; place-items: center; font: 500 9px var(--mono); color: var(--text-3); }
+
+.crumbs { display: flex; align-items: center; gap: 2px; margin-left: 8px; min-width: 0; }
+.crumb { padding: 3px 7px; border-radius: var(--r-s); color: var(--text-2); white-space: nowrap;
+         transition: background var(--fast), color var(--fast); }
+.crumb:hover { background: var(--s2); color: var(--text); }
+.crumb[aria-current] { color: var(--text); font-weight: 500; }
+.sep { color: var(--text-3); }
+
+.spacer { flex: 1; }
+
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px;
+       border: 1px solid var(--hair-strong); border-radius: var(--r-s); color: var(--text-2);
+       transition: border-color var(--fast), color var(--fast), background var(--fast); }
+.btn:hover { border-color: rgba(255,255,255,.24); color: var(--text); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #04181D; font-weight: 500; }
+.btn-primary:hover { background: #45B6D0; border-color: #45B6D0; color: #04181D; }
+.btn-quiet { border-color: transparent; }
+.btn-quiet:hover { background: var(--s2); border-color: transparent; }
+
+kbd { font: 500 10px/1 var(--mono); padding: 3px 5px; border-radius: 4px;
+      background: var(--s3); border: 1px solid var(--hair); color: var(--text-3); }
+
+/* --------------------------------------------------------------- sidebar */
+.side { border-right: 1px solid var(--hair); background: var(--s1); overflow-y: auto; padding: 8px 6px; }
+.side-label { font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+              color: var(--text-3); padding: 10px 8px 5px; }
+.node { display: flex; align-items: center; gap: 7px; height: 28px; padding: 0 8px;
+        border-radius: var(--r-s); color: var(--text-2); width: 100%; text-align: left;
+        transition: background var(--fast), color var(--fast); }
+.node:hover { background: var(--s2); color: var(--text); }
+.node[aria-selected="true"] { background: var(--accent-dim); color: var(--text); }
+.node[aria-selected="true"] .glyph { color: var(--accent); }
+.glyph { width: 14px; text-align: center; color: var(--text-3); font-size: 11px; flex: none; }
+.twist { width: 12px; color: var(--text-3); font-size: 9px; flex: none; }
+.node .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.count { margin-left: auto; font: 400 10px var(--mono); color: var(--text-3); }
+.indent-1 { padding-left: 22px; }
+.indent-2 { padding-left: 36px; }
+
+/* ------------------------------------------------------------------ main */
+.main { overflow: auto; position: relative; }
+
+.thead, .row {
+  display: grid; grid-template-columns: 1fr 96px 148px 92px; align-items: center;
+  gap: 12px; padding: 0 14px;
+}
+.thead { height: 30px; position: sticky; top: 0; background: var(--ground);
+         border-bottom: 1px solid var(--hair); color: var(--text-3);
+         font-size: 11px; letter-spacing: .02em; z-index: 2; }
+.thead .num, .row .num { text-align: right; }
+
+.row { height: var(--row); border-bottom: 1px solid rgba(255,255,255,.03);
+       transition: background var(--fast); cursor: default; }
+.row:hover { background: var(--s1); }
+.row[aria-selected="true"] { background: var(--accent-dim); }
+.row .name { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.row .name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .num, .row .when { font: 400 12px var(--mono); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.row.dir .glyph { color: var(--accent); }
+
+.tag { font: 400 10px var(--mono); color: var(--text-3); border: 1px solid var(--hair);
+       border-radius: 4px; padding: 1px 5px; }
+
+/* An upload in flight: the only persistent motion in the interface. */
+.progress { height: 2px; background: var(--s3); border-radius: 2px; overflow: hidden; width: 72px; }
+.progress i { display: block; height: 100%; width: 43%; background: var(--accent); }
+
+.empty { padding: 64px 24px; text-align: center; color: var(--text-3); }
+.empty h2 { font: 600 15px/1.4 var(--sans); color: var(--text-2); margin: 0 0 6px; letter-spacing: -.01em; }
+
+/* ---------------------------------------------------------------- banner */
+.banner { display: flex; gap: 10px; align-items: flex-start; margin: 12px 14px;
+          padding: 11px 13px; border-radius: var(--r-m);
+          border: 1px solid rgba(229,72,77,.35); background: rgba(229,72,77,.07); }
+.banner .glyph { color: var(--integrity); margin-top: 2px; }
+.banner h3 { margin: 0 0 3px; font: 600 13px var(--sans); color: var(--integrity); }
+.banner p { margin: 0; color: var(--text-2); max-width: 68ch; }
+
+/* -------------------------------------------------------------- statusbar */
+.status { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px;
+          padding: 0 14px; border-top: 1px solid var(--hair); background: var(--s1);
+          font: 400 11px var(--mono); color: var(--text-3); }
+.status .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
+
+/* ----------------------------------------------------------------- modal */
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center;
+         padding: 20px; z-index: 10; }
+.modal { width: 100%; max-width: 528px; background: var(--s1); border: 1px solid var(--hair-strong);
+         border-radius: var(--r-l); box-shadow: 0 1px 2px rgba(0,0,0,.4); overflow: hidden; }
+.modal header { padding: 16px 18px 0; }
+.modal h2 { margin: 0 0 4px; font: 600 15px var(--sans); letter-spacing: -.01em; }
+.modal .sub { color: var(--text-2); margin: 0; }
+.modal .body { padding: 14px 18px; }
+.modal footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px;
+                border-top: 1px solid var(--hair); background: var(--s2); }
+
+.choice { display: flex; gap: 11px; width: 100%; text-align: left; padding: 11px 12px;
+          border: 1px solid var(--hair); border-radius: var(--r-m); margin-bottom: 8px;
+          transition: border-color var(--fast), background var(--fast); }
+.choice:hover { border-color: var(--accent); background: var(--s2); }
+.choice .glyph { margin-top: 1px; }
+.choice b { font-weight: 500; display: block; }
+.choice small { color: var(--text-2); font-size: 12px; }
+
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+.card { border: 1px solid var(--hair); border-radius: var(--r-m); padding: 10px 11px; }
+.card h4 { margin: 0 0 7px; font: 500 11px var(--sans); color: var(--text-3);
+           text-transform: uppercase; letter-spacing: .06em; }
+.card dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+.card dt { color: var(--text-3); font-size: 11px; }
+.card dd { margin: 0; font: 400 11px var(--mono); color: var(--text-2); text-align: right;
+           font-variant-numeric: tabular-nums; }
+.card.keep { border-color: var(--accent); background: var(--accent-dim); }
+
+.applyall { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--text-2); }
+.applyall input { accent-color: var(--accent); }
+
+.danger { color: var(--warn); }
+
+/* Trash actions live on the row and on a toolbar above it -- restore-conflict
+   and permanent-delete are consequences of something clicked in here, never a
+   destination reachable on their own. */
+.toolbar { display: flex; align-items: center; justify-content: space-between;
+           padding: 10px 14px; border-bottom: 1px solid var(--hair); }
+.toolbar .hint { color: var(--text-3); }
+.trash .thead, .trash .row { grid-template-columns: 1fr 84px 112px 108px 172px; }
+.rowActions { display: flex; gap: 6px; justify-content: flex-end; }
+.rowActions button { font-size: 11px; padding: 3px 9px; border: 1px solid var(--hair);
+                      border-radius: var(--r-s); color: var(--text-2);
+                      transition: border-color var(--fast), color var(--fast); }
+.rowActions button:hover { border-color: var(--accent); color: var(--text); }
+.rowActions .danger-btn:hover { border-color: rgba(229,72,77,.5); color: var(--integrity); }
+
+.toast { position: fixed; left: 50%; bottom: 56px; transform: translateX(-50%);
+         background: var(--s2); border: 1px solid var(--hair-strong); border-radius: var(--r-m);
+         padding: 8px 14px; font-size: 12px; color: var(--text);
+         box-shadow: 0 1px 2px rgba(0,0,0,.4); z-index: 15; }
+
+/* The sidebar entry is a stand-in for where the trash lives, not a decision --
+   dashed outline plus a note flags it as open for whoever picks this up. */
+.node.provisional { border: 1px dashed var(--hair-strong); }
+.side-note { padding: 4px 8px 12px 30px; font: 400 10px/1.4 var(--mono); color: var(--text-3); }
+
+/* --------------------------------------------------------------- v0 only */
+.v0bar { position: fixed; right: 12px; bottom: 40px; display: flex; gap: 4px; z-index: 20;
+         background: var(--s2); border: 1px solid var(--hair-strong); border-radius: var(--r-m); padding: 4px; }
+.v0bar button { padding: 4px 9px; border-radius: var(--r-s); font-size: 11px; color: var(--text-3); }
+.v0bar button:hover { background: var(--s3); color: var(--text); }
+.v0bar button[aria-pressed="true"] { background: var(--accent); color: #04181D; font-weight: 500; }
+.v0note { font: 400 10px var(--mono); color: var(--text-3); padding: 4px 6px 4px 8px; align-self: center; }
+
+/* ---------------------------------------------------------------- mobile */
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; }
+  .side { position: fixed; inset: 48px auto 28px 0; width: 264px; z-index: 5;
+          transform: translateX(-100%); transition: transform var(--move); }
+  .side.open { transform: none; }
+  .thead, .row { grid-template-columns: 1fr 84px; }
+  .thead .when, .row .when, .thead .kind, .row .kind { display: none; }
+  .row { height: 46px; }
+  .menu-btn { display: inline-flex !important; }
+  /* Actions replace the size column on a phone; there is no room for both. */
+  .trash .num { display: none; }
+  .trash .thead, .trash .row { grid-template-columns: 1fr 150px; }
+}
+.menu-btn { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="topbar">
+    <button class="btn btn-quiet menu-btn" onclick="document.querySelector('.side').classList.toggle('open')">☰</button>
+    <div class="brand"><span class="mark">DD</span> Discord Drive</div>
+
+    <nav class="crumbs" id="crumbs">
+      <button class="crumb">/</button><span class="sep">›</span>
+      <button class="crumb">專案</button><span class="sep">›</span>
+      <button class="crumb" aria-current="page">2026</button>
+    </nav>
+
+    <div class="spacer"></div>
+    <button class="btn btn-quiet"><kbd>⌘K</kbd> 尋找</button>
+    <button class="btn">新資料夾</button>
+    <button class="btn btn-primary">上傳</button>
+  </div>
+
+  <aside class="side">
+    <div class="side-label">我的雲端硬碟</div>
+    <button class="node"><span class="twist">▾</span><span class="glyph">▣</span><span class="name">根目錄</span></button>
+    <button class="node indent-1"><span class="twist">▾</span><span class="glyph">▣</span><span class="name">專案</span></button>
+    <button class="node indent-2" aria-selected="true"><span class="twist"></span><span class="glyph">▣</span><span class="name">2026</span><span class="count">6</span></button>
+    <button class="node indent-2"><span class="twist"></span><span class="glyph">▣</span><span class="name">封存</span><span class="count">41</span></button>
+    <button class="node indent-1"><span class="twist">▸</span><span class="glyph">▣</span><span class="name">照片</span><span class="count">312</span></button>
+    <button class="node indent-1"><span class="twist"></span><span class="glyph">▣</span><span class="name">備份</span><span class="count">8</span></button>
+
+    <div class="side-label">系統</div>
+    <button class="node provisional" id="trashNode"><span class="twist"></span><span class="glyph">⌫</span><span class="name">垃圾桶</span><span class="count">3</span></button>
+    <div class="side-note">入口位置未定 — 備選：頂部圖示 / 獨立分頁</div>
+  </aside>
+
+  <main class="main" id="main"></main>
+
+  <div class="status">
+    <span class="dot"></span>
+    <span id="statusLeft">6 個項目 · 1.84 GiB</span>
+    <span class="spacer" style="flex:1"></span>
+    <span>金鑰 263b89</span>
+    <span>連線剩餘 41:12</span>
+  </div>
+</div>
+
+<div class="v0bar">
+  <span class="v0note">參考畫面</span>
+  <button data-view="browse" aria-pressed="true">瀏覽</button>
+  <button data-view="trash">垃圾桶</button>
+  <button data-view="integrity">完整性失敗</button>
+</div>
+
+<script>
+// v0 mock data. Every value here is invented -- shapes come from the real API
+// (`_entry` in web.py: name / is_dir / size / modified_at / permissions) but no
+// request is made and nothing is real.
+const FILES = [
+  { name: "草稿",              dir: true,  size: "—",        when: "2026-07-28 09:14", kind: "資料夾" },
+  { name: "交付",              dir: true,  size: "—",        when: "2026-08-01 17:02", kind: "資料夾" },
+  { name: "kickoff-notes.md",  dir: false, size: "4.1 KiB",  when: "2026-07-30 11:48", kind: "Markdown" },
+  { name: "報告.pdf",          dir: false, size: "2.3 MiB",  when: "2026-08-02 21:06", kind: "PDF" },
+  { name: "dataset.tar.gz",    dir: false, size: "1.81 GiB", when: "2026-08-02 22:41", kind: "封存檔", busy: true },
+  { name: "budget.xlsx",       dir: false, size: "88 KiB",   when: "2026-06-11 08:20", kind: "試算表" },
+];
+
+// `conflict: true` on 報告.pdf is what drives the contextual restore flow --
+// only this row has something already sitting on its name at the destination.
+// The other two restore with no dialog at all, which is the point: a dialog
+// is a *consequence* of a naming clash, not a step every restore goes through.
+const TRASH = [
+  { name: "報告.pdf",    from: "/專案/2026/報告.pdf", size: "2.1 MiB", modified: "2026-07-29",
+    when: "2 天前", left: "28 天後永久刪除", attachments: 1, conflict: true },
+  { name: "舊素材",      from: "/照片/舊素材",        size: "412 MiB", modified: "2026-07-22",
+    when: "9 天前", left: "21 天後永久刪除", dir: true, items: 41, attachments: 211 },
+  { name: "scratch.bin", from: "/備份/scratch.bin",   size: "12 MiB",  modified: "2026-07-04",
+    when: "29 天前", left: "明天永久刪除", soon: true, attachments: 2 },
+];
+
+// What currently occupies 報告.pdf's old spot -- the thing a restore of it
+// would collide with. Kept separate from TRASH[0] because in the real system
+// this is a live node the trashed one knows nothing about.
+const DEST_CONFLICT = { size: "2.3 MiB", modified: "2026-08-02" };
+
+const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const dirOf = path => path.slice(0, path.lastIndexOf("/")) || "/";
+const withSuffix = name => {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? `${name.slice(0, dot)} (2)${name.slice(dot)}` : `${name} (2)`;
+};
+
+function browseBody() {
+  return `
+    <div class="thead">
+      <div>名稱</div><div class="num">大小</div><div class="when">修改時間</div><div class="kind">種類</div>
+    </div>
+    ${FILES.map((f, i) => `
+      <div class="row ${f.dir ? "dir" : ""}" ${i === 3 ? 'aria-selected="true"' : ""}>
+        <div class="name">
+          <span class="glyph">${f.dir ? "▣" : "▢"}</span>
+          <span>${esc(f.name)}</span>
+          ${f.busy ? '<span class="progress" title="上傳中"><i></i></span>' : ""}
+        </div>
+        <div class="num">${f.size}</div>
+        <div class="when">${f.when}</div>
+        <div class="kind"><span class="tag">${f.kind}</span></div>
+      </div>`).join("")}
+  `;
+}
+
+// Everything a trash row can do lives on the row: restore and permanent
+// delete are both reached from here, never from a top-level menu. Whether
+// clicking either produces a dialog is decided by what the clicked item
+// actually is -- see restoreItem() / purgeItem() below.
+function trashBody() {
+  return `
+    <div class="trash">
+      <div class="toolbar">
+        <span class="hint">選取項目後可以還原，或個別永久刪除。</span>
+        <button class="btn btn-quiet" onclick="emptyTrash()">清空垃圾桶</button>
+      </div>
+      <div class="thead">
+        <div>名稱</div><div class="num">大小</div><div class="when">刪除時間</div><div class="kind">保留</div><div></div>
+      </div>
+      ${TRASH.map((t, i) => `
+        <div class="row ${t.dir ? "dir" : ""}">
+          <div class="name">
+            <span class="glyph">${t.dir ? "▣" : "▢"}</span>
+            <span>${esc(t.name)}</span>
+            <span class="tag">${esc(t.from)}</span>
+          </div>
+          <div class="num">${t.size}</div>
+          <div class="when">${t.when}</div>
+          <div class="kind"><span class="tag" ${t.soon ? 'style="color:var(--warn);border-color:rgba(224,169,59,.4)"' : ""}>${t.left}</span></div>
+          <div class="rowActions">
+            <button onclick="restoreItem(${i})">還原</button>
+            <button class="danger-btn" onclick="purgeItem(${i})">永久刪除</button>
+          </div>
+        </div>`).join("")}
+    </div>
+  `;
+}
+
+function integrityBody() {
+  return `
+  <div class="banner">
+    <span class="glyph">◈</span>
+    <div>
+      <h3>完整性驗證失敗</h3>
+      <p><span style="font-family:var(--mono)">/專案/2026/報告.pdf</span> 的認證標籤與內容對不上。
+      伺服器沒有回傳任何位元組——回傳了就等於讓這道檢查失去意義。
+      這代表有人在沒有金鑰的情況下改動了資料庫或 Discord 上的內容，不是網路問題，也不是暫時性錯誤。</p>
+    </div>
+  </div>` + browseBody();
+}
+
+// -------------------------------------------------------------- overlays
+//
+// None of these is a screen of its own. `overlay` is what the trash view is
+// currently in the middle of -- a conflict to resolve, a destroy to confirm,
+// a quiet result to acknowledge -- and it renders on top of whichever base
+// view triggered it.
+
+function conflictOverlay(i) {
+  const t = TRASH[i];
+  return `
+  <div class="scrim" onclick="if (event.target === this) closeOverlay()">
+    <div class="modal">
+      <header>
+        <h2>目的地已經有同名的檔案</h2>
+        <p class="sub">還原 <b>${esc(t.name)}</b> 到 <span style="font-family:var(--mono)">${esc(dirOf(t.from))}</span></p>
+      </header>
+      <div class="body">
+        <button class="choice" onclick="resolveConflict(${i}, 'replace')">
+          <span class="glyph">⇄</span>
+          <span><b>取代目的地的檔案</b>
+          <small>目前那一份會被移到垃圾桶，不會直接消失，之後仍可還原。</small></span>
+        </button>
+        <button class="choice" onclick="resolveConflict(${i}, 'skip')">
+          <span class="glyph">⤼</span>
+          <span><b>略過這個檔案</b>
+          <small>什麼都不做，被刪除的那一份繼續留在垃圾桶裡。</small></span>
+        </button>
+        <button class="choice" onclick="resolveConflict(${i}, 'both')">
+          <span class="glyph">◫</span>
+          <span><b>兩個都保留</b>
+          <small>還原成 <span style="font-family:var(--mono)">${esc(withSuffix(t.name))}</span>。</small></span>
+        </button>
+
+        <div class="compare">
+          <div class="card">
+            <h4>垃圾桶裡的</h4>
+            <dl><dt>大小</dt><dd>${t.size}</dd>
+                <dt>修改</dt><dd>${t.modified}</dd>
+                <dt>刪除</dt><dd>${t.when}</dd></dl>
+          </div>
+          <div class="card keep">
+            <h4>目前在這裡的</h4>
+            <dl><dt>大小</dt><dd>${DEST_CONFLICT.size}</dd>
+                <dt>修改</dt><dd>${DEST_CONFLICT.modified}</dd>
+                <dt>刪除</dt><dd>—</dd></dl>
+          </div>
+        </div>
+      </div>
+      <footer>
+        <button class="btn btn-quiet" onclick="closeOverlay()">取消</button>
+      </footer>
+    </div>
+  </div>`;
+}
+
+function purgeOverlay(i) {
+  const t = TRASH[i];
+  const rows = t.dir
+    ? `<dt>資料夾（含 ${t.items} 個項目）</dt><dd>1</dd>`
+    : `<dt>檔案</dt><dd>1</dd>`;
+  return `
+  <div class="scrim" onclick="if (event.target === this) closeOverlay()">
+    <div class="modal" style="max-width:456px">
+      <header>
+        <h2>永久刪除「${esc(t.name)}」？</h2>
+        <p class="sub">這個動作沒有辦法復原。</p>
+      </header>
+      <div class="body">
+        <div class="card" style="margin-bottom:10px">
+          <dl>${rows}
+              <dt>要釋放的 Discord 附件</dt><dd>${t.attachments}</dd>
+              <dt>釋放後可回收</dt><dd>${t.size}</dd></dl>
+        </div>
+        <p class="danger" style="margin:0">附件會逐一刪除，過程中可以中斷；已經刪掉的不會回來。</p>
+      </div>
+      <footer>
+        <button class="btn btn-quiet" onclick="closeOverlay()">取消</button>
+        <button class="btn" style="border-color:rgba(229,72,77,.5);color:#E5484D" onclick="closeOverlay()">永久刪除</button>
+      </footer>
+    </div>
+  </div>`;
+}
+
+function purgeAllOverlay() {
+  const files = TRASH.filter(t => !t.dir);
+  const dirs = TRASH.filter(t => t.dir);
+  const attachments = TRASH.reduce((n, t) => n + t.attachments, 0);
+  return `
+  <div class="scrim" onclick="if (event.target === this) closeOverlay()">
+    <div class="modal" style="max-width:456px">
+      <header>
+        <h2>清空垃圾桶？永久刪除 ${TRASH.length} 個項目</h2>
+        <p class="sub">這個動作沒有辦法復原。</p>
+      </header>
+      <div class="body">
+        <div class="card" style="margin-bottom:10px">
+          <dl>
+            <dt>檔案</dt><dd>${files.length}</dd>
+            ${dirs.map(d => `<dt>資料夾（含 ${d.items} 個項目）</dt><dd>1</dd>`).join("")}
+            <dt>要釋放的 Discord 附件</dt><dd>${attachments}</dd>
+            <dt>釋放後可回收</dt><dd>426 MiB</dd>
+          </dl>
+        </div>
+        <p class="danger" style="margin:0">附件會逐一刪除，過程中可以中斷；已經刪掉的不會回來。</p>
+      </div>
+      <footer>
+        <button class="btn btn-quiet" onclick="closeOverlay()">取消</button>
+        <button class="btn" style="border-color:rgba(229,72,77,.5);color:#E5484D" onclick="closeOverlay()">永久刪除</button>
+      </footer>
+    </div>
+  </div>`;
+}
+
+function toastOverlay(text) {
+  return `<div class="toast">${esc(text)}</div>`;
+}
+
+// ----------------------------------------------------------------- state
+
+let view = "browse";     // browse | trash | integrity
+let overlay = null;      // null | {type, i?, text?}
+const main = document.getElementById("main");
+
+function baseBody() {
+  if (view === "trash") return trashBody();
+  if (view === "integrity") return integrityBody();
+  return browseBody();
+}
+
+function overlayHTML() {
+  if (!overlay) return "";
+  if (overlay.type === "conflict") return conflictOverlay(overlay.i);
+  if (overlay.type === "purge") return purgeOverlay(overlay.i);
+  if (overlay.type === "purge-all") return purgeAllOverlay();
+  if (overlay.type === "toast") return toastOverlay(overlay.text);
+  return "";
+}
+
+function render() {
+  main.innerHTML = baseBody() + overlayHTML();
+  document.querySelectorAll(".v0bar button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.view === view)));
+  document.getElementById("trashNode").setAttribute("aria-selected", String(view === "trash"));
+  document.getElementById("statusLeft").textContent =
+    view === "trash" ? "垃圾桶 · 3 個項目 · 426 MiB · 保留 30 天" : "6 個項目 · 1.84 GiB";
+  main.scrollTop = 0;
+}
+
+function show(name) {
+  view = name;
+  overlay = null;
+  render();
+}
+
+function closeOverlay() {
+  overlay = null;
+  render();
+}
+
+// Whether restoring needs a dialog is a fact about this specific item, not a
+// step every restore goes through -- only 報告.pdf collides with something.
+function restoreItem(i) {
+  const t = TRASH[i];
+  overlay = t.conflict
+    ? { type: "conflict", i }
+    : { type: "toast", text: `已還原到 ${dirOf(t.from)}` };
+  render();
+}
+
+function resolveConflict(i, choice) {
+  const t = TRASH[i];
+  const text = {
+    replace: `已還原 ${t.name}，原本在那裡的檔案移到了垃圾桶`,
+    skip: `已略過，${t.name} 仍留在垃圾桶裡`,
+    both: `已還原為 ${withSuffix(t.name)}`,
+  }[choice];
+  overlay = { type: "toast", text };
+  render();
+}
+
+function purgeItem(i) {
+  overlay = { type: "purge", i };
+  render();
+}
+
+function emptyTrash() {
+  overlay = { type: "purge-all" };
+  render();
+}
+
+document.querySelectorAll(".v0bar button").forEach(b =>
+  b.addEventListener("click", () => show(b.dataset.view)));
+document.getElementById("trashNode").addEventListener("click", () => show("trash"));
+
+show("browse");
+</script>
+</body>
+</html>
