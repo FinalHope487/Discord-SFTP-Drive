@@ -26,7 +26,8 @@ from urllib.parse import quote
 from aiohttp import web
 
 from src import keystore, users
-from src.config import web_cookie_secure, web_login_limits, web_session_limits
+from src.config import (trash_settings, web_cookie_secure, web_login_limits,
+                        web_session_limits)
 from src.crypto import IntegrityError, KeyUnwrapError
 from src.vfs import (
     AlreadyExists,
@@ -440,8 +441,85 @@ async def make_dir(request):
 async def remove_dir(request):
     session = request["session"]
     path = _path_of(request)
-    await session.vfs.removedir(path)
+    # `recursive` is the one way to trash a directory with things still in it,
+    # and it is opt-in for the same reason `rename` refuses to clobber: the
+    # difference between "this folder is empty, tidy it away" and "this folder
+    # and everything in it" is the difference a mis-click lands on.
+    if _flag(request, "recursive"):
+        await session.vfs.trash(path)
+    else:
+        await session.vfs.removedir(path)
     return web.json_response({"removed": path})
+
+
+def _flag(request, name: str) -> bool:
+    return (request.query.get(name) or "").strip().lower() in ("1", "true", "yes")
+
+
+# -------------------------------------------------------------------- trash
+
+
+def _trash_entry(item: dict) -> dict:
+    node = item["node"]
+    return {
+        **_entry(node),
+        # The id, not the path: two things deleted from the same place under
+        # the same name can both sit in the trash, so a path does not identify
+        # one of them. Everything in here is addressed by id for that reason.
+        "id": node["id"],
+        "original_path": item["path"],
+        "trashed_at": int(node.get("trashed_at") or 0),
+    }
+
+
+async def list_trash(request):
+    session = request["session"]
+    items = await session.vfs.list_trash()
+    return web.json_response({
+        "entries": [_trash_entry(item) for item in items],
+        # So the UI can say "deleted for ever in 12 days" instead of making
+        # the reader work out what the server's retention happens to be.
+        "retention_seconds": trash_settings()["retention"],
+    })
+
+
+_CONFLICT_CHOICES = ("fail", "replace", "skip", "keep_both")
+
+
+async def restore_trash(request):
+    session = request["session"]
+    payload = await _json_body(request)
+    node_id = str(payload.get("id") or "")
+    if not node_id:
+        raise _error(400, "an id is required")
+
+    on_conflict = str(payload.get("on_conflict") or "fail")
+    if on_conflict not in _CONFLICT_CHOICES:
+        raise _error(400, "on_conflict must be one of "
+                          + ", ".join(_CONFLICT_CHOICES))
+
+    return web.json_response(
+        await session.vfs.restore(node_id, on_conflict=on_conflict))
+
+
+async def purge_trash(request):
+    session = request["session"]
+    node_id = request.query.get("id")
+    if not node_id:
+        raise _error(400, "an id query parameter is required")
+    return web.json_response(await session.vfs.purge(node_id))
+
+
+async def empty_trash(request):
+    session = request["session"]
+    nodes = attachments = 0
+    items = await session.vfs.list_trash()
+    for item in items:
+        result = await session.vfs.purge(item["node"]["id"])
+        nodes += result["nodes"]
+        attachments += result["attachments"]
+    return web.json_response({"purged": len(items), "nodes": nodes,
+                              "attachments": attachments})
 
 
 async def rename(request):
@@ -497,18 +575,70 @@ def create_app(*, sessions=None, guard=None) -> web.Application:
     app.router.add_delete("/api/dir", remove_dir)
     app.router.add_post("/api/rename", rename)
 
+    app.router.add_get("/api/trash", list_trash)
+    app.router.add_post("/api/trash/restore", restore_trash)
+    app.router.add_delete("/api/trash", purge_trash)
+    # A POST rather than a DELETE with no target: "delete everything" is worth
+    # a route of its own, so a client that forgets the `id` on the line above
+    # gets a 400 instead of emptying the bin.
+    app.router.add_post("/api/trash/empty", empty_trash)
+
     app.on_startup.append(_start_sweeper)
     app.on_cleanup.append(_stop_sweeper)
     return app
 
 
+async def trash_sweeper(store, *, retention: int, interval: int, batch: int):
+    """Destroy trash past its retention, borrowing a key from whoever is on.
+
+    The awkward part, and the reason this is not a plain timer over the
+    database: purging verifies node tags and rewrites a directory's entry tag,
+    and both need the master key. This process has no master key. That is a
+    deliberate decision recorded in `main.py` -- the key belongs to a
+    connection, not to the process -- and keeping one here for a background
+    task's convenience would mean the key sat in memory whether or not anybody
+    was signed in, which is the exact property that design avoids.
+
+    So this borrows a key rather than holding one. It sweeps the trees that
+    have a live session, one pass each, and does nothing at all while nobody
+    is signed in. Retention therefore means "at least this long", never
+    "exactly this long": something deleted forty days ago on an account nobody
+    has opened since is still there, and goes on the first sweep after the
+    next sign-in. For a drive its owner logs into, that is the honest trade.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        for session in store.live_by_tree():
+            try:
+                result = await session.vfs.purge_expired(
+                    retention=retention, limit=batch)
+            except Exception:
+                # One tree failing -- a Discord outage, a tampered node --
+                # must not take the loop down and stop every other tree from
+                # ever being swept again.
+                logger.exception("Trash sweep failed for %r", session.username)
+                continue
+            if result["purged"]:
+                logger.info(
+                    "Trash sweep for %r destroyed %d item(s) and %d "
+                    "attachment(s); %d still due",
+                    session.username, result["purged"], result["attachments"],
+                    result["remaining"])
+
+
 async def _start_sweeper(app):
+    limits = trash_settings()
     app[STATE]["sweeper"] = asyncio.create_task(sweeper(app[SESSIONS]))
+    app[STATE]["trash_sweeper"] = asyncio.create_task(trash_sweeper(
+        app[SESSIONS], retention=limits["retention"],
+        interval=limits["interval"], batch=limits["batch"]))
 
 
 async def _stop_sweeper(app):
-    task = app[STATE].get("sweeper")
-    if task is not None:
+    for name in ("sweeper", "trash_sweeper"):
+        task = app[STATE].get(name)
+        if task is None:
+            continue
         task.cancel()
         try:
             await task

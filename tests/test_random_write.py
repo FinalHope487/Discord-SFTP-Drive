@@ -252,12 +252,22 @@ async def test_overwrites_do_not_accumulate_attachments(sftp, fake_discord):
     assert len(fake_discord.store) == settled
 
 
-async def test_deleting_a_rewritten_file_leaves_nothing_behind(sftp, fake_discord):
+async def test_purging_a_rewritten_file_leaves_nothing_behind(
+        sftp, vfs, fake_discord):
+    """Every chunk a rewrite ever produced goes, not just the last set.
+
+    Patching replaces chunks, so a file that has been written over twice has
+    had several generations of attachment behind it. The purge has to collect
+    whatever the node currently points at and leave nothing -- which is what
+    makes this different from the plain delete test.
+    """
     await _write_blob(sftp, "/blob.bin", os.urandom(PAYLOAD_SIZE))
     await _patch(sftp, "/blob.bin", 100, b"patched")
     await _patch(sftp, "/blob.bin", TEST_CHUNK_SIZE + 100, b"more")
 
     await sftp.remove("/blob.bin")
+    [item] = await vfs.list_trash()
+    await vfs.purge(item["node"]["id"])
 
     assert fake_discord.store == {}
 

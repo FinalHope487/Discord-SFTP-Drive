@@ -167,6 +167,22 @@ class SessionStore:
         for session_id in list(self._sessions):
             self.drop(session_id)
 
+    def live_by_tree(self, *, now=None) -> list:
+        """One live session per distinct tree, for work that needs a key.
+
+        Deduplicated by `root_id` because the work in question is per-tree:
+        two tabs signed into the same account hold two sessions and one tree,
+        and running a tree-wide job once per session would be a second pass
+        that finds nothing the first did not already do.
+        """
+        now = time.monotonic() if now is None else now
+        trees = {}
+        for session in self._sessions.values():
+            if session.expired_at(now):
+                continue
+            trees.setdefault(session.root_id, session)
+        return list(trees.values())
+
     def sweep(self, *, now=None) -> int:
         now = time.monotonic() if now is None else now
         dead = [sid for sid, s in self._sessions.items() if s.expired_at(now)]

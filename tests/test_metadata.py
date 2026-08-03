@@ -212,6 +212,15 @@ async def test_the_name_index_is_created_unique(fake_db):
                if keys == [("parent_id", 1), ("filename", 1)]]
     assert by_name and all(o.get("unique") for o in by_name)
 
+    # And partial, over live nodes only. A trashed node keeps its name and its
+    # place, so a full unique index would turn "delete notes.txt, write a new
+    # notes.txt" into a duplicate key error -- a failure the fake cannot
+    # produce, because uniqueness is the one thing it deliberately does not
+    # enforce. Asserting the *request* is what catches it here; the live
+    # deployment covers the enforcement.
+    assert all(o.get("partialFilterExpression")
+               == {"trashed_at": {"$exists": False}} for o in by_name)
+
 
 async def test_an_existing_non_unique_index_is_upgraded(fake_db):
     """What an upgrade actually hits.
@@ -225,12 +234,16 @@ async def test_an_existing_non_unique_index_is_upgraded(fake_db):
 
     from src.db import Database
 
+    # The index that is in the way has to actually be there: the upgrade path
+    # finds it by key spec in order to drop it by name, which is the only way
+    # that works once the difference is more than uniqueness alone.
+    fake_db.nodes.indexes.append(([("parent_id", 1), ("filename", 1)], {}))
     conflict = OperationFailure("index exists", code=86)
     fake_db.nodes.create_index_errors = [conflict]
 
     await Database._ensure_indexes()
 
-    assert fake_db.nodes.dropped_indexes == ["generated_name"]
+    assert fake_db.nodes.dropped_indexes == ["parent_id_1_filename_1"]
     by_name = [opts for keys, opts in fake_db.nodes.indexes
                if keys == [("parent_id", 1), ("filename", 1)]]
     assert any(o.get("unique") for o in by_name), "the index was never upgraded"
@@ -243,6 +256,7 @@ async def test_duplicates_block_the_upgrade_with_a_readable_error(fake_db):
 
     from src.db import Database
 
+    fake_db.nodes.indexes.append(([("parent_id", 1), ("filename", 1)], {}))
     fake_db.nodes.create_index_errors = [
         OperationFailure("index exists", code=86),
         OperationFailure("dup key", code=11000),

@@ -109,6 +109,25 @@ WEB_LOGIN_QUEUE = os.getenv("WEB_LOGIN_QUEUE", "16")
 # the deployment that should have to make that choice explicitly.
 WEB_COOKIE_SECURE = os.getenv("WEB_COOKIE_SECURE", "1")
 
+# ----------------------------------------------------------------- the trash
+#
+# Deleting is two steps: `remove` marks a node, and a sweep destroys it once
+# this long has passed. Until then the chunks are still on Discord and still
+# counted against whatever storage the bot can see, which is the trade a trash
+# bin is: recoverable mistakes in exchange for space you already gave up.
+
+TRASH_RETENTION_DAYS = os.getenv("TRASH_RETENTION_DAYS", "30")
+
+# How often the sweep runs, and how many trash items one pass may destroy.
+#
+# The batch cap is the important one. Purging means a Discord call per
+# attachment, so a month of accumulated deletions arriving as one burst is the
+# same rate-limit stampede that DISCORD_MAX_CONCURRENCY exists to prevent --
+# except unattended, at whatever hour the retention happens to expire.
+# Whatever the cap leaves behind is picked up by the next pass.
+TRASH_SWEEP_SECONDS = os.getenv("TRASH_SWEEP_SECONDS", "900")
+TRASH_SWEEP_BATCH = os.getenv("TRASH_SWEEP_BATCH", "25")
+
 MAX_CHUNK_SIZE = 9 * 1024 * 1024  # 9MB, under Discord's 10MiB attachment cap
 
 # How many Discord requests may be in flight at once. Firing every chunk of a
@@ -154,6 +173,13 @@ _WEB_INTEGER_FLOORS = {
     "WEB_SESSION_ABSOLUTE_SECONDS": 1,
     "WEB_LOGIN_CONCURRENCY": 1,
     "WEB_LOGIN_QUEUE": 1,
+    # Retention alone may be zero -- "purge on the next sweep" is a coherent
+    # setting. The other two may not: a zero interval is a sweep loop with no
+    # sleep in it, and a zero batch is a sweep that never finishes anything
+    # while still reporting work as pending on every pass.
+    "TRASH_RETENTION_DAYS": 0,
+    "TRASH_SWEEP_SECONDS": 1,
+    "TRASH_SWEEP_BATCH": 1,
 }
 
 
@@ -357,6 +383,23 @@ def web_login_limits():
     return {
         "concurrency": int(WEB_LOGIN_CONCURRENCY),
         "queue": int(WEB_LOGIN_QUEUE),
+    }
+
+
+def trash_settings():
+    """Retention in seconds, plus how the sweep paces itself.
+
+    Retention is stored in days because that is how a person thinks about a
+    trash bin, and handed out in seconds because that is what comparing
+    against `trashed_at` needs. Zero days is allowed and means "purge on the
+    next sweep" -- an odd thing to want, but a coherent one, and refusing it
+    would only push somebody into setting it to a fraction and finding out it
+    is parsed as an int.
+    """
+    return {
+        "retention": int(TRASH_RETENTION_DAYS) * 24 * 3600,
+        "interval": int(TRASH_SWEEP_SECONDS),
+        "batch": int(TRASH_SWEEP_BATCH),
     }
 
 

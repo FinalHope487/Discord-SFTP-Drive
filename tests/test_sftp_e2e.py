@@ -167,7 +167,22 @@ async def test_remove_deletes_the_entry(sftp):
     assert "blob.bin" not in await sftp.listdir("/")
 
 
-async def test_remove_leaves_no_orphaned_attachments(sftp, fake_discord):
+async def test_remove_keeps_attachments_until_the_file_is_purged(
+        sftp, vfs, fake_discord):
+    """Deleting is two steps, and only the second one destroys anything.
+
+    This used to assert that `remove` emptied Discord. It cannot any more, and
+    the reason is the point of the trash: the chunks have to survive the
+    delete or there would be nothing to restore. The guarantee that mattered
+    -- no attachment outlives the file that owned it -- has not gone away, it
+    has moved to `purge`, which is where this now checks for it.
+    """
     await _write_blob(sftp, "/blob.bin", os.urandom(PAYLOAD_SIZE))
     await sftp.remove("/blob.bin")
+
+    assert "blob.bin" not in await sftp.listdir("/")
+    assert fake_discord.store != {}, "the trash must keep the chunks"
+
+    [item] = await vfs.list_trash()
+    await vfs.purge(item["node"]["id"])
     assert fake_discord.store == {}

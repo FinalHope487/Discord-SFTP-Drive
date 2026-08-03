@@ -105,7 +105,7 @@ ROOT_ID = "root"
 # Version 2 adds the parent and the filename, tags directories, and tags the
 # set of names a directory holds. There is no compatibility path: refusing an
 # old record outright is the same fail-closed rule the chunk tags follow.
-TAG_VERSION = 2
+TAG_VERSION = 3
 
 # node id -> the mac last committed for it, kept for the lifetime of the
 # process. Lets an open handle tell whether another handle changed the node
@@ -176,6 +176,11 @@ def split_path(path: str):
         return None, ""
     parent, _, name = normalized.rpartition("/")
     return parent or "/", name
+
+
+def _join(parent_path: str, name: str) -> str:
+    """The absolute path of `name` inside an already-normalized parent."""
+    return f"/{name}" if parent_path == "/" else f"{parent_path}/{name}"
 
 
 def _now() -> int:
@@ -766,13 +771,15 @@ def _file_mac(key: bytes, node: dict) -> str:
     """The tag for a file node as it currently stands."""
     return node_tag(key, file_id=node["id"], parent_id=node.get("parent_id") or "",
                     filename=node.get("filename") or "", size=node["size"],
-                    chunk_tags=_chunk_tags(node)).hex()
+                    chunk_tags=_chunk_tags(node),
+                    trashed_at=node.get("trashed_at")).hex()
 
 
 def _dir_mac(key: bytes, node: dict) -> str:
     """The identity tag for a directory node as it currently stands."""
     return dir_tag(key, dir_id=node["id"], parent_id=node.get("parent_id") or "",
-                   filename=node.get("filename") or "").hex()
+                   filename=node.get("filename") or "",
+                   trashed_at=node.get("trashed_at")).hex()
 
 
 def _entries_of(children) -> list:
@@ -797,12 +804,14 @@ def _verify_node(key: bytes, node):
 
     if node.get("is_dir"):
         verify_dir(key, dir_id=node["id"], parent_id=node.get("parent_id") or "",
-                   filename=node.get("filename") or "", tag_hex=node.get("mac"))
+                   filename=node.get("filename") or "", tag_hex=node.get("mac"),
+                   trashed_at=node.get("trashed_at"))
         return node
 
     verify_node(key, file_id=node["id"], parent_id=node.get("parent_id") or "",
                 filename=node.get("filename") or "", size=node.get("size", 0),
-                chunk_tags=_chunk_tags(node), tag_hex=node.get("mac"))
+                chunk_tags=_chunk_tags(node), tag_hex=node.get("mac"),
+                trashed_at=node.get("trashed_at"))
     # Every verified read is a trustworthy point-in-time truth, so it is safe
     # to stamp the version cache here regardless of who is asking.
     _node_versions[node["id"]] = node.get("mac")
@@ -980,6 +989,14 @@ class DiscordVFS:
         tag: identity costs one HMAC over the document already in hand, so
         paying it per segment is nothing. The entry tag would mean listing
         every directory on the path, and that is left to `list_dir`.
+
+        Trashed nodes are invisible here, and that single `trashed_at` filter
+        is what makes the trash work at all: a trashed file stops resolving,
+        so nothing can open it, stat it or rename over it, and a trashed
+        directory takes its whole subtree with it without a descendant being
+        touched. It is also what lets a new file take a trashed one's name --
+        the old node keeps sitting in the same directory under the same name,
+        and only the live one is reachable.
         """
         node = _verify_node(
             self._key, await db.get_db().nodes.find_one({"id": self._root_id}))
@@ -989,6 +1006,9 @@ class DiscordVFS:
             node = _verify_node(self._key, await db.get_db().nodes.find_one({
                 "parent_id": node["id"],
                 "filename": part,
+                # Matches a missing field as well as an explicit null, which
+                # is why a live node never has to carry the field at all.
+                "trashed_at": None,
             }))
         return node
 
@@ -1046,7 +1066,22 @@ class DiscordVFS:
                          now=existing.get("created_at") or _now()))
 
     async def children(self, parent_id: str) -> list:
+        """Every child, trashed ones included.
+
+        The entry tag covers membership, and trashing does not change
+        membership -- the node stays in its directory, it just stops being
+        visible. So this has to keep returning trashed children or
+        `verify_dir_entries` would fail on every directory that ever had
+        something deleted out of it. Callers that want what a user should
+        *see* want `live_children`.
+        """
         cursor = db.get_db().nodes.find({"parent_id": parent_id})
+        return await cursor.to_list(length=None)
+
+    async def live_children(self, parent_id: str) -> list:
+        """The children that are not in the trash."""
+        cursor = db.get_db().nodes.find({"parent_id": parent_id,
+                                         "trashed_at": None})
         return await cursor.to_list(length=None)
 
     async def list_dir(self, path: str) -> list:
@@ -1073,11 +1108,37 @@ class DiscordVFS:
         entirely. Every listing path goes through here now.
         """
         entries = await self.children(node["id"])
+        # Verified over *every* child, then filtered. The other order is the
+        # trap: checking the tag against a list the trash filter had already
+        # thinned would make the check agree with whatever the filter left
+        # behind, so setting `trashed_at` on someone else's file would erase
+        # it from the listing and from the evidence in the same stroke. The
+        # tag has to see the set it actually signed.
         verify_dir_entries(self._key, dir_id=node["id"],
                            entries=_entries_of(entries),
                            tag_hex=node.get("entries_mac"),
                            pending_hex=node.get("entries_mac_pending"))
-        return entries
+
+        live = []
+        for child in entries:
+            if child.get("trashed_at") is None:
+                live.append(child)
+                continue
+            # Every child that gets filtered out has its own tag checked right
+            # here, and that is what makes trash state worth covering at all.
+            # Membership is intact either way -- a hidden child is still in
+            # the entry tag -- so the tag above cannot tell the difference,
+            # and the node itself is never fetched again by anything else: it
+            # is unreachable by path by definition. Without this, setting
+            # `trashed_at` on somebody's file would make it vanish from every
+            # listing and nothing would ever look at the field that did it.
+            #
+            # Live children get no such treatment on purpose. They are
+            # verified when they are opened or stat'ed, and until then they
+            # are visible, so nothing is being hidden on the strength of an
+            # unchecked field.
+            _verify_node(self._key, child)
+        return live
 
     async def _stage_entries(self, dir_id: str, *, add=(), remove=()):
         """Prepare a directory's next entry tag, returning its commit step.
@@ -1152,33 +1213,333 @@ class DiscordVFS:
         return node
 
     async def remove(self, path: str):
+        """Move a file to the trash.
+
+        Deleting is two steps now, and this is only the first. Nothing is
+        released here: the chunks stay on Discord, the node stays in its
+        directory, the entry tag never moves. That is what gives `restore`
+        something to bring back. `purge` is what actually destroys.
+
+        SFTP `rm` lands here too, deliberately. A client sees the file
+        disappear either way, so no protocol expectation is broken, and the
+        deletions worth protecting against are exactly the scripted ones that
+        arrive over SFTP at three in the morning.
+        """
         node = await self.require_node(path)
         if node["is_dir"]:
             raise IsADirectory(normalize_path(path))
-
-        commit = await self._stage_entries(
-            node["parent_id"], remove=[(node["id"], node["filename"])])
-
-        for chunk in node.get("chunks", []):
-            await _safe_delete_message(chunk["message_id"])
-
-        await db.get_db().nodes.delete_one({"id": node["id"]})
-        _node_versions.pop(node["id"], None)
-        await commit()
+        await self._set_trashed(node, _now())
 
     async def removedir(self, path: str):
+        """Move an empty directory to the trash.
+
+        Emptiness counts live children only. `rm *` then `rmdir` is how a
+        directory gets cleared over SFTP, and children sitting in the trash --
+        which is where that `rm *` just put them -- would otherwise turn the
+        `rmdir` into ENOTEMPTY on a directory the client had emptied.
+
+        A non-empty directory is still refused, even though trashing one is
+        now a single field write. ENOTEMPTY is a contract scripts read as
+        "there is still something in here", and owning a trash bin is not a
+        reason to start swallowing whole trees silently. `trash` is where that
+        power lives, reached from a UI where a person is reading a dialog.
+        """
         node = await self.require_node(path)
         if not node["is_dir"]:
             raise NotADirectory(normalize_path(path))
         if node["id"] == self._root_id:
             raise Unsupported("cannot remove the root directory")
-        if await self.children(node["id"]):
+        if await self.live_children(node["id"]):
             raise NotEmpty(normalize_path(path))
 
+        await self._set_trashed(node, _now())
+
+    async def trash(self, path: str):
+        """Move anything to the trash, subtree included.
+
+        The one thing `removedir` will not do. A directory with ten thousand
+        files under it costs one field write, because `get_node` stops
+        resolving through a trashed directory and the whole subtree goes out
+        of view without a single descendant being touched.
+        """
+        node = await self.require_node(path)
+        if node["id"] == self._root_id:
+            raise Unsupported("cannot remove the root directory")
+        await self._set_trashed(node, _now())
+
+    async def _set_trashed(self, node: dict, when):
+        """Write a node's trash state, and the tag that now covers it.
+
+        `when=None` is a restore. Both directions go through here so there is
+        one place where trash state and the tag over it move together -- the
+        same reason `_content_update` exists for size, chunks and mac.
+        """
+        moved = dict(node, trashed_at=when)
+        update = {
+            "mac": _dir_mac(self._key, moved) if node["is_dir"]
+            else _file_mac(self._key, moved),
+            "tag_version": TAG_VERSION,
+        }
+        # A live node carries no `trashed_at` at all, rather than one set to
+        # null, and that is not tidiness -- it is what the unique index on
+        # (parent_id, filename) needs. That index is now partial, over
+        # documents where the field does not exist, so that a trashed node can
+        # keep sitting in its directory under its old name while a new file
+        # takes that name. `$exists` is the condition MongoDB supports for
+        # this; an explicit null would have to be matched with `$eq: null`,
+        # which is not the same thing and does not cover a missing field.
+        write = {"$set": update} if when is not None \
+            else {"$set": update, "$unset": {"trashed_at": ""}}
+        if when is not None:
+            update["trashed_at"] = when
+
+        await db.get_db().nodes.update_one({"id": node["id"]}, write)
+        node.update(update)
+        if when is None:
+            node.pop("trashed_at", None)
+        if not node["is_dir"]:
+            # The mac moved, so any handle open on this file will notice and
+            # refetch rather than keep serving a node it thinks is live.
+            _node_versions[node["id"]] = update["mac"]
+
+    # ------------------------------------------------------------------ trash
+
+    async def _ancestors_of(self, node: dict, cache: dict):
+        """Walk from a node up to this tree's root.
+
+        Returns `(parent_path, blocked_by)` -- where the node would come back
+        to, and the first trashed directory above it if there is one. A node
+        whose walk never reaches this root returns `(None, None)`: it belongs
+        to another account's tree and has no business being listed here.
+
+        The walk itself is deliberately unverified, and that is safe because
+        of what it is used for. It only *selects* candidates; every node it
+        selects is verified by the caller, and a node's own tag covers its
+        `parent_id`. So pointing a foreign node at this tree cannot smuggle it
+        into a listing -- it makes that node fail its own check instead, which
+        is the alarm rather than the leak. Verifying every ancestor of every
+        trash item would mean an HMAC per directory per item for a path string
+        that is only ever displayed.
+        """
+        segments = []
+        blocked_by = None
+        current_id = node.get("parent_id")
+        seen = set()
+        while current_id and current_id not in seen:
+            seen.add(current_id)
+            if current_id == self._root_id:
+                return "/" + "/".join(reversed(segments)), blocked_by
+            if current_id in cache:
+                parent = cache[current_id]
+            else:
+                parent = await db.get_db().nodes.find_one({"id": current_id})
+                cache[current_id] = parent
+            if parent is None:
+                return None, None
+            if parent.get("trashed_at") is not None and blocked_by is None:
+                blocked_by = parent
+            segments.append(parent.get("filename") or "")
+            current_id = parent.get("parent_id")
+        return None, None
+
+    async def list_trash(self) -> list:
+        """The things somebody actually deleted, newest first.
+
+        A node sitting under an already-trashed directory is left out: it went
+        in when its parent did, and restoring the parent is what brings it
+        back. Once that parent is restored the child shows up here on its own
+        if it was separately trashed earlier, so nothing can end up deleted,
+        invisible and unreachable at the same time.
+        """
+        cursor = db.get_db().nodes.find({"trashed_at": {"$ne": None}})
+        cache: dict = {}
+        items = []
+        for candidate in await cursor.to_list(length=None):
+            parent_path, blocked_by = await self._ancestors_of(candidate, cache)
+            if parent_path is None or blocked_by is not None:
+                continue
+            node = _verify_node(self._key, candidate)
+            items.append({
+                "node": node,
+                "parent_path": parent_path,
+                "path": _join(parent_path, node.get("filename") or ""),
+            })
+        items.sort(key=lambda item: (-int(item["node"].get("trashed_at") or 0),
+                                     (item["node"].get("filename") or "").lower()))
+        return items
+
+    async def _free_name(self, parent_id: str, name: str) -> str:
+        """`report.pdf` -> `report (2).pdf`, skipping names already taken."""
+        stem, dot, ext = name.rpartition(".")
+        if not dot:
+            stem, ext = name, ""
+        for suffix in range(2, 1000):
+            candidate = f"{stem} ({suffix}){dot}{ext}"
+            clash = await db.get_db().nodes.find_one({
+                "parent_id": parent_id, "filename": candidate,
+                "trashed_at": None})
+            if clash is None:
+                return candidate
+        raise AlreadyExists(name)
+
+    async def restore(self, node_id: str, *, on_conflict: str = "fail") -> dict:
+        """Bring a trashed node back where it was.
+
+        Where it was is simply where it still is -- nothing moved on the way
+        in -- so this clears one field and retags. The only thing that can go
+        wrong is somebody having taken the name in the meantime, and
+        `on_conflict` is the answer to the dialog about it: `replace` puts the
+        occupant in the trash rather than destroying it, `keep_both` restores
+        under `name (2)`, `skip` does nothing, and the default refuses.
+        """
+        node = await self.get_node_by_id(node_id)
+        if node is None or node.get("trashed_at") is None:
+            raise NotFound(node_id)
+
+        parent_path, blocked_by = await self._ancestors_of(node, {})
+        if parent_path is None:
+            raise NotFound(node_id)
+        if blocked_by is not None:
+            raise Unsupported(
+                f"{blocked_by.get('filename') or 'a parent directory'} is in "
+                "the trash as well; restore that first")
+
+        original = node.get("filename") or ""
+        name = original
+        occupant = await db.get_db().nodes.find_one({
+            "parent_id": node["parent_id"], "filename": original,
+            "trashed_at": None})
+
+        if occupant is not None:
+            if on_conflict == "skip":
+                return {"restored": False, "conflict": True, "path": None}
+            if on_conflict == "replace":
+                # The occupant goes to the trash rather than being destroyed.
+                # Windows overwrites outright here, but Windows is answering
+                # for a filesystem where the bin already caught the old copy;
+                # letting a restore be the one operation that loses data with
+                # no way back would be a strange thing for a trash bin to do.
+                await self._set_trashed(_verify_node(self._key, occupant), _now())
+            elif on_conflict == "keep_both":
+                name = await self._free_name(node["parent_id"], original)
+            else:
+                raise AlreadyExists(_join(parent_path, original))
+
+        # A new name changes the (id, name) pair the parent's entry tag
+        # covers, so that tag has to be restaged. Restoring under the original
+        # name changes no membership at all and needs none of this.
+        commit = None
+        if name != original:
+            commit = await self._stage_entries(
+                node["parent_id"], add=[(node["id"], name)],
+                remove=[(node["id"], original)])
+
+        restored = dict(node, filename=name, trashed_at=None)
+        update = {
+            "filename": name,
+            "mac": _dir_mac(self._key, restored) if node["is_dir"]
+            else _file_mac(self._key, restored),
+            "tag_version": TAG_VERSION,
+        }
+        # Unset rather than nulled -- see `_set_trashed` for why the partial
+        # unique index makes that the difference between a restore working and
+        # a duplicate key error.
+        await db.get_db().nodes.update_one(
+            {"id": node["id"]},
+            {"$set": update, "$unset": {"trashed_at": ""}})
+        node.update(update)
+        node.pop("trashed_at", None)
+        if not node["is_dir"]:
+            _node_versions[node["id"]] = update["mac"]
+        if commit is not None:
+            await commit()
+
+        return {"restored": True, "conflict": occupant is not None,
+                "path": _join(parent_path, name)}
+
+    async def _subtree(self, node: dict) -> list:
+        """This node and everything under it, parents before children."""
+        out = [node]
+        frontier = [node]
+        seen = {node["id"]}
+        while frontier:
+            following = []
+            for parent in frontier:
+                if not parent.get("is_dir"):
+                    continue
+                for child in await self.children(parent["id"]):
+                    if child["id"] in seen:
+                        continue
+                    seen.add(child["id"])
+                    following.append(child)
+            out.extend(following)
+            frontier = following
+        return out
+
+    async def purge(self, node_id: str) -> dict:
+        """Destroy a trashed node and everything under it. No way back.
+
+        Ordered the same way `remove` used to be: stage the parent's next
+        entry tag first, do the destroying, promote the tag last. A crash
+        anywhere in the middle leaves the parent holding a tag for each of the
+        two possible child sets, and `verify_dir_entries` accepts both, so the
+        directory still lists. What a crash can leak is Discord attachments
+        whose node is already gone -- which is why the attachments go first
+        and the documents last, so the survivor is always a node that can
+        still be found and retried rather than an orphan nobody can name.
+        """
+        node = await self.get_node_by_id(node_id)
+        if node is None:
+            raise NotFound(node_id)
+        if node.get("trashed_at") is None:
+            raise Unsupported("only trashed nodes can be purged")
+        if node["id"] == self._root_id:
+            raise Unsupported("cannot remove the root directory")
+
+        parent_path, _ = await self._ancestors_of(node, {})
+        if parent_path is None:
+            raise NotFound(node_id)
+
+        subtree = await self._subtree(node)
         commit = await self._stage_entries(
-            node["parent_id"], remove=[(node["id"], node["filename"])])
-        await db.get_db().nodes.delete_one({"id": node["id"]})
+            node["parent_id"],
+            remove=[(node["id"], node.get("filename") or "")])
+
+        attachments = 0
+        for member in subtree:
+            if member.get("is_dir"):
+                continue
+            for chunk in member.get("chunks") or []:
+                await _safe_delete_message(chunk["message_id"])
+                attachments += 1
+
+        for member in subtree:
+            await db.get_db().nodes.delete_one({"id": member["id"]})
+            _node_versions.pop(member["id"], None)
+
         await commit()
+        return {"nodes": len(subtree), "attachments": attachments}
+
+    async def purge_expired(self, *, retention: int, limit: int = 25) -> dict:
+        """Purge whatever has sat in the trash longer than `retention`.
+
+        `limit` is what makes this interruptible. Emptying a month of deleted
+        files means a Discord call per attachment, and the rate limiter would
+        rather be handed twenty-five of them every few minutes than ten
+        thousand at once. Whatever is left over is reported, not forgotten --
+        the next sweep takes the next batch.
+        """
+        cutoff = _now() - retention
+        due = [item for item in await self.list_trash()
+               if int(item["node"].get("trashed_at") or 0) <= cutoff]
+
+        purged = attachments = 0
+        for item in due[:limit]:
+            result = await self.purge(item["node"]["id"])
+            purged += 1
+            attachments += result["attachments"]
+        return {"purged": purged, "attachments": attachments,
+                "remaining": len(due) - purged}
 
     async def rename(self, old_path: str, new_path: str, *, overwrite: bool = False):
         """Move or rename a node.
@@ -1209,7 +1570,7 @@ class DiscordVFS:
         if existing:
             if not overwrite:
                 raise AlreadyExists(new)
-            if existing["is_dir"] and await self.children(existing["id"]):
+            if existing["is_dir"] and await self.live_children(existing["id"]):
                 raise NotEmpty(existing["filename"])
 
         source_parent = node["parent_id"]

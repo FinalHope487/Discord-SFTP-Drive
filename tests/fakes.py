@@ -10,7 +10,30 @@ import uuid
 
 
 def _matches(doc, flt):
-    return all(doc.get(k) == v for k, v in flt.items())
+    return all(_matches_field(doc.get(k), v) for k, v in flt.items())
+
+
+def _matches_field(actual, expected):
+    """Equality, plus the query operators this project actually issues.
+
+    Unmodelled operators raise rather than quietly matching nothing. A fake
+    that treats `{"$gt": 5}` as a literal value to compare against would make
+    every query using it return an empty result, and an empty result is what
+    most callers here read as "there is nothing there" -- so the divergence
+    would surface as a passing test for behaviour that does not work.
+    """
+    if isinstance(expected, dict) and expected and \
+            all(k.startswith("$") for k in expected):
+        for operator, operand in expected.items():
+            if operator != "$ne":
+                raise AssertionError(
+                    f"the fake collection does not model {operator}; add it "
+                    "rather than letting the query silently match nothing")
+            # Mongo treats a missing field as null here, and so does `.get`.
+            if actual == operand:
+                return False
+        return True
+    return actual == expected
 
 
 class FakeCursor:
@@ -36,6 +59,12 @@ class FakeCollection:
         # actually changed underneath it.
         self.find_one_calls = 0
 
+    @staticmethod
+    def _index_name(keys):
+        """MongoDB's own naming rule, because the code drops indexes by name."""
+        pairs = [(keys, 1)] if isinstance(keys, str) else list(keys)
+        return "_".join(f"{field}_{direction}" for field, direction in pairs)
+
     async def create_index(self, keys, **options):
         # Recorded rather than enforced. Uniqueness is MongoDB's job, and a
         # fake that pretended to implement it would prove nothing about the
@@ -44,10 +73,25 @@ class FakeCollection:
         if options.get("unique") and self.create_index_errors:
             raise self.create_index_errors.pop(0)
         self.indexes.append((keys, options))
-        return "generated_name"
+        return self._index_name(keys)
+
+    async def index_information(self):
+        """What MongoDB reports about the indexes that exist.
+
+        Shaped like the real return value -- names mapped to specs carrying a
+        `key` list -- because that is how the upgrade path finds the index it
+        has to drop.
+        """
+        info = {}
+        for keys, options in self.indexes:
+            pairs = [(keys, 1)] if isinstance(keys, str) else list(keys)
+            info[self._index_name(keys)] = {"key": pairs, **options}
+        return info
 
     async def drop_index(self, name):
         self.dropped_indexes.append(name)
+        self.indexes = [(keys, options) for keys, options in self.indexes
+                        if self._index_name(keys) != name]
 
     async def find_one(self, flt):
         self.find_one_calls += 1

@@ -196,9 +196,23 @@ def _name(value: str) -> bytes:
     return unicodedata.normalize("NFC", value or "").encode("utf-8")
 
 
+def _trash_marker(trashed_at) -> bytes:
+    """Trash state as the tag sees it: a presence byte, then the time.
+
+    The presence byte is what makes this honest. Folding in a bare timestamp
+    and calling zero "not trashed" would leave `trashed_at = 0` -- a real
+    instant, the Unix epoch -- indistinguishable from a live file, and the
+    whole reason this is in the tag is that trash state decides whether a file
+    is visible at all.
+    """
+    if trashed_at is None:
+        return b"\x00" + (0).to_bytes(8, "big")
+    return b"\x01" + int(trashed_at).to_bytes(8, "big")
+
+
 def node_tag(key: bytes, *, file_id: str, parent_id: str, filename: str,
-             size: int, chunk_tags) -> bytes:
-    """Authentication tag over a file: its shape, its name and its place.
+             size: int, chunk_tags, trashed_at=None) -> bytes:
+    """Authentication tag over a file: its shape, its name, its place, its state.
 
     Covers the ordered chunk tags rather than the chunk bytes, so it costs the
     same whatever the file's size, and any change to a chunk changes this too.
@@ -209,13 +223,20 @@ def node_tag(key: bytes, *, file_id: str, parent_id: str, filename: str,
     `report-2024.pdf` could be served under the name `report-2026.pdf` with a
     valid tag on them. Authenticating content while leaving identity
     unauthenticated is a guarantee that misleads.
+
+    `trashed_at` is in here for the same reason one step further out. A file in
+    the trash is a file that no listing shows, so whoever could set that field
+    could make any file disappear -- silently, and without touching the entry
+    tag that exists precisely to catch a disappearance. Leaving trash state
+    outside the tag would reopen the hole `dir_entries_tag` was added to close.
     """
     mac = hmac.new(_subkey(key, _MAC_INFO), digestmod="sha256")
-    mac.update(b"node2")
+    mac.update(b"node3")
     mac.update(_length_prefixed(file_id.encode("utf-8")))
     mac.update(_length_prefixed((parent_id or "").encode("utf-8")))
     mac.update(_length_prefixed(_name(filename)))
     mac.update(size.to_bytes(8, "big"))
+    mac.update(_trash_marker(trashed_at))
     mac.update(len(chunk_tags).to_bytes(8, "big"))
     for tag in chunk_tags:
         mac.update(_length_prefixed(bytes.fromhex(tag)))
@@ -223,11 +244,12 @@ def node_tag(key: bytes, *, file_id: str, parent_id: str, filename: str,
 
 
 def verify_node(key: bytes, *, file_id: str, parent_id: str, filename: str,
-                size: int, chunk_tags, tag_hex: str):
+                size: int, chunk_tags, tag_hex: str, trashed_at=None):
     """Raise `IntegrityError` unless the file's shape is the one recorded."""
     expected = _decode_tag(tag_hex, "file")
     actual = node_tag(key, file_id=file_id, parent_id=parent_id,
-                      filename=filename, size=size, chunk_tags=chunk_tags)
+                      filename=filename, size=size, chunk_tags=chunk_tags,
+                      trashed_at=trashed_at)
     if not hmac.compare_digest(expected, actual):
         raise IntegrityError("file failed integrity verification")
 
@@ -247,26 +269,35 @@ def verify_node(key: bytes, *, file_id: str, parent_id: str, filename: str,
 # listings per open.
 
 
-def dir_tag(key: bytes, *, dir_id: str, parent_id: str, filename: str) -> bytes:
-    """Authentication tag over a directory's identity and place.
+def dir_tag(key: bytes, *, dir_id: str, parent_id: str, filename: str,
+            trashed_at=None) -> bytes:
+    """Authentication tag over a directory's identity, place and state.
 
     Renaming a directory used to change nothing a child could notice: a child
     records its parent's *id*, not its name, so moving `/private` to `/public`
     left every tag underneath it valid.
+
+    `trashed_at` matters more here than on a file. A trashed directory takes
+    its whole subtree out of view in one field, without any descendant being
+    touched, so this is the single value standing between "somebody with the
+    database can hide one file" and "somebody with the database can hide
+    everything you own".
     """
     mac = hmac.new(_subkey(key, _MAC_INFO), digestmod="sha256")
-    mac.update(b"dir")
+    mac.update(b"dir2")
     mac.update(_length_prefixed(dir_id.encode("utf-8")))
     mac.update(_length_prefixed((parent_id or "").encode("utf-8")))
     mac.update(_length_prefixed(_name(filename)))
+    mac.update(_trash_marker(trashed_at))
     return mac.digest()
 
 
 def verify_dir(key: bytes, *, dir_id: str, parent_id: str, filename: str,
-               tag_hex: str):
+               tag_hex: str, trashed_at=None):
     """Raise `IntegrityError` unless the directory is where it says it is."""
     expected = _decode_tag(tag_hex, "directory")
-    actual = dir_tag(key, dir_id=dir_id, parent_id=parent_id, filename=filename)
+    actual = dir_tag(key, dir_id=dir_id, parent_id=parent_id,
+                     filename=filename, trashed_at=trashed_at)
     if not hmac.compare_digest(expected, actual):
         raise IntegrityError("directory failed integrity verification")
 

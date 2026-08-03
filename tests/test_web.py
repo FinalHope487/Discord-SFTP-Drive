@@ -403,3 +403,156 @@ async def test_a_download_names_the_file_even_when_the_name_is_not_ascii(client)
     assert disposition.startswith("attachment;")
     assert "filename*=UTF-8''" in disposition
     assert "報告" not in disposition, "the raw name went into a latin-1 header"
+
+
+# ------------------------------------------------------------------- trash
+
+
+async def _trash_of(client):
+    response = await client.get("/api/trash")
+    assert response.status == 200, await response.text()
+    return await response.json()
+
+
+async def test_deleting_a_file_puts_it_in_the_trash(client):
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    await client.put("/api/file?path=/notes.txt", data=b"hello", headers=headers)
+    assert (await client.delete("/api/file?path=/notes.txt",
+                                headers=headers)).status == 200
+
+    listing = await (await client.get("/api/files?path=/")).json()
+    assert listing["entries"] == []
+
+    body = await _trash_of(client)
+    [entry] = body["entries"]
+    assert entry["original_path"] == "/notes.txt"
+    assert entry["trashed_at"] > 0
+    assert body["retention_seconds"] > 0
+
+
+async def test_restoring_from_the_trash_brings_the_bytes_back(client):
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    await client.put("/api/file?path=/notes.txt", data=b"hello", headers=headers)
+    await client.delete("/api/file?path=/notes.txt", headers=headers)
+    [entry] = (await _trash_of(client))["entries"]
+
+    response = await client.post("/api/trash/restore", json={"id": entry["id"]},
+                                 headers=headers)
+    assert response.status == 200, await response.text()
+    assert (await response.json())["path"] == "/notes.txt"
+
+    assert await (await client.get("/api/file?path=/notes.txt")).read() == b"hello"
+    assert (await _trash_of(client))["entries"] == []
+
+
+async def test_a_restore_onto_a_taken_name_is_a_conflict_the_client_resolves(client):
+    """409 first, then whichever of the three answers the dialog got."""
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    await client.put("/api/file?path=/notes.txt", data=b"old", headers=headers)
+    await client.delete("/api/file?path=/notes.txt", headers=headers)
+    await client.put("/api/file?path=/notes.txt", data=b"new", headers=headers)
+    [entry] = (await _trash_of(client))["entries"]
+
+    refused = await client.post("/api/trash/restore", json={"id": entry["id"]},
+                                headers=headers)
+    assert refused.status == 409
+
+    kept = await client.post("/api/trash/restore",
+                             json={"id": entry["id"], "on_conflict": "keep_both"},
+                             headers=headers)
+    assert kept.status == 200
+    assert (await kept.json())["path"] == "/notes (2).txt"
+
+    listing = await (await client.get("/api/files?path=/")).json()
+    assert sorted(e["name"] for e in listing["entries"]) \
+        == ["notes (2).txt", "notes.txt"]
+
+
+async def test_an_unknown_conflict_choice_is_refused(client):
+    payload = await sign_in(client)
+    response = await client.post("/api/trash/restore",
+                                 json={"id": "whatever", "on_conflict": "clobber"},
+                                 headers=csrf(payload))
+    assert response.status == 400
+
+
+async def test_purging_releases_the_attachments(client, fake_discord):
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    await client.put("/api/file?path=/big.bin", data=os.urandom(TEST_CHUNK_SIZE + 9),
+                     headers=headers)
+    await client.delete("/api/file?path=/big.bin", headers=headers)
+    assert fake_discord.store != {}, "the trash must keep the chunks"
+
+    [entry] = (await _trash_of(client))["entries"]
+    response = await client.delete(f"/api/trash?id={entry['id']}", headers=headers)
+    assert response.status == 200
+    assert (await response.json())["attachments"] >= 1
+    assert fake_discord.store == {}
+
+
+async def test_purging_without_an_id_is_refused_rather_than_emptying_the_bin(client):
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    await client.put("/api/file?path=/notes.txt", data=b"x", headers=headers)
+    await client.delete("/api/file?path=/notes.txt", headers=headers)
+
+    assert (await client.delete("/api/trash", headers=headers)).status == 400
+    assert len((await _trash_of(client))["entries"]) == 1
+
+
+async def test_emptying_the_trash_takes_everything(client):
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    for name in ("a.txt", "b.txt"):
+        await client.put(f"/api/file?path=/{name}", data=b"x", headers=headers)
+        await client.delete(f"/api/file?path=/{name}", headers=headers)
+
+    response = await client.post("/api/trash/empty", headers=headers)
+    assert response.status == 200
+    assert (await response.json())["purged"] == 2
+    assert (await _trash_of(client))["entries"] == []
+
+
+async def test_a_directory_with_things_in_it_needs_the_recursive_flag(client):
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    await client.post("/api/dir", json={"path": "/project"}, headers=headers)
+    await client.put("/api/file?path=/project/a.txt", data=b"x", headers=headers)
+
+    assert (await client.delete("/api/dir?path=/project",
+                                headers=headers)).status == 409
+
+    assert (await client.delete("/api/dir?path=/project&recursive=true",
+                                headers=headers)).status == 200
+    listing = await (await client.get("/api/files?path=/")).json()
+    assert listing["entries"] == []
+
+
+async def test_the_trash_needs_a_session_and_a_csrf_token(client):
+    payload = await sign_in(client)
+    headers = csrf(payload)
+    await client.put("/api/file?path=/notes.txt", data=b"x", headers=headers)
+    await client.delete("/api/file?path=/notes.txt", headers=headers)
+    [entry] = (await _trash_of(client))["entries"]
+
+    # Mutating the trash without the token is refused, exactly like every
+    # other state change. Emptying somebody's bin from another origin would be
+    # the most destructive thing this API could be tricked into doing.
+    assert (await client.post("/api/trash/restore",
+                              json={"id": entry["id"]})).status == 403
+    assert (await client.delete(f"/api/trash?id={entry['id']}")).status == 403
+    assert (await client.post("/api/trash/empty")).status == 403
+
+    await client.post("/api/logout", headers=headers)
+    assert (await client.get("/api/trash")).status == 401
