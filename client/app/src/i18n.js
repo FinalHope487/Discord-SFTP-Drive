@@ -160,6 +160,23 @@ const DICT = {
     "dlg.purge.go": "永久刪除",
     "dlg.purge.count": "垃圾桶裡的項目",
 
+    "dlg.close": "關閉",
+    "dlg.job.running": "正在永久刪除",
+    "dlg.job.done": "已永久刪除",
+    "dlg.job.cancelled": "已中止",
+    "dlg.job.failed": "刪除中途失敗",
+    "dlg.job.sub": "附件會逐一從 Discord 刪除，速度受 Discord 的速率限制。",
+    "dlg.job.current": "正在處理「{name}」",
+    "dlg.job.entries": "項目",
+    "dlg.job.attachments": "附件",
+    // 這句在四種狀態下都要出現。只在中止之後才說，會讀起來像「正常跑完
+    // 反而是可以還原的那一種」。
+    "dlg.job.irreversible":
+      "已經刪掉的附件不會回來。中止只會停下還沒做的部分。",
+    "dlg.job.stop": "中止",
+    "dlg.job.stopping": "正在停下…",
+    "dlg.job.busy": "這個雲端硬碟上已經有一個刪除工作在跑了。",
+
     "dlg.conflict.title": "目的地已經有同名的項目",
     "dlg.conflict.sub": "還原「{name}」到 {dir}",
     "dlg.conflict.replace": "取代目的地的項目",
@@ -223,8 +240,6 @@ const DICT = {
     "toast.trashed": "已移到垃圾桶",
     "toast.restored": "已還原到 {path}",
     "toast.skipped": "已略過",
-    "toast.purged": "已永久刪除",
-    "toast.emptied": "垃圾桶已清空",
     "toast.uploaded": "已上傳「{name}」",
 
     "tooSmall.title": "視窗太小",
@@ -378,6 +393,24 @@ const DICT = {
     "dlg.purge.go": "Destroy",
     "dlg.purge.count": "Items in the trash",
 
+    "dlg.close": "Close",
+    "dlg.job.running": "Destroying",
+    "dlg.job.done": "Destroyed",
+    "dlg.job.cancelled": "Stopped",
+    "dlg.job.failed": "Stopped by an error",
+    "dlg.job.sub":
+      "Attachments are deleted from Discord one at a time, paced by Discord's rate limit.",
+    "dlg.job.current": "Working on “{name}”",
+    "dlg.job.entries": "Items",
+    "dlg.job.attachments": "Attachments",
+    // Shown in all four states. Saying it only after a cancellation would
+    // read as though finishing normally were the reversible option.
+    "dlg.job.irreversible":
+      "Attachments already destroyed do not come back. Stopping only cancels the part not done yet.",
+    "dlg.job.stop": "Stop",
+    "dlg.job.stopping": "Stopping…",
+    "dlg.job.busy": "There is already a deletion running on this drive.",
+
     "dlg.conflict.title": "There is already something with that name there",
     "dlg.conflict.sub": "Restoring “{name}” into {dir}",
     "dlg.conflict.replace": "Replace what is at the destination",
@@ -443,8 +476,6 @@ const DICT = {
     "toast.trashed": "Moved to the trash",
     "toast.restored": "Restored to {path}",
     "toast.skipped": "Skipped",
-    "toast.purged": "Destroyed",
-    "toast.emptied": "The trash is empty",
     "toast.uploaded": "Uploaded “{name}”",
 
     "tooSmall.title": "The window is too small",

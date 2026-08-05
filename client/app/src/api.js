@@ -195,10 +195,46 @@ export const restoreTrash = (id, onConflict) =>
     body: { id, ...(onConflict ? { on_conflict: onConflict } : {}) },
   });
 
+// Both of these start a job and return immediately; neither reports what was
+// destroyed, because at the moment they return nothing has been. Purging is
+// one Discord round trip per attachment behind a rate limiter, so the caller
+// polls `getJob` and draws the result from there.
 export const purgeTrash = (id) =>
   request("DELETE", "/api/trash", { params: { id } });
 
 export const emptyTrash = () => request("POST", "/api/trash/empty");
+
+// --------------------------------------------------------------------- jobs
+
+export const listJobs = () => request("GET", "/api/jobs");
+
+export const getJob = (id) => request("GET", `/api/jobs/${encodeURIComponent(id)}`);
+
+/**
+ * Ask a running purge to stop after the attachment it is on.
+ *
+ * It stops the rest. It does not give anything back -- whatever the job has
+ * already destroyed is destroyed, and any UI offering this has to have said so
+ * before the button was pressed, not after.
+ */
+export const cancelJob = (id) =>
+  request("POST", `/api/jobs/${encodeURIComponent(id)}/cancel`);
+
+/**
+ * Poll `id` until it stops running, calling `onProgress` with each reading.
+ *
+ * The interval is deliberately dull. Progress here is bounded by Discord's
+ * rate limiter, so polling faster than it moves would just be more requests
+ * describing the same number.
+ */
+export async function followJob(id, { onProgress, intervalMs = 700 } = {}) {
+  for (;;) {
+    const { job } = await getJob(id);
+    if (onProgress) onProgress(job);
+    if (job.state !== "running") return job;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
 
 // ---------------------------------------------------------------- transfers
 

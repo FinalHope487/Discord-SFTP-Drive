@@ -148,13 +148,120 @@ export function ConfirmDialog({
         </div>
       ) : null}
       <div className="actions">
-        <button className="btn" onClick={onClose}>
+        {/* Explicitly a button. Without a type, HTML defaults to `submit`,
+            which is harmless only for as long as this stays outside a
+            <form> -- and the day somebody wraps it, "cancel" starts
+            submitting. PromptDialog's cancel already says this. */}
+        <button type="button" className="btn" onClick={onClose}>
           {t("dlg.cancel")}
         </button>
-        <button className={danger ? "btn btn-danger" : "btn btn-primary"} onClick={go} disabled={busy}>
+        <button
+          type="button"
+          className={danger ? "btn btn-danger" : "btn btn-primary"}
+          onClick={go}
+          disabled={busy}
+        >
           {busy ? <Spinner /> : null}
           {confirmLabel}
         </button>
+      </div>
+    </Scrim>
+  );
+}
+
+/* ------------------------------------------------------------ purge progress */
+
+/**
+ * A batch purge while it runs, and what it left behind when it stops.
+ *
+ * The bar is driven by attachments rather than by entries because attachments
+ * are what take the time: one Discord round trip each, behind a rate limiter.
+ * An entry-based bar sits at 0/1 for the whole of a thousand-file directory.
+ *
+ * Cancelling is offered, and the wording around it is the careful part. It
+ * stops the rest; it does not give back what has already gone. So the count of
+ * what is already destroyed stays on screen the entire time -- before the
+ * cancel button is pressed, while it drains, and afterwards -- rather than the
+ * dialog reporting only the fact that it stopped.
+ */
+export function PurgeProgressDialog({ t, job, onCancel, onClose }) {
+  const [cancelling, setCancelling] = useState(false);
+
+  const total = job.attachments?.total || 0;
+  const done = job.attachments?.done || 0;
+  // A purge of directories only has no attachments at all, and 0/0 is honestly
+  // "nothing to count" rather than 0%. Entries carry the bar in that case.
+  const fraction = total > 0
+    ? done / total
+    : (job.entries?.total ? job.entries.done / job.entries.total : 0);
+
+  const running = job.state === "running";
+  const heading = {
+    running: t("dlg.job.running"),
+    done: t("dlg.job.done"),
+    cancelled: t("dlg.job.cancelled"),
+    failed: t("dlg.job.failed"),
+  }[job.state] || t("dlg.job.running");
+
+  async function requestCancel() {
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      await onCancel();
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  return (
+    <Scrim onClose={running ? () => {} : onClose}>
+      <h2>{heading}</h2>
+      <div className="sub">
+        {running && job.current
+          ? t("dlg.job.current", { name: job.current })
+          : t("dlg.job.sub")}
+      </div>
+
+      <div className={job.state === "failed" ? "bar bad" : "bar"}>
+        <i style={{ width: `${Math.round(fraction * 100)}%` }} />
+      </div>
+
+      <div className="factbox">
+        <div>{t("dlg.job.entries")}</div>
+        <div>{`${job.entries?.done || 0} / ${job.entries?.total || 0}`}</div>
+        <div>{t("dlg.job.attachments")}</div>
+        <div>{`${done} / ${total}`}</div>
+      </div>
+
+      {/* Never conditional on the outcome. Whatever this number is, those
+          attachments are gone -- saying so only after a cancellation would
+          read as though finishing normally were the reversible option. */}
+      <div style={{ display: "flex", gap: 8, fontSize: 11.5, lineHeight: 1.5,
+                    color: "var(--warn)" }}>
+        <Icon name="warning" size={14} style={{ marginTop: 2 }} />
+        <span>{t("dlg.job.irreversible")}</span>
+      </div>
+
+      {job.error ? (
+        <div className="sub" style={{ color: "var(--integrity)" }}>{job.error}</div>
+      ) : null}
+
+      <div className="actions">
+        {running ? (
+          <button
+            type="button"
+            className="btn"
+            onClick={requestCancel}
+            disabled={cancelling || job.cancel_requested}
+          >
+            {cancelling || job.cancel_requested ? <Spinner /> : null}
+            {job.cancel_requested ? t("dlg.job.stopping") : t("dlg.job.stop")}
+          </button>
+        ) : (
+          <button type="button" className="btn btn-primary" onClick={onClose}>
+            {t("dlg.close")}
+          </button>
+        )}
       </div>
     </Scrim>
   );

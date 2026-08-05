@@ -26,7 +26,7 @@ from urllib.parse import quote
 
 from aiohttp import web
 
-from src import keystore, users
+from src import jobs, keystore, users
 from src.config import (trash_settings, web_cookie_secure, web_login_limits,
                         web_session_limits, web_static_dir)
 from src.crypto import IntegrityError, KeyUnwrapError
@@ -66,6 +66,7 @@ _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # dealt with rather than accumulated.
 SESSIONS = web.AppKey("sessions", SessionStore)
 GUARD = web.AppKey("guard", LoginGuard)
+JOBS = web.AppKey("jobs", jobs.JobRegistry)
 
 # Anything the app needs to record *after* startup lives in here. The
 # Application itself is frozen once it starts, so the sweeper task cannot be
@@ -466,6 +467,7 @@ async def upload(request):
                                     truncate=True)
     offset = 0
     failure = None
+    disconnected = False
     try:
         while True:
             data = await request.content.read(STREAM_CHUNK)
@@ -473,26 +475,80 @@ async def upload(request):
                 break
             await handle.write_at(offset, data)
             offset += len(data)
+        failure = _incomplete_body(request, offset)
+    except asyncio.CancelledError as exc:
+        # A client that goes away mid-upload lands here, and this clause is the
+        # whole reason that case was silently wrong: aiohttp cancels the handler
+        # task, `CancelledError` is a `BaseException`, so the `except Exception`
+        # below never saw it. The `finally` then ran `close()` -- and closing is
+        # what committing means -- so a half-received body became a file listed
+        # at its truncated size with nothing anywhere saying it was short.
+        failure = exc
+        disconnected = True
     except Exception as exc:
         # Held rather than raised, so the close below still runs and its own
         # outcome can be folded in before anything is reported.
         failure = exc
     finally:
-        # Always. Buffered bytes only reach Discord on close, so skipping this
-        # on the error path would drop the tail of every interrupted upload --
-        # the same bug the SFTP shutdown drain exists to avoid.
         try:
-            await handle.close()
+            if failure is None:
+                # Buffered bytes only reach Discord on close, so this is what
+                # commits the tail of every upload. Skipping it would drop the
+                # tail the same way the SFTP shutdown drain exists to avoid.
+                await handle.close()
+            else:
+                # Not `close()`: closing commits, and a write that did not
+                # finish must not be. See `DiscordFile.abort`.
+                #
+                # Shielded because on the disconnect path this task is already
+                # being torn down, and an unwind interrupted half way through
+                # is how attachments become orphans.
+                await asyncio.shield(handle.abort())
+        except asyncio.CancelledError:
+            # The shield kept the unwind running; only waiting for it was
+            # cancelled. Nothing useful is left to do here.
+            pass
         except Exception as exc:
             # A flush that fails is still this upload failing. An earlier
             # failure is the more informative of the two, so it keeps its place.
             failure = exc if failure is None else failure
+
+    if disconnected:
+        # Never swallowed. The client is gone, so no response can reach it, and
+        # turning its cancellation into a 500 would leave aiohttp writing a
+        # reply onto a transport that no longer exists.
+        raise failure
 
     if failure is not None:
         raise _upload_failed(failure, handle)
 
     node = await session.vfs.require_node(path)
     return web.json_response({"path": path, **_entry(node)}, status=201)
+
+
+def _incomplete_body(request, received: int):
+    """Why this request body stopped early, or `None` if it finished.
+
+    A second check beside the cancellation clause above, because a truncated
+    body does not always cancel the handler. Where it merely feeds EOF instead,
+    `request.content.read()` returns `b""` and the read loop ends exactly the
+    way a complete body ends -- so without this the handler would go on to
+    commit whatever had arrived.
+
+    Two signals, because neither covers the other. The stream's own exception
+    is what a reset looks like on a chunked body, which declared no length to
+    fall short of; the length comparison catches a body that ended without the
+    transport itself reporting a fault.
+    """
+    exc = request.content.exception()
+    if exc is not None:
+        return exc
+
+    declared = request.content_length
+    if declared is not None and received != declared:
+        return ConnectionResetError(
+            f"the request body ended after {received} of {declared} bytes")
+    return None
 
 
 def _upload_failed(exc: Exception, handle) -> BaseException:
@@ -610,24 +666,84 @@ async def restore_trash(request):
         await session.vfs.restore(node_id, on_conflict=on_conflict))
 
 
-async def purge_trash(request):
+# Purging is the one operation here whose duration is set by Discord rather
+# than by this process: one round trip per attachment, serialised behind the
+# rate limiter. Both routes below therefore hand back a job to poll instead of
+# holding the request open for what can be minutes -- see `src/jobs.py`.
+
+
+async def _start_purge(request, *, node_ids, kind):
     session = request["session"]
+    try:
+        job = await request.app[JOBS].start_purge(
+            session, node_ids=node_ids, kind=kind)
+    except jobs.JobConflict as exc:
+        raise _error(409, str(exc))
+    except NotFound:
+        raise _error(404, "no such trash entry")
+    # 202: accepted and started, not finished. The body carries the job at its
+    # starting position so a client has a denominator to draw before its first
+    # poll comes back.
+    return web.json_response({"job": job.as_dict()}, status=202)
+
+
+async def purge_trash(request):
     node_id = request.query.get("id")
     if not node_id:
         raise _error(400, "an id query parameter is required")
-    return web.json_response(await session.vfs.purge(node_id))
+    return await _start_purge(request, node_ids=[node_id], kind="purge")
 
 
 async def empty_trash(request):
     session = request["session"]
-    nodes = attachments = 0
     items = await session.vfs.list_trash()
-    for item in items:
-        result = await session.vfs.purge(item["node"]["id"])
-        nodes += result["nodes"]
-        attachments += result["attachments"]
-    return web.json_response({"purged": len(items), "nodes": nodes,
-                              "attachments": attachments})
+    return await _start_purge(
+        request,
+        node_ids=[item["node"]["id"] for item in items],
+        kind="empty_trash",
+    )
+
+
+# --------------------------------------------------------------------- jobs
+
+
+def _job_or_404(request):
+    session = request["session"]
+    job = request.app[JOBS].get(request.match_info["id"],
+                                root_id=session.root_id)
+    if job is None:
+        raise _error(404, "no such job")
+    return job
+
+
+async def list_jobs(request):
+    """Every job on this drive, so a reloaded tab finds a purge in progress.
+
+    Scoped to the tree rather than the session for that reason: the work
+    survives the tab that started it, and a progress bar nobody can get back to
+    is not much better than no progress bar.
+    """
+    session = request["session"]
+    registry = request.app[JOBS]
+    registry.sweep()
+    return web.json_response(
+        {"jobs": [job.as_dict() for job in registry.list_for_tree(session.root_id)]})
+
+
+async def get_job(request):
+    return web.json_response({"job": _job_or_404(request).as_dict()})
+
+
+async def cancel_job(request):
+    """Ask a running job to stop after the attachment it is on.
+
+    It stops the rest; it does not give back what has already gone. The client
+    is responsible for having said so before offering the button, and the
+    numbers in the response are what it should say afterwards.
+    """
+    job = _job_or_404(request)
+    request.app[JOBS].cancel(job)
+    return web.json_response({"job": job.as_dict()})
 
 
 async def rename(request):
@@ -737,6 +853,7 @@ def create_app(*, sessions=None, guard=None, static_dir=None) -> web.Application
         idle_ceiling=limits["idle"], absolute_ceiling=limits["absolute"])
     app[GUARD] = guard or LoginGuard(concurrency=login_limits["concurrency"],
                                      queue=login_limits["queue"])
+    app[JOBS] = jobs.JobRegistry()
     app[STATE] = {}
 
     app.router.add_get("/api/health", health)
@@ -763,6 +880,10 @@ def create_app(*, sessions=None, guard=None, static_dir=None) -> web.Application
     # a route of its own, so a client that forgets the `id` on the line above
     # gets a 400 instead of emptying the bin.
     app.router.add_post("/api/trash/empty", empty_trash)
+
+    app.router.add_get("/api/jobs", list_jobs)
+    app.router.add_get("/api/jobs/{id}", get_job)
+    app.router.add_post("/api/jobs/{id}/cancel", cancel_job)
 
     # Last, so every API route above wins the match. See `_add_client_routes`.
     _add_client_routes(app, web_static_dir() if static_dir is None
@@ -829,6 +950,24 @@ async def _stop_sweeper(app):
             await task
         except asyncio.CancelledError:
             pass
+
+    # Ask first, then wait. A purge cancelled cooperatively stops between two
+    # Discord deletes and leaves the node still in the trash; one cancelled by
+    # killing the task could land between the attachment loop and the document
+    # loop, which is the one gap that produces an orphan. The drain is bounded
+    # by a single attachment delete, which the rate limiter already caps.
+    registry = app[JOBS]
+    registry.cancel_all()
+    for job in list(registry.list_for_tree_all()):
+        if job.task is None:
+            continue
+        try:
+            await asyncio.wait_for(asyncio.shield(job.task), timeout=15)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            job.task.cancel()
+        except Exception:                              # noqa: BLE001
+            logger.exception("Purge job %s failed while draining", job.id)
+
     # Every session's key goes with the process, and dropping them explicitly
     # beats relying on the interpreter to get around to it.
     app[SESSIONS].drop_all()

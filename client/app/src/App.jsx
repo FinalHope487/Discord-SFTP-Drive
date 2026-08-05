@@ -8,6 +8,7 @@ import {
   ExpiredOverlay,
   IntegrityBanner,
   PromptDialog,
+  PurgeProgressDialog,
   SessionsDialog,
   TooSmall,
   UploadFailedDialog,
@@ -89,6 +90,10 @@ export default function App() {
 
   const [trash, setTrash] = useState({ entries: [], retention_seconds: 0 });
   const [trashBusy, setTrashBusy] = useState(null);
+  // The purge running on the server, if there is one. Server state that this
+  // tab is watching -- not this tab's state -- which is why a reload picks it
+  // back up rather than starting a second one.
+  const [purgeJob, setPurgeJob] = useState(null);
 
   const [transfers, setTransfers] = useState([]);
   const [trayOpen, setTrayOpen] = useState(false);
@@ -452,6 +457,69 @@ export default function App() {
     },
     [handle, refreshCurrent],
   );
+
+  /* --------------------------------------------------------- purge jobs */
+
+  /**
+   * Watch a purge to its end, keeping the dialog's numbers current.
+   *
+   * Polling rather than a stream, matching the server: the work outlives the
+   * request that started it, so it has to be reachable by id rather than tied
+   * to a connection this tab might lose.
+   */
+  const watchJob = useCallback(
+    async (job) => {
+      setPurgeJob(job);
+      try {
+        const final = await api.followJob(job.id, { onProgress: setPurgeJob });
+        setPurgeJob(final);
+      } catch (error) {
+        // The job itself is unaffected by this tab losing sight of it -- it is
+        // running on the server. Say so rather than implying it stopped.
+        handle(error);
+      } finally {
+        await refreshCurrent();
+      }
+    },
+    [handle, refreshCurrent],
+  );
+
+  const startPurge = useCallback(
+    async (begin) => {
+      try {
+        const { job } = await begin();
+        await watchJob(job);
+      } catch (error) {
+        if (error instanceof api.ApiError && error.isConflict) {
+          notify(t("dlg.job.busy"));
+          return;
+        }
+        handle(error);
+      }
+    },
+    [watchJob, handle, notify, t],
+  );
+
+  // A reload, or a second tab, finds the purge that is already running. The
+  // server keeps finished jobs around for a few minutes, so this deliberately
+  // only re-attaches to a live one: re-opening a dialog for something that
+  // finished while the tab was closed would be a notification, not progress.
+  useEffect(() => {
+    if (phase !== "in") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { jobs } = await api.listJobs();
+        const running = (jobs || []).find((job) => job.state === "running");
+        if (running && !cancelled) await watchJob(running);
+      } catch {
+        // Nothing to recover; the drive works without this.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, watchJob]);
 
   const askDelete = useCallback(() => {
     const items = [...selected]
@@ -932,6 +1000,25 @@ export default function App() {
 
       {dialog ? renderDialog() : null}
 
+      {/* Outside `renderDialog`, because a purge is server state this tab is
+          watching rather than something this tab opened. It survives the
+          confirm dialog closing, and a reload re-attaches to it. */}
+      {purgeJob ? (
+        <PurgeProgressDialog
+          t={t}
+          job={purgeJob}
+          onCancel={async () => {
+            try {
+              const { job } = await api.cancelJob(purgeJob.id);
+              setPurgeJob(job);
+            } catch (error) {
+              handle(error);
+            }
+          }}
+          onClose={() => setPurgeJob(null)}
+        />
+      ) : null}
+
       {phase === "expired" ? (
         <ExpiredOverlay t={t} onSignIn={() => setPhase("signedout")} />
       ) : null}
@@ -1096,10 +1183,7 @@ export default function App() {
           onClose={close}
           onConfirm={async () => {
             close();
-            await run(
-              () => api.purgeTrash(item.id),
-              () => notify(t("toast.purged")),
-            );
+            await startPurge(() => api.purgeTrash(item.id));
           }}
         />
       );
@@ -1121,10 +1205,7 @@ export default function App() {
           onClose={close}
           onConfirm={async () => {
             close();
-            await run(
-              () => api.emptyTrash(),
-              () => notify(t("toast.emptied")),
-            );
+            await startPurge(() => api.emptyTrash());
           }}
         />
       );

@@ -200,6 +200,11 @@ class FakeDiscord:
         # and what it swallows is exactly what `orphans` counts.
         self.fail_deletes = False
         self.delete_attempts = 0
+        # An optional coroutine awaited before each delete. It exists so a
+        # test can hold a batch purge still and look at it: progress and
+        # cancellation are only observable while the work is in flight, and
+        # against a fake that returns instantly there is no such moment.
+        self.before_delete = None
 
     async def upload_chunk(self, data, filename):
         self.uploads += 1
@@ -222,6 +227,8 @@ class FakeDiscord:
         return await self.download_chunk(await self.get_attachment_url(message_id))
 
     async def delete_message(self, message_id):
+        if self.before_delete is not None:
+            await self.before_delete(message_id)
         self.delete_attempts += 1
         if self.fail_deletes:
             raise DiscordFailure(f"injected delete failure ({message_id})")

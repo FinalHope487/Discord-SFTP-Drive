@@ -9,8 +9,10 @@ ordering, and a test that called handlers directly would assert none of them.
 dependency, and the plugin is not, so this needs no new package.
 """
 
+import asyncio
 import hashlib
 import os
+import time
 
 import aiohttp
 import pytest
@@ -52,6 +54,26 @@ async def sign_in(client, **extra):
 
 def csrf(payload):
     return {web_mod.CSRF_HEADER: payload["csrf_token"]}
+
+
+async def finished_job(client, response, *, timeout=5.0):
+    """Drive a 202-with-a-job to completion and return its final state.
+
+    Purging is asynchronous now -- the request that starts it returns a job id
+    rather than waiting out one Discord round trip per attachment -- so every
+    assertion about what a purge *did* has to go through here.
+    """
+    assert response.status == 202, await response.text()
+    job = (await response.json())["job"]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        polled = await client.get(f"/api/jobs/{job['id']}")
+        assert polled.status == 200, await polled.text()
+        job = (await polled.json())["job"]
+        if job["state"] != "running":
+            return job
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"job never finished: {job}")
 
 
 # ------------------------------------------------------------ signing in
@@ -492,9 +514,11 @@ async def test_purging_releases_the_attachments(client, fake_discord):
     assert fake_discord.store != {}, "the trash must keep the chunks"
 
     [entry] = (await _trash_of(client))["entries"]
-    response = await client.delete(f"/api/trash?id={entry['id']}", headers=headers)
-    assert response.status == 200
-    assert (await response.json())["attachments"] >= 1
+    job = await finished_job(
+        client,
+        await client.delete(f"/api/trash?id={entry['id']}", headers=headers))
+    assert job["state"] == "done"
+    assert job["attachments"]["done"] >= 1
     assert fake_discord.store == {}
 
 
@@ -517,9 +541,10 @@ async def test_emptying_the_trash_takes_everything(client):
         await client.put(f"/api/file?path=/{name}", data=b"x", headers=headers)
         await client.delete(f"/api/file?path=/{name}", headers=headers)
 
-    response = await client.post("/api/trash/empty", headers=headers)
-    assert response.status == 200
-    assert (await response.json())["purged"] == 2
+    job = await finished_job(
+        client, await client.post("/api/trash/empty", headers=headers))
+    assert job["state"] == "done"
+    assert job["entries"] == {"done": 2, "total": 2}
     assert (await _trash_of(client))["entries"] == []
 
 
