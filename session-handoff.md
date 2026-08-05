@@ -1,188 +1,158 @@
 # Session Handoff
 
-依 `.claude/templates/session-handoff.md` 產出。**最後更新 2026-08-05。**
+依 `.claude/templates/session-handoff.md` 產出。**最後更新 2026-08-06。**
 
 ---
 
 ## 目前狀態
 
-**`ROADMAP.md` 的 `[now]` Client UI 五個步驟全部落地，並多做了第 6 步（桌面外殼）。**
+**跑得起來，且這一輪的改動已經上線。** `docker compose up -d --build` 重建過，
+production 起來乾淨：MongoDB 連上、Discord 可達、SFTP（2222）與 Web（127.0.0.1:8080）都在聽。
+**啟動 log 沒有出現 `Created a new wrapped master key`**，表示既有帳號與金鑰記錄被正常開啟，
+`ensure_usable` 的守衛過了——沒有動到任何線上資料。
 
-服務同時跑 SFTP（`0.0.0.0:2222`）、HTTP API 與**檔案管理前端**（`127.0.0.1:8080`），
-同一個 process。前端是 `client/app/dist`，以唯讀方式掛進容器的 `/app/web`。
-桌面 app 已打包成兩種 `.exe`。
+**523 項測試通過**，pyflakes 乾淨（`src/` `tests/` `scripts/`），前端建置通過。
 
-**已在真環境驗過。** Docker Desktop 起來了，真的 MongoDB、真的 bot token、真的 Discord 附件。
-驗證前後對帳：`nodes=1 live=1 users=1 keystore=1 chunk_records=0`，前後完全一致，root 底下沒有殘留。
+三個 commit 已進 `master`，**尚未 push**：
+`185e2a9` ROADMAP 標記與變更紀錄、`3602120` 忽略 dev stack、`fb356aa` 上傳失敗的回報。
 
 ---
 
 ## 已完成
 
-### 起點：原本的 UI 一行 API 都沒接
+### 1. ROADMAP 的標記與變更紀錄補齊
 
-`client/Discord Drive desktop.dc.html` 是設計工具的產物：`fetch` 出現 **0 次**，
-所有資料是模組頂層常數，所有動作只推一個 toast。而且它執行時從 unpkg 抓 React／
-ReactDOM／Babel，**離線是一片空白**（舊的 `client/README.md` 寫「只有圖示會不見」，那句是錯的）。
-打包出來的兩種模式也都是壞的：預設模式載 `http://127.0.0.1:8080` 但 `web.py` 沒有 static route，
-`DD_LOCAL=1` 載的 `packaging/electron/app/index.html` 根本不存在。
+`[now]` 的 Client UI 六步全部落地卻還掛著 `[now]`，已退場（內容進變更紀錄，符合這份檔案
+自己的慣例）。兩條 `[later]` 提成 `[next]`，理由都是它們自己的文字寫的前置條件已解除：
+`SFTP_PASSWORD` 走 docker secret、重新產出 `BLUEPRINT.md`。
 
-### 後端（`src/`）
+變更紀錄補上 2026-08-03（垃圾桶）與 2026-08-05（前端與桌面外殼）兩輪。
+**測試數是實際跑出來的不是抄的**：把 `d3c8ec6` 的樹 export 出來用同一支 venv 跑，得到 491，
+接得上前一條的 455。455 → 491 → 515 → 523。
+
+### 2. 開發者模式：獨立的 dev stack，不是程式碼旁路
+
+**關鍵前提**：這個系統的密碼不只是登入憑證，它是主金鑰的包裝
+（`SFTP_PASSWORD` → KEK → 解開 `keystore` 的主金鑰）。所以「另一組開發帳密，
+看得到同一批真實資料」在密碼學上做不到，除非那組帳密就是真密碼。
+一條跳過密碼比對的旁路登得進去，但登入後會是一個解不開任何東西的 session。
+
+做法是另起一個 compose project：
+
+```
+docker compose -p discord-drive-dev --env-file .env --env-file .env.dev up -d --build
+```
+
+- 多個 `--env-file` 後者覆蓋前者（已實測），所以 **`DISCORD_BOT_TOKEN` 直接從 `.env` 繼承，
+  完全不經過對話紀錄**
+- volume 自動前綴成 `discord-drive-dev_mongo_data`，與 production 是兩顆；
+  dev 的 app 解析 `mongodb` 這個名字時落在自己的網路裡，碰不到 production
+- 全新的丟棄式主金鑰，**解不開 production 任何一個 byte**
+- port 2223 / 8081，`.env.dev` 把 session 期限縮短（idle 120s / 絕對 900s）好驗到期
+- `.env.dev` 被 `.gitignore` 的 `.env.*` 蓋住，`dev-stack/` 本輪新增一條規則
+
+### 3. UI 對真依賴的第一輪驗收，寫成可重跑的腳本
+
+`dev-stack/ui-walkthrough.js`（不進版控）。**14/14 通過**，真 MongoDB、真 Discord：
+建目錄／進入／244 KiB 上傳下載 sha256 相符／**12 MiB 跨 9 MiB 分塊邊界上傳，下載 sha256
+跨分塊相符**／右鍵改名／搜尋／Delete 進垃圾桶／還原／遞迴刪整棵非空目錄／清空垃圾桶
+真的釋放附件／連線數回報。收尾對帳 `nodes=1 live=1 trashed=0`。
+
+腳本每次自帶亂數後綴（重跑不撞名）、失敗時仍產出報告、內建 keep-alive
+（dev stack 的 idle 只有 120 秒，除錯停頓會把整輪打斷——第一次就是這樣死的）。
+**憑證由 `window.__DD_*` 外部注入，腳本本身不含任何密碼。**
+
+### 4. 上傳失敗的三個數字（`[next]` 第二項）
 
 | 檔案 | 改動 |
 |---|---|
-| `vfs.py` | 加 `search()`：沿 `parent_id` 廣度優先，**每一層都經過 `entries_of`**（逐層驗 membership 標籤）。雙重上限（`limit` / `max_nodes`）都由 `truncated` 誠實回報 |
-| `web.py` | static route（SPA fallback、路徑逃逸防護、hashed assets 設 immutable／`index.html` 設 no-store）；`GET /api/search`；`POST /api/sessions/revoke-others`；`_error()` 支援 machine-readable `code`；`integrity_failure` 可與一般 5xx 分辨；`auth_middleware` 的公開判斷改成 `/api/` 前綴測試 |
-| `websession.py` | `idle_expires_in()` / `absolute_expires_in()` 分開回報；`count_for_tree()`；`drop_others()`（**保留呼叫者自己的 session**） |
-| `config.py` | `WEB_STATIC_DIR`（預設 `web`） |
-| `docker-compose.yml` | `./client/app/dist:/app/web:ro` + `WEB_STATIC_DIR=/app/web` |
-
-### 前端（`client/app/`，Vite + React）
-
-真的接上 API 的重寫。修掉的具體 bug：
-
-- **倒數計時快 43%**（原型每 700ms 扣一秒）→ 改成 `GET /api/session` 每 10 秒同步、
-  中間用 `Date.now()` 真實差值內插，所以只可能慢、不可能快。
-- **英文模式把插值蓋掉**（`el.textContent = el.dataset.en`）→ 改成中英兩份字典。
-- **多選刪除只看 `sel[0]`** → 逐項處理，含非空目錄的整棵警告。
-- **「下一頁」是死按鈕、`history` 宣告了沒用** → 真的歷史堆疊。
-- **畫著 `⌘K` 但沒有監聽** → Ctrl/Cmd+K、Ctrl+A、F2、Delete、Enter、Backspace、Esc、F5。
-- **每一列畫綠色打勾** → 改成空心盾牌（列目錄只驗子項集合，不驗每一項自己的標籤）。
-- **完整性失敗可以用 × 關掉** → 改成必須明確確認，事件留在狀態列計數。
-- **假的分塊進度／假的 2.6 MiB/s** → `XMLHttpRequest.upload.onprogress` 的真實位元組數。
-- **登入表單預填 `operator` 與 12 個 `•` 字元** → 空白，且失敗後清空密碼。
-- **17 個狀態的除錯清單、429/503/401 三顆按鈕、設計審查註解卡** → 移除。
-- 新增：登出按鈕、連線數與「登出其他連線」、搜尋、上傳覆蓋確認、離線橫幅、
-  伺服器回報的 session 長度選項。
-
-**執行時零外部來源**：圖示內嵌 SVG、字型用系統字、`index.html` 的 CSP 寫死 `default-src 'self'`。
-
-### 桌面外殼（`client/shell/`，Electron）
-
-首次開啟問伺服器位址（存檔前先 probe `/api/health`，分辨「沒有東西在聽」與
-「有東西在聽但不是這個服務」）。設定視窗有 preload、**主視窗完全沒有 preload**。
-產出 `dist-desktop/DiscordDrive-0.1.0-portable.exe`（可攜，86 MB）與 `-setup.exe`（NSIS）。
-
-### 驗證
-
-1. **515 項 pytest 通過**（新增 28 項：search 8、session/connections 4、static client 6、索引 4，其餘含既有）。
-   同一份套件在 **production image 內也是 515 passed**。
-2. **pyflakes 乾淨**（`src/` `tests/` `scripts/` `client/shell/make-icon.py`）。
-3. **`node --test`**（`client/shell/`）6 項通過。
-4. **實地操作驗收**：用 fakes 起真的 aiohttp app 服務真的 `dist/`，瀏覽器逐項驗過
-   登入／401 文案／導覽與上下頁／建目錄／改名／單選與多選刪除／垃圾桶／還原撞名
-   （比較兩邊真實大小、`keep_both` 的預覽名稱與伺服器產出的 `README.md (2).bak` 一致）／
-   搜尋（大小寫、CJK、排除垃圾桶、reveal）／上傳（244 KiB 真的 PUT）／覆蓋確認／
-   中英切換／登出／deep-link reload／路徑逃逸。
-5. **打包後的 exe 真的跑起來**：寫入 `config.json` 指向伺服器後啟動，Electron 的 cache 裡
-   出現只存在於我們 bundle 的字串（`登入會把主金鑰解到`），證明它載到了 SPA。
-   `asar list` 確認 6 個檔案都在（**`server-url.js` 一開始漏在 `files` 外，會導致打包後 crash**）。
-
-### 抓到並修掉的兩個 bug（在驗證過程中）
-
-- **`0 × 0` 被當成「視窗太小」**。初次量測可能是 0（視窗還沒繪製），而之後不會有 `resize`
-  事件來修正，所以整個 app 被遮罩永久蓋住。改成 0 視為「還沒量到」，並加 `ResizeObserver`。
-- **`file:///etc/passwd` 被接受**。原本的正規化把 `http://` 硬黏在前面，變成一個 host 叫
-  `file` 的 origin。抽成 `server-url.js` 並補測試；判斷 scheme 看 `://` 不看冒號
-  （`localhost:8080` 有冒號但不是 scheme）。
-
-### 文件
-
-新增 `BUILD.md`（從零到 `.exe` 的教學，含疑難排解表）。重寫 `client/README.md`、
-更新 `README.md` / `.env.example` / `ROADMAP.md`（8 條新拍板決策 + 3 條待辦）。
-刪除 `client/backend-todo.md` 與 `client/handoff-frontend.md`（內容已完成或移入 ROADMAP）。
-原型移到 `design/v1-file-manager-prototype.dc.html`（連同 `support.js`、`_ds/`），
-刪除 `client/packaging/`（Electron 設定被 `client/shell/` 取代，Tauri 路線未採用）。
+| `src/vfs.py` | `_safe_delete_message()` 回傳成敗；`DiscordFile.failure_tally` 彙總；`_rollback()` 記下 node 那一列到底刪掉沒有 |
+| `src/web.py` | `upload()` 把失敗留到 close 之後再報；`_upload_failed()` 產出形狀並保留既有錯誤語意 |
+| `client/app/src/api.js` | `isUploadFailed` / `orphans` / `staleNode` |
+| `client/app/src/Dialogs.jsx` | `UploadFailedDialog`，只依數字決定說哪一種話 |
+| `client/app/src/i18n.js` | 中英各一組文案 |
+| `tests/fakes.py` | `FakeDiscord.fail_deletes`、`FakeCollection.fail_deletes`、`DatabaseFailure` |
 
 ---
 
-## 真環境驗證結果（2026-08-05 第二輪）
+## 這一輪抓到的兩個 bug，以及它們的形狀
 
-### 起容器時就撞到一個真 bug：垃圾桶的部分唯一索引從來沒建成功過
+### 殘留節點：三個數字會說謊
 
-`db.py` 用 `partialFilterExpression={"trashed_at": {"$exists": False}}`，
-**MongoDB 直接拒絕**（`Expression not supported in partial index: $not`），
-所以伺服器根本起不來。這個 bug 從 2026-08-03 的垃圾桶那一輪就存在，
-沒被發現是因為 `FakeDB` 不驗證索引規格，而那三天沒有在真環境重啟過。
+上傳 30 MiB 途中停掉 dev 的 MongoDB：
 
-改成 `{"trashed_at": None}`——對 null 的等值比對同時匹配 null 與缺欄位，是同一組文件，
-且在 partialFilterExpression 的文法內。**寫入格式完全沒變。**
-先用一次性 scratch collection 在真的 6.0 上把四種語意都試過才改：
-兩個活著的同名 → duplicate key；刪掉後可以建同名新檔；兩個垃圾桶裡的可以同名；
-還原撞名仍然被擋。已加 `tests/test_db_indexes.py` 釘住，並更新 `test_metadata.py`
-裡原本在釘錯誤值的那一條。SOP.md 補了一條。
+1. `_rollback()` 成功刪掉 Discord 上的兩塊附件（`orphans=0`）
+2. 接著要刪 node 那一列——**那也需要 Mongo**，失敗，而該失敗被 `except Exception` 吞掉
+3. Mongo 裡留下一個 9 MiB 的節點，指向已不存在的附件
 
-### 檔案操作矩陣：61 項全過
+伺服器 log：`DiscordAPIError 404: Unknown Message`。**清單上看得到、點下去讀不出來**，
+而只看三個數字的介面會說「這個檔案不存在，可以直接重試」。
 
-單一 session：建目錄／巢狀／撞名 409、小檔上傳下載 byte-identical、
-**20 MiB 跨 3 個 chunk 真的傳上 Discord**（14 秒）且下載 sha256 相符、
-列目錄排序、改名、跨目錄搬移、改名撞名 409、搜尋（全路徑／大小寫／排除垃圾桶）、
-刪除進垃圾桶、還原、**刪掉後建同名新檔**（就是上面那條索引的場景）、
-還原撞名 409 → `keep_both` → 兩份並存、非空目錄 rmdir 409、遞迴進垃圾桶、
-整個目錄還原且內容跟著回來。
+修法是加第四個欄位 `stale_node`（不動任何既有欄位），UI 改說真話並給可行動的指示。
+**吞掉那個失敗仍然是既有行為**——unwinding 的寫入路徑沒有更好的事可做——改變的只是
+它不再對呼叫端沉默。決策與理由已寫進 `ROADMAP.md`。
 
-雙 session（各自獨立 cookie jar，同一個帳號）：兩邊都看到 `connections=2`、
-CSRF token 不同且不能互用（403）、A 建檔 B 立刻看到、B 讀到 A 的位元組、
-**B 用 12 MiB 覆寫後 A 讀到新位元組而不是過期的 chunk layout**、
-B 改名 A 跟上（舊名 404）、B 刪除 A 的清單同步、A 看得到 B 的刪除進共用垃圾桶、
-A 執行 revoke-others → B 收到 401、A 自己還在、連線數回到 1。
+**這一條的教訓不是「多加一個欄位」**，是：回報「我清乾淨了」的程式碼，
+它自己的清理動作也可能失敗，而失敗的那半正好是沉默的那半。
 
-清理：整棵進垃圾桶 → 清空（釋放 7 個 Discord 附件）→ root 與垃圾桶都空。
+### 裸 token 漏進 UI
 
-### UI 的雙連線行為
+規格把 `error` 那一格定成機器讀的 `upload_failed`，而 `ApiError.message` 取自
+`body.error`，於是傳輸清單那一列直接印出這個 token。**測試斷言的是 JSON，
+不是使用者看到的字**——只有真的點一輪才會抓到。
 
-真後端那半用 API 驗（上面 61 項）。**UI 這半刻意不用真密碼登入**——那組密碼是主金鑰的包裝，
-不該進入任何對話紀錄。改用 fakes 後端跑同一份 `dist/` 與同一份 `web.py`：
-狀態列顯示「2 個連線」、看得到另一個 session 剛建的檔、
-對話框標題「目前有 2 個連線登入這個帳號」、按「登出其他所有連線」→
-toast「已登出 1 個其他連線」、狀態列回到「1 個連線」、自己仍然可用（200），
-而另一側的行程自己印出「B WAS SIGNED OUT by the UI」。
+### 兩個「查了但不是 bug」
 
-**還沒做過的**：用真密碼在 UI 上手動點一輪。若要補，服務就在 `127.0.0.1:8080`。
+- **UI 點擊全部失效**。實測要求 (908,502)、實際落在 (2425,1342)，固定放大 2.672 倍
+  ＝`(1440/674) × dpr 1.25`。in-app 瀏覽器覆寫 viewport 後的座標映射問題，**工具不是產品**。
+- **`ConfirmDialog` 的「取消」`type` 是 `submit`**。它外面沒有 `<form>`，那只是 `<button>`
+  沒寫 type 時的 HTML 預設值，只有 `onClick` 生效。**今天無害**，但 `PromptDialog` 的取消
+  明確寫了 `type="button"`，這裡沒有——哪天有人把它包進 `<form>`，取消就會變成執行。一行的事。
 
 ---
 
 ## 未完成待辦
 
-1. **上傳失敗的三個數字**（`[next]`，ROADMAP）。前端目前顯示伺服器真的說了什麼，不假造。
-2. **批次刪除撞 429 的進度與中斷**（`[next]`，ROADMAP）。這一版**沒有做**——
-   沒有後端支撐的進度條是動畫，不是進度。
-3. **`SFTP_PASSWORD` 走 docker secret**（早於這輪就拍板要做）。
-4. **多帳號第 4 步**，仍卡在密碼救援路徑。
-5. 仍未被真實環境驗證的舊項目：附件 URL 真的過期、`_rollback` 的保護、
-   上傳中途斷線的清理路徑、session 真的閒置到期、**用真密碼在 UI 上手動點一輪**。
+1. **push**。三個 commit 還在本機。`CLAUDE.md` 把 push main 列在必須先問那一層，所以沒做。
+2. **驗證缺口還剩兩項半**（`[next]` 第一條）：附件 URL 真的過期後的重取路徑、
+   上傳中途斷線的清理路徑，以及「真人用滑鼠鍵盤點一輪 + production 自己的資料」那半。
+3. **批次刪除撞 429 的進度與中斷**（`[next]`）。仍然沒做，需要後端吐進度。
+4. **`SFTP_PASSWORD` 走 docker secret**（`[next]`，前置條件已解除）。
+5. **重新產出 `BLUEPRINT.md`**（`[next]`）。**排在 docker secret 之後**，那條會動 `config.py`。
+6. **多帳號第 4 步**，仍卡在密碼救援路徑。
 
 ---
 
 ## 本輪不可碰的範圍
 
-- **`crypto.py`**：一行都沒動，tag 涵蓋範圍不變，`TAG_VERSION` 仍是 3。
-- **`keystore.py` / `users.py`**：沒動。認證流程與金鑰處理完全不變。
-- **SFTP 協定介面**：對既有客戶端沒有任何變化。
-- **Python 相依**：一個都沒加。新增的相依全部在 npm，且分成兩個獨立套件，
-  `requirements.txt` 與 image 都沒動。
-- **`WEB_HOST` 不是安全邊界**：容器內必須綁 `0.0.0.0`，`docker-compose.yml` 的
-  `127.0.0.1:8080:8080` 才是。改動時不要搞反。
-- **沒有動任何線上資料**，也沒有跑 migration。
+- **`crypto.py` / `keystore.py` / `users.py`**：一行都沒動。認證流程與金鑰處理不變，
+  `TAG_VERSION` 仍是 3。
+- **SFTP 協定介面**：`_rollback()` 的行為對 SFTP 呼叫端完全不變，新增的只有回報。
+- **相依套件**：一個都沒加，Python 與 npm 都是。
+- **既有的錯誤語意**：名稱衝突仍然是 409，完整性失敗仍然是 `integrity_failure`。
+- **線上資料**：沒有跑 migration，沒有改 schema。dev stack 全程與 production 隔離。
+- **`dev-stack/` 與 `.env.dev` 不進版本控制**——要沿用得自己重建，指令在 `.env.dev` 開頭。
 
 ---
 
 ## 下一步建議任務
 
-**commit。** 這一輪的改動還沒有進版本控制，而其中一條是「服務起不起得來」等級的修正
-（`db.py` 的索引）。在那之前先做任何新功能，等於把一個已知會擋住啟動的狀態留在 working tree。
+**先 push**，三個 commit 的備份缺口比什麼都便宜關掉。
 
-之後建議照 ROADMAP 的 `[next]` 順序：上傳失敗的三個數字 → 批次刪除的進度與中斷。
-兩者都會被「多帳號第 4 步」再次掀出來，先做的話那一步會輕很多。
+之後建議 `SFTP_PASSWORD` 走 docker secret：它是唯一一條純安全性、已拍板、
+前置條件剛解除的，而且做完之後 `BLUEPRINT.md` 才值得重產出。
+
+「真人點一輪」那半可以隨時插隊——服務就在 `127.0.0.1:8080`，
+而這一輪已經證明真依賴那半是乾淨的，剩下的只是滑鼠。
 
 ---
 
 ## 環境備忘
 
 - venv 在 `venv/`（3.12.7），上線 image 是 3.12.13。一律用 `./venv/Scripts/python.exe -m pytest`。
-- Node 24.14 / npm 10.8。前端與外殼是**兩個各自獨立**的 npm 套件，各自 `npm install`。
-- 程式碼是烤進 image 的，改完 `src/` 一定要 `docker compose up -d --build`；
-  但**改前端不用**——`dist/` 是掛進去的。
-- `electron-builder` 只能打自己平台的包。第一次 `npm run dist` 會下載 Electron（約 100 MB）。
-- 打包設定的 `files` 白名單**漏一個檔案就是打包後 crash**，加檔案時記得同步更新，
-  並用 `npx @electron/asar list` 對一次。
+- **PowerShell 的 cwd 會漂**；跑測試用絕對路徑，或確認 `Push-Location` 有配對的 `Pop-Location`。
+- 改 `src/` 一定要 `docker compose up -d --build`；**改前端不用**（`dist/` 是掛進去的）。
+- dev stack 的啟用／停止／移除指令寫在 `.env.dev` 開頭。它與 production 共用同一個
+  Discord DM 頻道，測試檔案會短暫出現在那裡，清空垃圾桶會真的把它們刪掉。
+- 前端腳本要在 CSP `default-src 'self'` 底下載入，得先複製進 `client/app/dist/`
+  用同源 `<script>` 標籤拉——**但那個目錄兩個 stack 都掛，用完要刪掉**。
