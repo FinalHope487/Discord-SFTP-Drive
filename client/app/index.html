@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- No external origin is ever contacted: no CDN for React, no webfont, no
+         icon font. Everything is in the bundle, so the app works on a machine
+         with no route to the internet beyond the drive's own server -- which
+         is a normal way to run this. The policy is stated rather than assumed
+         so that adding a CDN later fails loudly instead of silently working
+         for whoever happens to be online. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Discord Drive</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
