@@ -645,6 +645,18 @@ class DiscordFile:
         contents from Discord, unrecoverably, in response to a Discord outage.
         A new caller must therefore keep releasing its own attachment; this
         method will not do it.
+
+        **Removing the node also has to un-name it in its parent.** Creating
+        one stages the parent's entry tag with the new child in it and promotes
+        that tag before any bytes are written (see `DiscordVFS.open`), so a
+        rollback that deleted only the node document left the parent signing
+        for a child that no longer existed. `verify_dir_entries` then failed on
+        every read of that directory, for ever -- one interrupted upload made
+        the containing folder unlistable, and in the root that is the whole
+        drive. The staging below is the same three-step `purge()` uses, and for
+        the same reason: stage the next tag, make the change, promote it last,
+        so a crash in between leaves the parent holding a tag for one of the
+        two possible child sets and `verify_dir_entries` accepts either.
         """
         if self._failed:
             return
@@ -653,15 +665,42 @@ class DiscordFile:
         if not self._node.get("_created_by_handle"):
             return
 
+        # Staged before anything is destroyed, so a failure here still leaves a
+        # readable directory. It fails only if the parent's tag already did not
+        # match its children, which means the directory was broken before this
+        # rollback and deleting the node would just make it less recoverable.
+        commit = None
+        parent_id = self._node.get("parent_id")
+        if parent_id:
+            try:
+                commit = await self._vfs._stage_entries(
+                    parent_id,
+                    remove=[(self._node["id"], self._node.get("filename") or "")])
+            except Exception:
+                logger.exception(
+                    "Rollback could not restage the entries of %s; leaving the "
+                    "node in place rather than deleting it out of a directory "
+                    "whose tag still covers it", parent_id)
+
         for chunk in self._node.get("chunks", []):
             self._tally_delete(await _safe_delete_message(chunk["message_id"]))
 
         self._node["chunks"] = []
         self._node["size"] = 0
 
+        if commit is None and parent_id:
+            # Nothing better to do: the attachments are already gone, so this
+            # is the stale-node shape -- listed at its size, unreadable -- and
+            # reporting it is the whole reason `stale_node` exists.
+            self._node_removed = False
+            self._reindex()
+            return
+
         try:
             await db.get_db().nodes.delete_one({"id": self._node["id"]})
             _node_versions.pop(self._node["id"], None)
+            if commit is not None:
+                await commit()
             self._node_removed = True
         except Exception:
             # Still not fatal -- there is nothing better for an unwinding write
@@ -761,6 +800,31 @@ class DiscordFile:
             self._reindex()
 
     # ---------------------------------------------------------------- closing
+
+    async def abort(self):
+        """Close without committing, unwinding whatever this handle uploaded.
+
+        The difference from `close()` is the whole point: `close()` flushes the
+        buffer and commits, because reaching it normally is what "the write
+        finished" means. A caller that knows the write did *not* finish -- an
+        HTTP body that stopped early, a client that went away -- had no way to
+        say so through `close()`, and calling it anyway committed a partial
+        file as though it were whole.
+
+        Idempotent, and a no-op once the handle is closed: a write that already
+        committed cleanly is not something this can take back.
+        """
+        async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            if not self._writable:
+                return
+            # Deliberately without flushing first. The buffered tail belongs to
+            # the write being abandoned, and putting it on Discord on the way
+            # out would be uploading bytes in order to delete them again.
+            self._buffer.clear()
+            await self._rollback()
 
     async def close(self):
         async with self._lock:
@@ -1607,7 +1671,29 @@ class DiscordVFS:
             frontier = following
         return out
 
-    async def purge(self, node_id: str) -> dict:
+    async def purge_cost(self, node_id: str) -> dict:
+        """How much work purging this node would be, without doing any of it.
+
+        Reads only. It exists so a progress bar can be a fraction of something
+        real: the caller that is about to purge twenty trash entries needs the
+        denominator before it starts, and the attachment count is the only
+        number that tracks the actual elapsed time -- one Discord round trip
+        each, rate-limited, while the node documents go in a burst at the end.
+
+        Counting nodes instead would put the bar at 0/1 for the whole of a
+        thousand-file directory and then jump it to 1/1.
+        """
+        node = await self.get_node_by_id(node_id)
+        if node is None:
+            raise NotFound(node_id)
+
+        subtree = await self._subtree(node)
+        attachments = sum(len(member.get("chunks") or [])
+                          for member in subtree if not member.get("is_dir"))
+        return {"nodes": len(subtree), "attachments": attachments}
+
+    async def purge(self, node_id: str, *, on_attachment=None,
+                    cancelled=None) -> dict:
         """Destroy a trashed node and everything under it. No way back.
 
         Ordered the same way `remove` used to be: stage the parent's next
@@ -1618,6 +1704,21 @@ class DiscordVFS:
         whose node is already gone -- which is why the attachments go first
         and the documents last, so the survivor is always a node that can
         still be found and retried rather than an orphan nobody can name.
+
+        `on_attachment` is called after each attachment is destroyed, and
+        `cancelled` is consulted before each one. Both are for the batch job in
+        `src/jobs.py`; the default is the behaviour every existing caller
+        already had.
+
+        **Cancelling stops between attachments and nowhere else.** That is the
+        only point where stopping leaves a state the system already knows how
+        to describe: the node documents are untouched, the parent's staged tag
+        is simply never promoted (`verify_dir_entries` accepts the old one), so
+        the node is still sitting in the trash and can be purged again. What it
+        does not do is give anything back -- the attachments destroyed before
+        the cancellation are gone, and a caller offering this button has to say
+        so. Stopping anywhere later would mean deleted documents and surviving
+        attachments, which is an orphan nobody can name.
         """
         node = await self.get_node_by_id(node_id)
         if node is None:
@@ -1641,15 +1742,21 @@ class DiscordVFS:
             if member.get("is_dir"):
                 continue
             for chunk in member.get("chunks") or []:
+                if cancelled is not None and cancelled():
+                    return {"nodes": 0, "attachments": attachments,
+                            "cancelled": True}
                 await _safe_delete_message(chunk["message_id"])
                 attachments += 1
+                if on_attachment is not None:
+                    on_attachment()
 
         for member in subtree:
             await db.get_db().nodes.delete_one({"id": member["id"]})
             _node_versions.pop(member["id"], None)
 
         await commit()
-        return {"nodes": len(subtree), "attachments": attachments}
+        return {"nodes": len(subtree), "attachments": attachments,
+                "cancelled": False}
 
     async def purge_expired(self, *, retention: int, limit: int = 25) -> dict:
         """Purge whatever has sat in the trash longer than `retention`.
