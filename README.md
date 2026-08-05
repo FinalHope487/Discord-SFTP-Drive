@@ -33,13 +33,41 @@ rather than one per restart.
 sftp -P 2222 <SFTP_USER>@localhost
 ```
 
-There is also a web API on `http://127.0.0.1:8080`, served from the same process
-— deliberately, since a second process against the same MongoDB is the replica
-problem below. It is published on the host's loopback only; `.env.example`
-covers reaching it from a phone and what each option costs. Signing in unwraps
-the master key into process memory for the life of the session, which is why the
-session has both an idle timeout and an absolute ceiling, and why the browser
-can shorten them but not extend them.
+There is also a file manager on `http://127.0.0.1:8080` — a web API and the
+static client that uses it, both served from the same process as the SFTP
+server. Deliberately the same process, since a second one against the same
+MongoDB is the replica problem below. It is published on the host's loopback
+only; `.env.example` covers reaching it from another device and what each
+option costs. Signing in unwraps the master key into process memory for the life
+of the session, which is why the session has both an idle timeout and an
+absolute ceiling, and why the browser can shorten them but not extend them.
+
+The client is a build product and is not in the repository:
+
+```bash
+cd client/app && npm install && npm run build
+```
+
+`docker-compose.yml` mounts `client/app/dist` into the container read-only, so
+rebuilding the frontend costs one command and a refresh rather than an image
+rebuild — which would drop every live session and every unwrapped key with them.
+Until it is built, `/` serves a page saying so; the API and SFTP are unaffected.
+
+There is a desktop app as well. It is a window with a size floor and a first-run
+screen asking where the server is — it carries no copy of the client, because
+the session cookie is `SameSite=Strict` and a page loaded from `file://` would
+never be allowed to send it. [`BUILD.md`](BUILD.md) is the whole story, from an
+empty machine to a `.exe` that runs on any Windows device:
+
+```bash
+cd client/shell && npm install && npm run dist
+```
+
+One account can be signed in from several places at once, which is what sharing
+this drive looks like today. The status bar shows how many, and there is a
+control to end the others without ending your own. Separate accounts are not
+implemented — see `ROADMAP.md`, where that step is blocked on a password
+recovery path.
 
 **Back up `SFTP_PASSWORD`.** It wraps the key every stored file is encrypted
 with; losing it loses the files, not just the login.
@@ -77,12 +105,15 @@ larger cache. It is on the roadmap and is not done.
 ./venv/Scripts/python.exe -m pytest
 ```
 
-455 tests, about 30 seconds, no credentials or network required — MongoDB and
+515 tests, about 25 seconds, no credentials or network required — MongoDB and
 the Discord API are faked. The fakes model neither rate limits nor attachment
-URL expiry, and several of the bugs in the history here were only ever found by
-hand against a real bot token. A green suite is also not a substitute for
-running inside the production image, which is the point of pinning both to the
-same Python version:
+URL expiry, they do not enforce uniqueness, and they do not validate index
+specifications — the trash shipped with a partial unique index MongoDB rejects
+outright, and the suite stayed green for three days because nothing had
+restarted against a real server. Several of the bugs in the history here were
+only ever found by hand against a real bot token. A green suite is also not a
+substitute for running inside the production image, which is the point of
+pinning both to the same Python version:
 
 ```bash
 docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-server \
@@ -93,6 +124,8 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 
 | File | What it holds |
 | --- | --- |
+| [`BUILD.md`](BUILD.md) | From an empty machine to a packaged `.exe`, and what is and is not inside it. |
+| [`client/README.md`](client/README.md) | The two npm packages: the file manager and the desktop shell. |
 | [`ROADMAP.md`](ROADMAP.md) | Plans, every settled decision with its reasoning, the original open questions and how each resolved, and a changelog. Start here for "why is it like that". |
 | [`BLUEPRINT.md`](BLUEPRINT.md) | Architecture, data flow, security design, known weaknesses. Start here for "how does it work" — but §4.3/§4.4 and §7.2 predate the integrity work, so `ROADMAP.md` wins on any conflict. |
 | [`SOP.md`](SOP.md) | Recurring problems and the order to check things in. Environment traps, mostly. |

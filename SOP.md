@@ -26,6 +26,9 @@
 
 `docker compose exec 帶絕對路徑參數，容器內回報找不到檔案、且錯誤訊息裡出現 C:/Program Files/Git/... → 1. 認出症狀：Git Bash (MSYS2) 會把看起來像 Unix 路徑的參數改寫成 Windows 路徑，錯誤訊息中的 C:/Program Files/Git 前綴就是證據，容器本身沒問題 2. 在該次指令前加 MSYS_NO_PATHCONV=1 3. 或改用 sh -c '...' 把路徑包進單引號字串裡（此法連 docker run -v 的 volume 掛載也適用）→ 宿主 shell 改寫參數，非容器或應用程式問題`
 
+`測試全綠但服務一碰到真的 MongoDB 就起不來（`CannotCreateIndex` / `Expression not supported in partial index`）→ 1. 認出這一類：`tests/fakes.py` 的 `FakeDB` 只記下索引參數，不驗證規格也不強制唯一性，所以任何「MongoDB 會拒絕的索引」在單元測試裡都是綠的 2. 索引規格的正確性只有真的 MongoDB 能判斷——起 `docker compose up -d` 看啟動 log，或用一次性 scratch collection 直接試建（本專案就是這樣分辨 `$exists: false` 與 `{field: None}` 的）3. partialFilterExpression 只接受：等值、`$exists: true`、範圍運算子、`$type`、`$and`/`$or`/`$in`。`$exists: false` **不在裡面**（內部是 `$not`）；要表達「欄位不存在」就用對 null 的等值比對，它同時匹配 null 與缺欄位 → 假件不模擬的那一層，不是程式邏輯錯`
+（2026-08-05：垃圾桶的部分唯一索引從 2026-08-03 寫錯到今天沒被發現，因為那三天沒有在真環境重啟過。**推論：凡是只有真依賴會驗證的東西——索引規格、rate limit、附件 URL 過期——綠色的單元測試不構成證據。** 上線前一定要在真的 stack 起一次。）
+
 `asyncssh 的 listen 或 connect 每次要 0.8～1 秒，但 CPU 沒在忙、金鑰長度也無關 → 1. 先 profile 而不是猜（cProfile 排 cumulative，一眼就會看到 socket.getfqdn → _socket.gethostbyaddr）2. 那是 asyncssh 在算 GSSAPI 預設主機名，跟 SSH 本身無關 3. 兩端都傳 gss_host=None：這個專案只做密碼認證，順帶關掉本來就不該提供的 GSSAPI 路徑 → 宿主反向 DNS 慢，非應用程式效能問題`
 （2026-07-31：修完 302 項從 208 秒降到 23 秒。教訓是「先量再修」——原本 ROADMAP 上的計畫是重構 fixture，完全打錯地方。）
 

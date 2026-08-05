@@ -15,6 +15,30 @@
 
 <!-- 格式：- [標記] 說明（可附上下文/來源 session） -->
 
+- [next] **上傳失敗要回報三個數字**（2026-08-05 從 `client/backend-todo.md` 移入）。
+  `PUT /api/file` 失敗時目前只回一個訊息。`_rollback()` 只刪這個 handle 建立的附件，
+  而 HTTP 是新的呼叫點，所以「Discord 那側沒有殘留」這件事要能被證明而不是被相信：
+  ```
+  → 5xx {"error": "upload_failed", "chunks_uploaded": int,
+         "attachments_released": int, "orphans": int, "detail": str}
+  ```
+  `orphans != 0` 是要人去對帳的狀況，不是按一下重試就好，前端要換一種說法。
+  **前端目前不假造這些數字**——它顯示伺服器真的說了什麼，所以這是補強而不是修 bug。
+
+- [next] **批次刪整棵樹撞 429 要能中斷續跑**（2026-08-05 從 `client/backend-todo.md` 移入）。
+  刪大目錄會撞 Discord 的速率限制。需要伺服器在過程中吐出進度（SSE 或輪詢一個 job id），
+  前端才畫得出可中斷的進度條。**已刪掉的不會回來**，這句話要在介面上說。
+  原型畫過這個狀態，這一版**沒有做進去**——沒有後端支撐的進度條是動畫，不是進度。
+  多使用者第 4 步（刪帳號）會再掀出這一條。
+
+- [later] **全包版 .exe：把後端也塞進去**（2026-08-05 列入，方案二）。
+  這一輪選的是方案一：exe 只是視窗，後端仍是 `docker compose`。方案二是 PyInstaller 打包
+  Python、換掉 MongoDB 改用內嵌資料庫，雙擊即用、不需要 Docker。
+  **代價已知**：`docker-compose.yml` 的 `127.0.0.1:8080:8080` 是目前唯一擋住外部連線的邊界，
+  塞進 app 之後那條邊界不存在；每台裝置各自一份資料互不相通；等於重寫儲存層。
+  **要做的前提**是先想清楚「一台裝置一份資料」到底是不是想要的語意——如果是，那它其實是
+  另一個產品，不是這個服務的打包方式。
+
 - [now] **Client UI**（2026-08-02 列入）。原本唯一的對外介面是 SFTP，`src/` 裡沒有 HTTP 層，
   所以這不是「加一個前端」，是先長出一層 API。
   - ~~1. `users` collection 與密碼雜湊~~ **已完成**（`src/users.py`）。Argon2id `PasswordHasher`，
@@ -24,11 +48,11 @@
     `extra_info` 改為帶 key／root_id／username 的 `users.Session`。
   - ~~4. HTTP API 層~~ **已完成**（`src/web.py` / `websession.py` / `webauth.py`）。
     `aiohttp` app 掛在 `main.py`，與 SFTP server 同 process、共用 `_node_versions`。
-  - **5. 前端**（下一步）：純靜態 SPA，完整檔案管理（瀏覽／上傳／下載／刪除／建目錄／改名）。
-    API 已齊：`/api/login` `/api/logout` `/api/session` `/api/files` `/api/stat`
-    `/api/file`（GET/PUT/DELETE）`/api/dir`（POST/DELETE）`/api/rename`。
-  - **前端要一起處理**：寫入路徑現在有兩條，`_rollback()` 的附件釋放責任（見下方決策）
-    在 HTTP 路徑上也要自己負責。
+  - ~~5. 前端~~ **已完成**（2026-08-05，`client/app/`）。Vite + React，由 `web.py` 的
+    static route 吐出來。同一輪加了 `GET /api/search`、`/api/session` 的雙期限與連線數、
+    `POST /api/sessions/revoke-others`，以及可辨識的 `integrity_failure` 錯誤碼。
+  - ~~6. 桌面外殼~~ **已完成**（2026-08-05，`client/shell/`）。Electron，產出可攜版與安裝檔
+    兩種 `.exe`。打包步驟在 `BUILD.md`。
 
 - [later] **重新產出 `BLUEPRINT.md`**。它以 `e288ff7` 為準，之後 H1 與 H2 都落地了，
   §3 / §4 的 tag 涵蓋範圍與 `_rollback()` 行為都已不同，目前靠開頭橫幅與逐條註記撐著。
@@ -81,8 +105,15 @@
   無聲隱藏任意檔案。當時線上只有 root，重算成本近乎零。
   - **被過濾掉的子項必須當場驗自己的標籤**（`entries_of`）。已刪除的節點永遠不會再被路徑解析
     取出，標籤就永遠沒機會被檢查。活著的子項不需要——它開啟時會驗。
-  - **(parent_id, filename) 的唯一索引改為部分索引**，條件 `{"trashed_at": {"$exists": False}}`，
+  - **(parent_id, filename) 的唯一索引改為部分索引**，只涵蓋活著的節點，
     否則「刪掉再建同名檔案」會撞 duplicate key。因此**活著的節點不帶這個欄位**（還原走 `$unset`）。
+    - **2026-08-05 更正**：條件原本寫成 `{"trashed_at": {"$exists": False}}`，**MongoDB 直接拒絕**
+      ——`$exists: false` 不在 partialFilterExpression 允許的文法內（回
+      `Expression not supported in partial index: $not`），索引根本沒建成，伺服器起不來。
+      改成 `{"trashed_at": None}`：對 null 的等值比對**同時匹配 null 與缺欄位**，是同一組文件，
+      而且在文法內。**寫入格式完全沒變**，活著的節點仍然不帶這個欄位。
+      這個 bug 從 2026-08-03 存在到今天沒被發現，因為 `FakeDB` 不驗證索引規格
+      ——見 `SOP.md`。
 - **保留期 30 天，到期由背景 sweeper destroy，可中斷**（2026-08-03）。
   `TRASH_RETENTION_DAYS` / `TRASH_SWEEP_SECONDS` / `TRASH_SWEEP_BATCH`。
   **sweeper 借用 session 的金鑰，不自己持有**——為了背景任務讓進程長期持有主金鑰是安全上的倒退。
@@ -205,6 +236,48 @@
 - **Client UI 第一版就做完整檔案管理，不只唯讀**（2026-08-02）。瀏覽／上傳／下載／刪除／
   建目錄／改名。**代價是寫入路徑從一條變兩條**：`_rollback()` 的附件釋放責任與跨 handle 同步的
   邊角都要在新路徑再驗一次。
+
+- **桌面 app 只是視窗，SPA 由後端吐出來，不包進 exe**（2026-08-05）。
+  **理由是 cookie**：認證是 `dd_session`，帶 `HttpOnly` 與 `SameSite=Strict`。從 `file://`
+  載入的頁面去 fetch 遠端伺服器是跨來源請求，`SameSite=Strict` 的 cookie 不會被送出——
+  要能用就得改成 Authorization header，等於推翻 2026-08-02 那條「瀏覽器只拿到不透明 id」
+  的設計。exe 只帶一頁「填伺服器位址」的設定畫面，填完 `loadURL(伺服器)`，之後全部同源。
+  **代價**：exe 一定要有一台跑得起來的後端。**好處**：改前端不必重打包，也不必重建 image
+  （`dist/` 是掛進容器的），因此不會掉光所有 session。
+
+- **Discord bot token 留在伺服器的 `.env`，客戶端只填連線設定**（2026-08-05）。
+  被否決的是「app 內建設定精靈，填完寫進 DB 並自我重啟」。**理由**：token 是伺服器的祕密，
+  不是使用者的祕密；讓客戶端寫得到它就等於讓任何登入的人讀得到它，而且設定精靈必然帶一段
+  「還沒有帳號所以不能驗證」的無認證視窗期。設定畫面改成把三條連線路徑講清楚。
+
+- **「多人共用」先做成「同一帳號多連線」，不是多帳號**（2026-08-05）。
+  後端本來就允許（`SessionStore` 沒有單一 session 限制），這一輪把它變成看得見的：
+  `GET /api/session` 回 `connections`，狀態列顯示，並加 `POST /api/sessions/revoke-others`
+  結束其他連線而**不把呼叫者自己登出**——會把自己一起登出的按鈕，沒有人敢在有入侵者時按。
+  真正的多帳號仍卡在密碼救援路徑，見 `[later]` 的第 4 步。
+
+- **前端建置鏈是 Vite + React；執行時零外部來源**（2026-08-05）。
+  被取代的原型是設計工具的產物，執行時從 unpkg 抓 React、ReactDOM 與 Babel，
+  **離線時整頁空白**（原本的 `client/README.md` 寫「只有圖示會不見」，那句是錯的）。
+  圖示改成內嵌 SVG、字型改用系統字、`index.html` 用 CSP 把 `default-src 'self'` 寫死，
+  所以以後誰加了 CDN 會直接壞掉，而不是「剛好在線上的人看起來正常」。
+
+- **倒數計時一律來自伺服器，前端只做真實時間的內插**（2026-08-05）。
+  `GET /api/session` 每 10 秒同步一次，兩次之間用 `Date.now()` 的差值往下算，
+  所以它可能**慢**（少報剩餘時間，無害）但不可能**快**。原型是每 700ms 的 `setInterval`
+  扣一秒，時鐘快 43%，而快的方向正好是「以為還有時間」。
+
+- **清單裡的盾牌是空心的，不畫綠勾**（2026-08-05）。列目錄只驗子項集合，不驗每個子項自己的
+  標籤（2026-08-01 那條決策的直接結果），所以清單上的大小是未經驗證的。畫一個勾等於介面
+  替伺服器說了它沒說過的話。**完整性失敗也不能用 × 關掉**，要明確確認，事件留在狀態列的計數裡。
+
+- **搜尋走全樹掃描，不另建檔名索引**（2026-08-05，`GET /api/search`）。
+  沿 `parent_id` 廣度優先，**每一層都經過 `entries_of`**，所以membership 標籤逐層驗證——
+  不驗就開了一條「搜尋看得到、開啟看不到」的旁路，和 `scandir` 繞過 `list_dir` 那個 bug 同類。
+  另建正規化檔名索引比較快，但 `node_tag` 蓋著 `filename`，多存一份沒被 tag 保護的副本
+  等於讓有 DB 權限的人改那一份而不被抓到；要納入 tag 就是 `TAG_VERSION` 3→4 與一次真 migration。
+  **不做正規表示式、不做內容搜尋**（內容搜尋要解密每一個 chunk）。結果有伺服器端上限，
+  `truncated` 明說是否被截斷——短清單看起來就像「只有這些」，被信任為「不存在」的搜尋會藏檔案。
 
 ---
 
