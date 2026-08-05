@@ -45,12 +45,28 @@ class Database:
         # place -- that is what makes restoring it free and what keeps its
         # membership in the parent's entry tag intact -- so deleting
         # `notes.txt` and writing a new one would otherwise be a duplicate key
-        # error on the most ordinary operation there is. `$exists` rather than
-        # an equality on null, because a partial index cannot be built on
-        # "field is missing" any other way, which is also why a live node
-        # never carries the field.
+        # error on the most ordinary operation there is.
+        #
+        # The filter is an equality on null, and it has to be. A
+        # partialFilterExpression accepts only a small grammar -- equality,
+        # `$exists: true`, the range operators, `$type`, `$and`/`$or`/`$in` --
+        # and `$exists: false` is not in it: MongoDB rejects the whole index
+        # with "Expression not supported in partial index: $not". This was
+        # written as `$exists: false` and never ran, because the fake database
+        # the suite uses does not validate index specifications and the
+        # deployment predates the trash. The first real start after it refused
+        # to boot at all.
+        #
+        # `{"trashed_at": None}` is the same set of documents by MongoDB's own
+        # matching rules: an equality against null matches a null *and* a
+        # missing field. So a live node still carries no field, `$unset` is
+        # still what a restore does, and the index still covers exactly the
+        # live nodes -- verified against 6.0 for all four cases that matter:
+        # two live siblings collide, a new file may take a trashed one's name,
+        # two trashed nodes may share a name, and restoring onto a taken name
+        # is still refused.
         await cls._unique_index(cls.db.nodes, [("parent_id", 1), ("filename", 1)],
-                                partial={"trashed_at": {"$exists": False}})
+                                partial={"trashed_at": None})
         await cls._unique_index(cls.db.nodes, "id")
         await cls._unique_index(cls.db.keystore, "id")
 

@@ -216,10 +216,17 @@ async def test_the_name_index_is_created_unique(fake_db):
     # place, so a full unique index would turn "delete notes.txt, write a new
     # notes.txt" into a duplicate key error -- a failure the fake cannot
     # produce, because uniqueness is the one thing it deliberately does not
-    # enforce. Asserting the *request* is what catches it here; the live
-    # deployment covers the enforcement.
-    assert all(o.get("partialFilterExpression")
-               == {"trashed_at": {"$exists": False}} for o in by_name)
+    # enforce.
+    #
+    # This line used to assert `{"$exists": False}`, which is what the code
+    # asked for and what MongoDB rejects outright: `$exists: false` is outside
+    # the grammar a partialFilterExpression accepts, so the index was never
+    # created and the server would not start. The fake validates nothing, so
+    # this test passed against an index no deployment could build. An equality
+    # against null is the same set of documents -- it matches a null and a
+    # missing field -- and is inside the grammar. See `test_db_indexes.py`.
+    assert all(o.get("partialFilterExpression") == {"trashed_at": None}
+               for o in by_name)
 
 
 async def test_an_existing_non_unique_index_is_upgraded(fake_db):
