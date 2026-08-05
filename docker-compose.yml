@@ -115,8 +115,21 @@ services:
       # reports a host key mismatch -- which is indistinguishable from the
       # warning a real man-in-the-middle would produce.
       - SFTP_HOST_KEY_PATH=/app/keys/host_key
+      # Where the built client is mounted, below.
+      - WEB_STATIC_DIR=/app/web
     volumes:
       - host_key_data:/app/keys
+      # The built SPA, mounted read-only rather than baked into the image.
+      #
+      # Two reasons. Rebuilding the frontend then costs `npm run build` and a
+      # browser refresh instead of an image rebuild, which drops every live
+      # session and with them every unwrapped master key. And the container
+      # has no business writing to it: the one directory served to anonymous
+      # callers is the one directory a flaw should not be able to modify.
+      #
+      # If `client/app/dist` does not exist yet, Docker creates it empty and
+      # the server serves a page saying how to build it. See client/BUILD.md.
+      - ./client/app/dist:/app/web:ro
     depends_on:
       mongodb:
         condition: service_healthy

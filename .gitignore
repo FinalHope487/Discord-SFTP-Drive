@@ -22,3 +22,14 @@ settings.json
 # Personal-eyes-only project notes, not meant for the tracked history.
 BLUEPRINT.md
 AGY_GEMINI_EVAL.md
+
+# The client. `dist/` is a build product -- it is mounted into the container
+# rather than baked into the image, so it has to exist on disk, but rebuilding
+# it is one command and committing it would put a minified copy of the whole
+# frontend in every diff.
+node_modules/
+client/app/dist/
+
+# Packaged desktop apps. ~90 MB each; `npm run dist` in client/shell rebuilds
+# them, and a release belongs on a releases page rather than in the history.
+dist-desktop/
