@@ -1,0 +1,32 @@
+{
+  "name": "discord-drive",
+  "productName": "Discord Drive",
+  "version": "0.1.0",
+  "description": "Desktop client for Discord Drive",
+  "main": "main.js",
+  "author": "FinalHope487",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:local": "cross-env DD_LOCAL=1 electron .",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "dev.finalhope487.discorddrive",
+    "productName": "Discord Drive",
+    "files": ["main.js", "app/**/*"],
+    "directories": { "output": "out" },
+    "mac": { "category": "public.app-category.utilities", "target": ["dmg", "zip"] },
+    "win": { "target": ["nsis"] },
+    "linux": { "target": ["AppImage", "deb"], "category": "Utility" }
+  }
+}

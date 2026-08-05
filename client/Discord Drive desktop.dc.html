@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-57c7d2b0-e17b-4f27-b035-aad7f818c0f7/styles.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<script src="_ds/nocturne-57c7d2b0-e17b-4f27-b035-aad7f818c0f7/_ds_bundle.js"></script>
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  :root {
+    /* Carried over from design/v0-file-manager.html: red means exactly one
+       thing in this interface — an integrity failure or an irreversible
+       destroy — and nothing else. Amber is "about to expire". */
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+    --integrity: #E5484D;
+    --warn: #E0A93B;
+  }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb { background: var(--color-neutral-800); border-radius: 6px; border: 3px solid transparent; background-clip: padding-box; }
+  *::-webkit-scrollbar-thumb:hover { background: var(--color-neutral-700); background-clip: padding-box; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  @keyframes dd-rise { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+  @keyframes dd-fade { from { opacity: 0 } to { opacity: 1 } }
+  @keyframes dd-pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important } }
+</style>
+</helmet>
+
+<template id="__bundler_thumbnail"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#161826"/><g fill="none" stroke="#9184d9" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><rect x="62" y="66" width="76" height="30" rx="9"/><rect x="62" y="106" width="76" height="30" rx="9"/><circle cx="79" cy="81" r="1.5"/><circle cx="79" cy="121" r="1.5"/></g></svg></template>
+
+<div ref="{{ rootRef }}" data-screen-label="{{ screenLabel }}" style="width:100vw;height:100vh;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:13px;line-height:1.5;overflow:hidden;position:relative;text-wrap:pretty;-webkit-font-smoothing:antialiased">
+
+  <div style="flex:none;height:38px;display:flex;align-items:center;gap:10px;padding:0 12px;background:var(--color-neutral-900);border-bottom:1px solid var(--color-divider)">
+    <div style="display:flex;gap:8px;flex:none">
+      <span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span>
+      <span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span>
+      <span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span>
+    </div>
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:9px;min-width:0">
+      <i class="ph ph-hard-drives" style="font-size:14px;color:var(--color-accent)"></i>
+      <span style="font-family:var(--font-heading);font-weight:500;font-size:13px;letter-spacing:-.01em">Discord Drive</span>
+      <span style="font-family:var(--mono);font-size:11px;color:var(--color-neutral-500);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ titlePath }}</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;flex:none">
+      <button onClick="{{ toggleLang }}" title="Language" style="display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;background:transparent;border:1px solid var(--color-divider);border-radius:var(--radius-sm);color:var(--color-neutral-400);font:inherit;font-size:11px;cursor:pointer">
+        <i class="ph ph-translate" style="font-size:13px"></i>{{ langLabel }}</button>
+      <button onClick="{{ toggleLayout }}" title="Layout" style="display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;background:transparent;border:1px solid var(--color-divider);border-radius:var(--radius-sm);color:var(--color-neutral-400);font:inherit;font-size:11px;cursor:pointer">
+        <i class="{{ layoutIcon }}" style="font-size:13px"></i>{{ layoutLabel }}</button>
+    </div>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;min-height:0;position:relative">
+
+    <div style="flex:none;display:flex;align-items:center;gap:8px;height:46px;padding:0 10px;background:var(--color-surface);border-bottom:1px solid var(--color-divider)">
+      <div style="display:flex;gap:2px;flex:none">
+        <button onClick="{{ goBack }}" title="上一頁" style="width:28px;height:28px;display:grid;place-items:center;background:transparent;border:0;border-radius:var(--radius-sm);color:var(--color-neutral-400);cursor:pointer"><i class="ph ph-arrow-left" style="font-size:15px"></i></button>
+        <button onClick="{{ goFwd }}" title="下一頁" style="width:28px;height:28px;display:grid;place-items:center;background:transparent;border:0;border-radius:var(--radius-sm);color:var(--color-neutral-700);cursor:default"><i class="ph ph-arrow-right" style="font-size:15px"></i></button>
+        <button onClick="{{ goUp }}" title="上一層" style="width:28px;height:28px;display:grid;place-items:center;background:transparent;border:0;border-radius:var(--radius-sm);color:var(--color-neutral-400);cursor:pointer"><i class="ph ph-arrow-up" style="font-size:15px"></i></button>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:1px;min-width:0;overflow:hidden;margin-left:2px">
+        <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="3">
+          <div style="display:flex;align-items:center;gap:1px;flex:none">
+            <button onClick="{{ c.go }}" style="max-width:180px;padding:3px 7px;background:{{ c.bg }};border:0;border-radius:var(--radius-sm);color:{{ c.color }};font:inherit;font-size:12.5px;font-weight:{{ c.weight }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer">{{ c.name }}</button>
+            <i class="ph ph-caret-right" style="font-size:10px;color:var(--color-neutral-700);display:{{ c.sep }}"></i>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="flex:1"></div>
+
+      <div onClick="{{ openSearch }}" style="display:flex;align-items:center;gap:6px;width:200px;height:28px;padding:0 9px;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:var(--radius-md);color:var(--color-neutral-600);cursor:pointer;flex:none">
+        <i class="ph ph-magnifying-glass" style="font-size:13px"></i>
+        <span data-en="Search the drive" style="font-size:12px">搜尋整個硬碟</span>
+        <span style="flex:1"></span>
+        <span style="font-family:var(--mono);font-size:10px;padding:2px 4px;border-radius:3px;background:var(--color-neutral-900);color:var(--color-neutral-600)">⌘K</span>
+      </div>
+
+      <div style="display:flex;flex:none;border:1px solid var(--color-divider);border-radius:var(--radius-md);overflow:hidden;height:28px">
+        <button onClick="{{ setList }}" title="清單" style="width:30px;display:grid;place-items:center;background:{{ listBg }};border:0;color:{{ listFg }};cursor:pointer"><i class="ph ph-list" style="font-size:14px"></i></button>
+        <button onClick="{{ setGrid }}" title="格狀" style="width:30px;display:grid;place-items:center;background:{{ gridBg }};border:0;border-left:1px solid var(--color-divider);color:{{ gridFg }};cursor:pointer"><i class="ph ph-squares-four" style="font-size:14px"></i></button>
+      </div>
+
+      <button class="btn btn-secondary" onClick="{{ newFolder }}" style="flex:none;height:28px;font-size:12.5px;padding:0 10px"><i class="ph ph-folder-plus" style="font-size:14px"></i><span data-en="New folder">新資料夾</span></button>
+      <button class="btn btn-primary" onClick="{{ pickUpload }}" style="flex:none;height:28px;font-size:12.5px;padding:0 11px"><i class="ph ph-upload-simple" style="font-size:14px"></i><span data-en="Upload">上傳</span></button>
+    </div>
+
+    <div style="flex:1;display:flex;min-height:0">
+
+      <aside style="flex:none;width:232px;display:{{ sidebarShow }};flex-direction:column;background:var(--color-surface);border-right:1px solid var(--color-divider);overflow-y:auto;padding:6px 6px 10px">
+        <div data-en="MY DRIVE" style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-600);padding:8px 8px 4px">我的雲端硬碟</div>
+        <sc-for list="{{ tree }}" as="n" hint-placeholder-count="5">
+          <button onClick="{{ n.click }}" style="display:flex;align-items:center;gap:6px;width:100%;height:27px;padding-left:{{ n.pad }}px;padding-right:8px;background:{{ n.bg }};border:0;border-radius:var(--radius-sm);color:{{ n.color }};font:inherit;font-size:12.5px;text-align:left;cursor:pointer">
+            <span onClick="{{ n.twist }}" style="width:12px;flex:none;display:grid;place-items:center;color:var(--color-neutral-600)"><i class="{{ n.caret }}" style="font-size:10px"></i></span>
+            <i class="ph ph-folder" style="font-size:14px;flex:none;color:{{ n.iconColor }}"></i>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ n.name }}</span>
+            <span style="flex:1"></span>
+            <span style="font-family:var(--mono);font-size:10px;color:var(--color-neutral-600)">{{ n.count }}</span>
+          </button>
+        </sc-for>
+
+        <div data-en="SYSTEM" style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-600);padding:14px 8px 4px">系統</div>
+        <button onClick="{{ openTrash }}" style="display:flex;align-items:center;gap:6px;width:100%;height:27px;padding:0 8px 0 26px;background:{{ trashBg }};border:0;border-radius:var(--radius-sm);color:{{ trashFg }};font:inherit;font-size:12.5px;text-align:left;cursor:pointer">
+          <i class="ph ph-trash" style="font-size:14px;flex:none;color:{{ trashIcon }}"></i>
+          <span data-en="Trash">垃圾桶</span>
+          <span style="flex:1"></span>
+          <span style="font-family:var(--mono);font-size:10px;color:var(--color-neutral-600)">{{ trashCount }}</span>
+        </button>
+
+        <div style="display:{{ annShow }};margin:14px 4px 0;padding:8px 9px;border:1px dashed var(--color-accent-700);border-radius:var(--radius-md);background:color-mix(in srgb, var(--color-accent) 6%, transparent)">
+          <div data-en="Trash entry — settled" style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-accent-300);margin-bottom:3px">垃圾桶入口 · 已拍板</div>
+          <div data-en="Sidebar “System” section — the same navigation as every other directory. v0 left this open; this round settles it." style="font-size:11px;line-height:1.45;color:var(--color-neutral-400)">側欄「系統」分區，和其他目錄同一種導覽。v0 標為未定，這一輪拍板。</div>
+        </div>
+        <div style="flex:1;min-height:96px"></div>
+      </aside>
+
+      <main onDragOver="{{ onDragOver }}" onDragLeave="{{ onDragLeave }}" onDrop="{{ onDrop }}" style="flex:1;display:flex;flex-direction:column;min-width:0;background:var(--color-bg)">
+
+        <div style="flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;position:relative">
+
+        <div style="display:{{ integrityShow }};flex:none;position:relative;z-index:8;margin:10px 12px 2px;padding:10px 12px;gap:10px;align-items:flex-start;border:1px solid color-mix(in srgb, var(--integrity) 40%, transparent);border-radius:var(--radius-md);background:color-mix(in srgb, var(--integrity) 8%, transparent);animation:dd-rise 260ms ease-out">
+          <i class="ph ph-shield-warning" style="font-size:17px;color:var(--integrity);flex:none;margin-top:1px"></i>
+          <div style="min-width:0">
+            <div data-en="Integrity check failed" style="font-family:var(--font-heading);font-weight:500;font-size:13px;color:var(--integrity);margin-bottom:2px">完整性驗證失敗</div>
+            <div style="font-size:12px;color:var(--color-neutral-400);max-width:78ch">
+              <span style="font-family:var(--mono)">/專案/2026/報告.pdf</span>
+              <span data-en=" — the authentication tag does not match the content. No bytes were returned; returning them would make the check pointless. Somebody changed MongoDB or the Discord side without the key. This is not a network error and not transient."> 的認證標籤與內容對不上。伺服器沒有回傳任何位元組——回傳了就等於讓這道檢查失去意義。這代表有人在沒有金鑰的情況下改動了資料庫或 Discord 上的內容，不是網路問題，也不是暫時性錯誤。</span>
+            </div>
+          </div>
+          <button onClick="{{ clearIntegrity }}" style="flex:none;width:22px;height:22px;display:grid;place-items:center;background:transparent;border:0;color:var(--color-neutral-500);cursor:pointer"><i class="ph ph-x" style="font-size:12px"></i></button>
+        </div>
+
+        <div style="display:{{ failShow }};flex:none;position:relative;z-index:8;margin:10px 12px 2px;padding:10px 12px;gap:10px;align-items:flex-start;border:1px solid color-mix(in srgb, var(--warn) 45%, transparent);border-radius:var(--radius-md);background:color-mix(in srgb, var(--warn) 8%, transparent);animation:dd-rise 260ms ease-out">
+          <i class="ph ph-cloud-slash" style="font-size:17px;color:var(--warn);flex:none;margin-top:1px"></i>
+          <div style="min-width:0;flex:1">
+            <div data-en="Upload failed — nothing was written" style="font-family:var(--font-heading);font-weight:500;font-size:13px;color:var(--warn);margin-bottom:2px">上傳失敗 · 什麼都沒有寫進去</div>
+            <div style="font-size:12px;line-height:1.55;color:var(--color-neutral-400);max-width:80ch">
+              <span style="font-family:var(--mono)">dataset.tar.gz</span>
+              <span data-en=" stopped on chunk 45 of 217: five retries with exponential backoff all came back 429. The file was never committed to MongoDB, so it does not appear above — metadata is always written before old attachments are freed, and here metadata was never written."> 在第 45／217 塊停下：五次指數退避重試全部收到 429。這個檔案沒有 commit 進 MongoDB，所以上面的清單裡看不到它——寫入順序一律是先寫 metadata 才刪舊附件，而這次 metadata 從來沒被寫進去。</span>
+            </div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 14px;margin-top:9px;padding:9px 11px;border-radius:var(--radius-md);background:var(--color-bg);font-size:11px;max-width:420px">
+              <div data-en="Chunks uploaded before failing" style="color:var(--color-neutral-600);white-space:nowrap">失敗前已上傳的分塊</div><div style="text-align:right;font-family:var(--mono);color:var(--color-neutral-300)">44</div>
+              <div data-en="Attachments released by _rollback()" style="color:var(--color-neutral-600);white-space:nowrap">_rollback() 已釋放的附件</div><div style="text-align:right;font-family:var(--mono);color:var(--color-accent-300)">44 / 44</div>
+              <div data-en="Existing files touched" style="color:var(--color-neutral-600);white-space:nowrap">被動到的既有檔案</div><div style="text-align:right;font-family:var(--mono);color:var(--color-accent-300)">0</div>
+              <div data-en="Orphaned attachments left behind" style="color:var(--color-neutral-600);white-space:nowrap">殘留的孤兒附件</div><div style="text-align:right;font-family:var(--mono);color:var(--color-accent-300)">0</div>
+            </div>
+            <div data-en="_rollback() only removes what this handle created; existing files are never touched. The HTTP upload path carries that responsibility itself — the same guarantee the SFTP path has, reached through different code." style="margin-top:8px;font-size:11px;line-height:1.5;color:var(--color-neutral-600);max-width:80ch">_rollback() 只負責這個 handle 建立的東西，既有檔案一律不動。HTTP 這條寫入路徑要自己負責同一件事——保證相同，程式碼不同。</div>
+            <div style="display:flex;gap:7px;margin-top:11px">
+              <button class="btn btn-primary" onClick="{{ retryUpload }}" style="height:27px;font-size:12px;padding:0 11px"><i class="ph ph-arrow-clockwise" style="font-size:13px"></i><span data-en="Retry upload">重新上傳</span></button>
+              <button class="btn btn-secondary" onClick="{{ clearFail }}" style="height:27px;font-size:12px;padding:0 11px"><span data-en="Dismiss">關閉</span></button>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:{{ purgeShow }};flex:none;position:relative;z-index:8;margin:10px 12px 2px;padding:10px 12px;gap:10px;align-items:flex-start;border:1px solid var(--color-divider);border-radius:var(--radius-md);background:var(--color-surface);animation:dd-rise 260ms ease-out">
+          <i class="ph ph-gauge" style="font-size:17px;color:var(--color-accent);flex:none;margin-top:1px"></i>
+          <div style="min-width:0;flex:1">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:5px">
+              <span data-en="Releasing attachments" style="font-family:var(--font-heading);font-weight:500;font-size:13px">正在釋放附件</span>
+              <span style="font-family:var(--mono);font-size:11px;color:var(--color-neutral-500)">{{ purgeCount }}</span>
+              <span style="flex:1"></span>
+              <span style="display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10.5px;color:var(--warn)"><i class="ph ph-hand-palm" style="font-size:12px"></i>{{ purge429 }}</span>
+            </div>
+            <div style="height:4px;border-radius:2px;background:var(--color-neutral-800);overflow:hidden;margin-bottom:8px">
+              <div style="height:100%;width:{{ purgePct }}%;background:var(--color-accent)"></div>
+            </div>
+            <div data-en="Discord answered 429 with retry_after 0.602 s. The proactive throttle read X-RateLimit-Remaining and is already waiting before being told again, so the run slows down instead of erroring. Interrupting is safe and resumes from what is left — but what has been deleted does not come back." style="font-size:11.5px;line-height:1.55;color:var(--color-neutral-400);max-width:80ch">Discord 回了 429，<span style="font-family:var(--mono)">retry_after 0.602s</span>。主動節流已經讀到 <span style="font-family:var(--mono)">X-RateLimit-Remaining</span>，在被再次告知之前就先等了，所以這一輪是變慢而不是報錯。中斷是安全的，續跑會從剩下的接著做——但已經刪掉的不會回來。</div>
+            <div style="display:flex;gap:7px;margin-top:11px">
+              <button class="btn btn-secondary" onClick="{{ stopPurge }}" style="height:27px;font-size:12px;padding:0 11px"><i class="ph ph-pause" style="font-size:13px"></i><span data-en="Interrupt">中斷</span></button>
+              <button class="btn btn-secondary" onClick="{{ stopPurge }}" style="height:27px;font-size:12px;padding:0 11px;color:var(--color-neutral-500)"><span data-en="Run in background">留在背景跑</span></button>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:{{ searchShow }};flex:none;position:relative;z-index:8;margin:10px 12px 2px;padding:9px 12px;gap:9px;align-items:flex-start;border:1px dashed color-mix(in srgb, var(--warn) 45%, transparent);border-radius:var(--radius-md);background:color-mix(in srgb, var(--warn) 7%, transparent)">
+          <i class="ph ph-warning-octagon" style="font-size:15px;color:var(--warn);flex:none;margin-top:1px"></i>
+          <div data-en="This screen needs an API endpoint that does not exist yet. web.py has no search route — matching names across the tree means either a full walk under the session's key or a new index. Costed before it is built." style="font-size:11.5px;line-height:1.5;color:var(--color-neutral-400);max-width:80ch">
+            這個畫面需要一個目前還不存在的端點。<span style="font-family:var(--mono)">web.py</span> 沒有搜尋路由；要跨整棵樹比對名稱，得走一次全樹掃描（用 session 的金鑰）或另建索引。先標價，再決定要不要做。
+          </div>
+        </div>
+
+        <div style="flex:none;display:grid;grid-template-columns:1fr 100px 150px 44px 96px;gap:12px;align-items:center;height:30px;padding:0 14px;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600);font-size:11px;letter-spacing:.03em">
+          <div data-en="Name">{{ colName }}</div>
+          <div data-en="Size" style="text-align:right">大小</div>
+          <div data-en="Modified">{{ colTime }}</div>
+          <div title="完整性" style="text-align:center"><i class="ph ph-shield-check" style="font-size:12px"></i></div>
+          <div data-en="Kind">{{ colKind }}</div>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;min-height:0">
+
+          <div style="display:{{ editNewShow }};grid-template-columns:1fr 100px 150px 44px 96px;gap:12px;align-items:center;height:32px;padding:0 14px;background:color-mix(in srgb, var(--color-accent) 10%, transparent)">
+            <div style="display:flex;align-items:center;gap:9px;min-width:0">
+              <i class="ph ph-folder" style="font-size:15px;color:var(--color-accent)"></i>
+              <input value="{{ editValue }}" onChange="{{ onEditChange }}" onKeyDown="{{ onEditKey }}" onBlur="{{ commitEdit }}" autoFocus="{{ true }}" placeholder="未命名資料夾" style="flex:1;min-width:0;height:22px;padding:0 6px;background:var(--color-bg);border:1px solid var(--color-accent);border-radius:var(--radius-sm);color:var(--color-text);font:inherit;font-size:12.5px;outline:none" />
+            </div>
+            <div></div><div></div><div></div><div></div>
+          </div>
+
+          <sc-if value="{{ isList }}" hint-placeholder-val="{{ true }}">
+            <div>
+              <sc-for list="{{ rows }}" as="r" hint-placeholder-count="6">
+                <div onClick="{{ r.click }}" onDoubleClick="{{ r.open }}" style="display:grid;grid-template-columns:1fr 100px 150px 44px 96px;gap:12px;align-items:center;height:{{ rowh }}px;padding:0 14px;border-bottom:1px solid color-mix(in srgb, var(--color-text) 5%, transparent);background:{{ r.bg }};cursor:default">
+                  <div style="display:flex;align-items:center;gap:9px;min-width:0">
+                    <i class="{{ r.icon }}" style="font-size:15px;flex:none;color:{{ r.iconColor }}"></i>
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:{{ r.nameColor }}">{{ r.name }}</span>
+                    <span style="display:{{ r.editShow }};flex:1;min-width:0">
+                      <input value="{{ editValue }}" onChange="{{ onEditChange }}" onKeyDown="{{ onEditKey }}" onBlur="{{ commitEdit }}" autoFocus="{{ true }}" style="width:100%;height:22px;padding:0 6px;background:var(--color-bg);border:1px solid var(--color-accent);border-radius:var(--radius-sm);color:var(--color-text);font:inherit;font-size:12.5px;outline:none" />
+                    </span>
+                    <span style="display:{{ r.barShow }};flex:none;width:64px;height:3px;border-radius:2px;background:var(--color-neutral-800);overflow:hidden">
+                      <span style="display:block;height:100%;width:{{ r.pct }}%;background:var(--color-accent)"></span>
+                    </span>
+                    <span style="display:{{ r.chunkShow }};flex:none;font-family:var(--mono);font-size:10px;color:var(--color-accent-400)">{{ r.chunkText }}</span>
+                  </div>
+                  <div style="text-align:right;font-family:var(--mono);font-size:11.5px;color:var(--color-neutral-400);font-variant-numeric:tabular-nums">{{ r.sizeText }}</div>
+                  <div style="font-family:var(--mono);font-size:11.5px;color:var(--color-neutral-500);font-variant-numeric:tabular-nums">{{ r.timeText }}</div>
+                  <div title="{{ r.verifyTitle }}" style="text-align:center;color:{{ r.verifyColor }}"><i class="{{ r.verifyIcon }}" style="font-size:12px"></i></div>
+                  <div style="min-width:0"><span class="tag tag-neutral" style="font-size:10px;padding:2px 7px;background:var(--color-neutral-900);color:var(--color-neutral-400)">{{ r.kind }}</span></div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ isGrid }}" hint-placeholder-val="{{ false }}">
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px;padding:14px">
+              <sc-for list="{{ rows }}" as="r" hint-placeholder-count="6">
+                <button onClick="{{ r.click }}" onDoubleClick="{{ r.open }}" style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:14px 10px 11px;background:{{ r.bg }};border:1px solid {{ r.cardBorder }};border-radius:var(--radius-md);color:var(--color-text);font:inherit;cursor:default">
+                  <i class="{{ r.icon }}" style="font-size:34px;color:{{ r.iconColor }}"></i>
+                  <span style="max-width:100%;font-size:12px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:{{ r.nameColor }}">{{ r.name }}</span>
+                  <span style="font-family:var(--mono);font-size:10.5px;color:var(--color-neutral-600)">{{ r.sizeText }}</span>
+                </button>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <div style="display:{{ emptyShow }};flex-direction:column;align-items:center;justify-content:center;gap:0;padding:56px 24px;text-align:center">
+            <i class="ph ph-folder-open" style="font-size:34px;color:var(--color-neutral-700)"></i>
+            <div data-en="Nothing here yet" style="font-family:var(--font-heading);font-weight:500;font-size:15px;color:var(--color-neutral-300);margin-top:14px">這裡還沒有東西</div>
+            <div data-en="Drag files onto this window, or use Upload." style="font-size:12.5px;color:var(--color-neutral-600);margin-top:4px">把檔案拖到這個視窗，或用上面的「上傳」。</div>
+            <div style="max-width:520px;margin-top:26px;padding:13px 15px;text-align:left;background:var(--color-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-sm)">
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px">
+                <i class="ph ph-key" style="font-size:14px;color:var(--color-accent)"></i>
+                <span data-en="What happens when you upload" style="font-family:var(--font-heading);font-weight:500;font-size:12.5px">上傳的時候會發生什麼</span>
+              </div>
+              <div data-en="Each file is split into 9 MiB chunks. Every chunk is encrypted with AES-256-CTR under its own nonce and authenticated with HMAC-SHA256. The tags stay in MongoDB and never go to Discord, so whoever controls the Discord side can neither read a chunk nor forge one. The tags also cover the file's name and the directory it sits in — a rename or a move done in the database is caught on the next read." style="font-size:12px;line-height:1.6;color:var(--color-neutral-400)">
+                每個檔案切成 9 MiB 分塊，每塊各自以 AES-256-CTR 加密（自己的 nonce）、以 HMAC-SHA256 認證。認證標籤留在 MongoDB，不會上 Discord——所以掌握 Discord 那一側的人既讀不出分塊，也偽造不出來。標籤同時涵蓋檔名與它所在的目錄，直接在資料庫裡改名或搬移，下一次讀取就會被抓到。
+              </div>
+            </div>
+          </div>
+
+          <div style="display:{{ trashToolShow }};align-items:center;justify-content:space-between;gap:12px;padding:9px 14px;border-bottom:1px solid var(--color-divider)">
+            <span data-en="Restore an item, or delete it for ever. Everything here is kept where it was — restoring walks parent_id back up." style="font-size:11.5px;color:var(--color-neutral-500)">垃圾桶裡的項目原地不動，還原時沿 parent_id 走回去，所以不需要記錄原始路徑。</span>
+            <button class="btn btn-secondary" onClick="{{ askEmpty }}" style="flex:none;height:26px;font-size:12px;padding:0 10px"><i class="ph ph-trash" style="font-size:13px"></i><span data-en="Empty trash">清空垃圾桶</span></button>
+          </div>
+          <sc-for list="{{ trashRows }}" as="t" hint-placeholder-count="0">
+            <div style="display:grid;grid-template-columns:1fr 100px 150px 44px 96px;gap:12px;align-items:center;height:38px;padding:0 14px;border-bottom:1px solid color-mix(in srgb, var(--color-text) 5%, transparent)">
+              <div style="display:flex;align-items:center;gap:9px;min-width:0">
+                <i class="{{ t.icon }}" style="font-size:15px;flex:none;color:{{ t.iconColor }}"></i>
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.name }}</span>
+                <span style="flex:none;font-family:var(--mono);font-size:10px;padding:2px 6px;border-radius:3px;background:var(--color-neutral-900);color:var(--color-neutral-600);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px">{{ t.from }}</span>
+              </div>
+              <div style="text-align:right;font-family:var(--mono);font-size:11.5px;color:var(--color-neutral-400)">{{ t.sizeText }}</div>
+              <div style="font-family:var(--mono);font-size:11.5px;color:{{ t.leftColor }}">{{ t.leftText }}</div>
+              <div></div>
+              <div style="display:flex;gap:5px;justify-content:flex-end">
+                <button onClick="{{ t.restore }}" title="還原" style="width:26px;height:24px;display:grid;place-items:center;background:transparent;border:1px solid var(--color-divider);border-radius:var(--radius-sm);color:var(--color-neutral-400);cursor:pointer"><i class="ph ph-arrow-counter-clockwise" style="font-size:13px"></i></button>
+                <button onClick="{{ t.purge }}" title="永久刪除" style="width:26px;height:24px;display:grid;place-items:center;background:transparent;border:1px solid var(--color-divider);border-radius:var(--radius-sm);color:var(--color-neutral-500);cursor:pointer"><i class="ph ph-x" style="font-size:13px"></i></button>
+              </div>
+            </div>
+          </sc-for>
+
+        </div>
+
+        <div style="display:{{ dragShow }};position:absolute;inset:0;place-items:center;background:color-mix(in srgb, var(--color-bg) 78%, transparent);z-index:6;animation:dd-fade 120ms ease-out">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:28px 40px;border:2px dashed var(--color-accent);border-radius:var(--radius-lg);background:color-mix(in srgb, var(--color-accent) 8%, transparent)">
+            <i class="ph ph-upload-simple" style="font-size:30px;color:var(--color-accent)"></i>
+            <div data-en="Drop to upload into" style="font-size:13px;color:var(--color-accent-200)">放開以上傳到</div>
+            <div style="font-family:var(--mono);font-size:12px;color:var(--color-text)">{{ cwd }}</div>
+          </div>
+        </div>
+
+        <div style="display:{{ trayShow }};flex-direction:column;position:absolute;right:14px;bottom:14px;width:344px;background:var(--color-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-md);overflow:hidden;z-index:5;animation:dd-rise 220ms ease-out">
+          <div style="display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--color-divider)">
+            <i class="ph ph-arrows-down-up" style="font-size:13px;color:var(--color-accent)"></i>
+            <span data-en="Transfers" style="font-family:var(--font-heading);font-weight:500;font-size:12px">傳輸</span>
+            <span style="font-family:var(--mono);font-size:10.5px;color:var(--color-neutral-600)">{{ trayMeta }}</span>
+            <span style="flex:1"></span>
+            <button onClick="{{ clearTray }}" style="width:20px;height:20px;display:grid;place-items:center;background:transparent;border:0;color:var(--color-neutral-500);cursor:pointer"><i class="ph ph-x" style="font-size:11px"></i></button>
+          </div>
+          <div style="max-height:196px;overflow-y:auto;padding:4px 0">
+            <sc-for list="{{ transfers }}" as="u" hint-placeholder-count="2">
+              <div style="display:flex;flex-direction:column;gap:5px;padding:8px 11px">
+                <div style="display:flex;align-items:center;gap:7px;min-width:0">
+                  <i class="{{ u.dirIcon }}" style="font-size:12px;flex:none;color:var(--color-accent)"></i>
+                  <span style="flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ u.name }}</span>
+                  <span style="font-family:var(--mono);font-size:10.5px;color:var(--color-neutral-500);flex:none">{{ u.pctText }}</span>
+                </div>
+                <div style="height:3px;border-radius:2px;background:var(--color-neutral-800);overflow:hidden">
+                  <div style="height:100%;width:{{ u.pct }}%;background:var(--color-accent)"></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;color:var(--color-neutral-600)">
+                  <span>{{ u.chunkText }}</span>
+                  <span>{{ u.sizeText }}</span>
+                  <span style="flex:1"></span>
+                  <span>{{ u.rate }}</span>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+          <div data-en="A 9 MiB chunk only reaches Discord when it is full, so the tail of a file lands on close. Interrupting is safe — the size is the resume point." style="padding:8px 11px;border-top:1px solid var(--color-divider);font-size:10.5px;line-height:1.45;color:var(--color-neutral-600)">
+            分塊滿 9 MiB 才會送上 Discord，尾端不足一塊的在關閉時才落地。中斷是安全的——檔案大小就是續傳點。
+          </div>
+        </div>
+
+        <div style="display:{{ railShow }};flex-direction:column;gap:6px;position:absolute;left:14px;bottom:14px;width:184px;max-height:calc(100% - 52px);overflow-y:auto;padding:8px;background:var(--color-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-md);z-index:7">
+          <div style="display:flex;align-items:center;gap:6px;padding:0 2px 2px">
+            <span data-en="STATES" style="font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-neutral-600)">狀態</span>
+            <span style="flex:1"></span>
+            <button onClick="{{ hideRail }}" style="width:16px;height:16px;display:grid;place-items:center;background:transparent;border:0;color:var(--color-neutral-600);cursor:pointer"><i class="ph ph-x" style="font-size:10px"></i></button>
+          </div>
+          <sc-for list="{{ states }}" as="s" hint-placeholder-count="17">
+            <button onClick="{{ s.go }}" style="display:flex;align-items:center;gap:7px;width:100%;padding:4px 7px;background:{{ s.bg }};border:0;border-radius:var(--radius-sm);color:{{ s.color }};font:inherit;font-size:11px;text-align:left;cursor:pointer">
+              <i class="{{ s.icon }}" style="font-size:12px;flex:none"></i>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ s.label }}</span>
+            </button>
+          </sc-for>
+        </div>
+
+        <button onClick="{{ showRail }}" title="狀態" style="display:{{ railBtnShow }};position:absolute;left:14px;bottom:14px;width:28px;height:28px;place-items:center;background:var(--color-surface);border:0;border-radius:var(--radius-sm);box-shadow:var(--shadow-sm);color:var(--color-neutral-400);cursor:pointer;z-index:7"><i class="ph ph-list-checks" style="font-size:14px"></i></button>
+        </div>
+
+        <div style="display:{{ inspectorShow }};align-items:center;gap:14px;flex:none;height:34px;padding:0 14px;background:var(--color-surface);border-top:1px solid var(--color-divider);font-size:11.5px;color:var(--color-neutral-400);overflow:hidden">
+          <span style="font-weight:500;color:var(--color-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px">{{ selName }}</span>
+          <span style="font-family:var(--mono);color:var(--color-neutral-500)">{{ selSize }}</span>
+          <span style="font-family:var(--mono);color:var(--color-neutral-500)">{{ selChunks }}</span>
+          <span style="font-family:var(--mono);color:var(--color-neutral-500)">{{ selAttach }}</span>
+          <span style="font-family:var(--mono);color:var(--color-neutral-500)">tag v{{ selTag }}</span>
+          <span style="flex:1"></span>
+          <span style="display:inline-flex;align-items:center;gap:5px;color:{{ selVerifyColor }}"><i class="{{ selVerifyIcon }}" style="font-size:12px"></i>{{ selVerifyText }}</span>
+        </div>
+      </main>
+
+      <aside style="flex:none;width:296px;display:{{ detailsShow }};flex-direction:column;background:var(--color-surface);border-left:1px solid var(--color-divider);overflow-y:auto">
+        <div style="display:flex;align-items:center;gap:8px;padding:11px 13px;border-bottom:1px solid var(--color-divider)">
+          <i class="ph ph-info" style="font-size:14px;color:var(--color-accent)"></i>
+          <span data-en="Details" style="font-family:var(--font-heading);font-weight:500;font-size:12.5px">詳細資訊</span>
+        </div>
+
+        <div style="display:{{ detailEmptyShow }};flex-direction:column;gap:6px;padding:20px 14px;text-align:center;color:var(--color-neutral-600)">
+          <div data-en="Nothing selected" style="font-size:12px">沒有選取項目</div>
+          <div style="font-family:var(--mono);font-size:11px">{{ folderSummary }}</div>
+        </div>
+
+        <div style="display:{{ detailShow }};flex-direction:column;padding:14px 13px;gap:14px">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:9px;padding-bottom:4px">
+            <i class="{{ selIcon }}" style="font-size:40px;color:{{ selIconColor }}"></i>
+            <div style="font-family:var(--font-heading);font-weight:500;font-size:14px;text-align:center;word-break:break-all">{{ selName }}</div>
+            <div style="font-family:var(--mono);font-size:10.5px;color:var(--color-neutral-600);text-align:center;word-break:break-all">{{ selPath }}</div>
+          </div>
+
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-primary" onClick="{{ startDownload }}" style="flex:1;height:28px;font-size:12px;padding:0"><i class="ph ph-download-simple" style="font-size:13px"></i><span data-en="Download">下載</span></button>
+            <button class="btn btn-secondary" onClick="{{ startRename }}" title="重新命名" style="flex:none;width:32px;height:28px;padding:0"><i class="ph ph-pencil-simple" style="font-size:13px"></i></button>
+            <button class="btn btn-secondary" onClick="{{ askDelete }}" title="刪除" style="flex:none;width:32px;height:28px;padding:0;color:var(--color-neutral-400)"><i class="ph ph-trash" style="font-size:13px"></i></button>
+          </div>
+
+          <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:11.5px">
+            <div data-en="Kind" style="color:var(--color-neutral-600);white-space:nowrap">種類</div>
+            <div style="text-align:right">{{ selKind }}</div>
+            <div data-en="Size" style="color:var(--color-neutral-600);white-space:nowrap">大小</div>
+            <div style="text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums">{{ selSizeExact }}</div>
+            <div data-en="Chunks (9 MiB)" style="color:var(--color-neutral-600);white-space:nowrap">分塊（9 MiB）</div>
+            <div style="text-align:right;font-family:var(--mono)">{{ selChunkN }}</div>
+            <div data-en="Discord attachments" style="color:var(--color-neutral-600);white-space:nowrap">Discord 附件</div>
+            <div style="text-align:right;font-family:var(--mono)">{{ selAttachN }}</div>
+            <div data-en="Tag version" style="color:var(--color-neutral-600);white-space:nowrap">標籤版本</div>
+            <div style="text-align:right;font-family:var(--mono)">{{ selTag }}</div>
+            <div data-en="Modified" style="color:var(--color-neutral-600);white-space:nowrap">修改時間</div>
+            <div style="text-align:right;font-family:var(--mono)">{{ selTime }}</div>
+            <div data-en="Permissions" style="color:var(--color-neutral-600);white-space:nowrap">權限</div>
+            <div style="text-align:right;font-family:var(--mono)">{{ selPerm }}</div>
+          </div>
+
+          <div style="padding:9px 10px;border-radius:var(--radius-md);background:{{ selVerifyBg }}">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;color:{{ selVerifyColor }}">
+              <i class="{{ selVerifyIcon }}" style="font-size:13px"></i>
+              <span style="font-family:var(--font-heading);font-weight:500;font-size:12px">{{ selVerifyText }}</span>
+            </div>
+            <div style="font-size:11px;line-height:1.5;color:var(--color-neutral-400)">{{ selVerifyNote }}</div>
+          </div>
+        </div>
+
+        <div style="display:{{ detailMultiShow }};flex-direction:column;gap:10px;padding:18px 14px">
+          <div style="font-family:var(--font-heading);font-weight:500;font-size:13px">{{ multiTitle }}</div>
+          <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:11.5px">
+            <div data-en="Total size" style="color:var(--color-neutral-600);white-space:nowrap">總大小</div>
+            <div style="text-align:right;font-family:var(--mono)">{{ multiSize }}</div>
+            <div data-en="Chunks" style="color:var(--color-neutral-600);white-space:nowrap">分塊</div>
+            <div style="text-align:right;font-family:var(--mono)">{{ multiChunks }}</div>
+          </div>
+          <button class="btn btn-secondary" onClick="{{ askDelete }}" style="height:28px;font-size:12px"><i class="ph ph-trash" style="font-size:13px"></i><span data-en="Move to trash">移到垃圾桶</span></button>
+        </div>
+      </aside>
+    </div>
+
+    <div style="flex:none;display:flex;align-items:center;gap:16px;height:28px;padding:0 12px;background:var(--color-neutral-900);border-top:1px solid var(--color-divider);font-family:var(--mono);font-size:10.5px;color:var(--color-neutral-500)">
+      <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:5px;height:5px;border-radius:50%;background:var(--color-accent)"></span>{{ statusLeft }}</span>
+      <span style="flex:1"></span>
+      <span style="display:inline-flex;align-items:center;gap:5px;color:{{ statusVerifyColor }}"><i class="{{ statusVerifyIcon }}" style="font-size:11px"></i>{{ statusVerify }}</span>
+      <span style="display:inline-flex;align-items:center;gap:5px" title="wrapped master key fingerprint"><i class="ph ph-key" style="font-size:11px"></i>{{ keyFp }}</span>
+      <span style="display:inline-flex;align-items:center;gap:5px;color:{{ idleColor }}" title="idle / absolute"><i class="ph ph-clock" style="font-size:11px"></i>{{ sessionText }}</span>
+    </div>
+
+    <div style="display:{{ toastShow }};position:absolute;left:50%;bottom:44px;transform:translateX(-50%);align-items:center;gap:12px;padding:8px 12px;background:var(--color-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-md);font-size:12px;z-index:8;animation:dd-rise 200ms ease-out">
+      <span>{{ toastText }}</span>
+      <button onClick="{{ undoToast }}" style="display:{{ undoShow }};background:transparent;border:0;color:var(--color-accent);font:inherit;font-size:12px;font-weight:500;cursor:pointer">{{ undoLabel }}</button>
+    </div>
+  </div>
+
+  <div style="display:{{ loginShow }};position:absolute;inset:0;place-items:center;background:var(--color-bg);z-index:20">
+    <div style="width:396px;max-width:calc(100vw - 40px);display:flex;flex-direction:column;gap:14px;padding:22px;background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);animation:dd-rise 240ms ease-out">
+      <div style="display:flex;align-items:center;gap:9px">
+        <i class="ph ph-hard-drives" style="font-size:19px;color:var(--color-accent)"></i>
+        <div>
+          <div style="font-family:var(--font-heading);font-weight:500;font-size:16px;letter-spacing:-.01em">Discord Drive</div>
+          <div data-en="Signing in unwraps the master key into this process's memory." style="font-size:11px;color:var(--color-neutral-600)">登入會把主金鑰解到這個行程的記憶體裡。</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label data-en="Username">使用者名稱</label>
+        <input class="input" value="{{ loginUser }}" onChange="{{ onLoginUser }}" style="height:32px;font-size:13px" />
+      </div>
+      <div class="field">
+        <label data-en="Password">密碼</label>
+        <input class="input" type="password" value="{{ loginPass }}" onChange="{{ onLoginPass }}" style="height:32px;font-size:13px" />
+        <div data-en="This password wraps the key every stored file is encrypted with. Losing it loses the files, not just the login." style="margin-top:5px;font-size:10.5px;line-height:1.45;color:var(--color-neutral-600)">這組密碼包裝著所有檔案的加密金鑰。弄丟它是弄丟檔案，不只是弄丟登入。</div>
+      </div>
+
+      <div>
+        <div data-en="How long should this session last" style="font-size:12px;color:var(--color-neutral-400);margin-bottom:6px">這次連線要活多久</div>
+        <div style="display:flex;gap:6px">
+          <sc-for list="{{ ttls }}" as="o" hint-placeholder-count="3">
+            <button onClick="{{ o.pick }}" style="flex:1;height:30px;background:{{ o.bg }};border:1px solid {{ o.border }};border-radius:var(--radius-md);color:{{ o.color }};font:inherit;font-size:12px;cursor:pointer">{{ o.label }}</button>
+          </sc-for>
+        </div>
+        <div data-en="The server's ceiling is 10 min idle / 2 h absolute. A browser can ask for shorter and get it; asking for longer is clamped back — the deadline a client could extend is a deadline whoever stole the cookie controls." style="margin-top:6px;font-size:10.5px;line-height:1.45;color:var(--color-neutral-600)">伺服器上限是閒置 10 分鐘、絕對 2 小時。往短調會被接受，往長調會被夾回來——client 能延長的期限，等於是偷到 cookie 的人在控制。</div>
+      </div>
+
+      <div style="display:{{ loginErrShow }};flex-direction:column;gap:5px;padding:10px 11px;border-radius:var(--radius-md);background:{{ loginErrBg }};border:1px solid {{ loginErrBorder }}">
+        <div style="display:flex;align-items:center;gap:7px;color:{{ loginErrColor }}">
+          <i class="{{ loginErrIcon }}" style="font-size:14px"></i>
+          <span style="font-family:var(--font-heading);font-weight:500;font-size:12.5px">{{ loginErrTitle }}</span>
+        </div>
+        <div style="font-size:11.5px;line-height:1.5;color:var(--color-neutral-400)">{{ loginErrBody }}</div>
+      </div>
+
+      <button class="btn btn-primary btn-block" onClick="{{ doLogin }}" style="height:34px;margin-top:2px"><span data-en="Sign in">登入</span></button>
+
+      <div style="display:flex;gap:8px;margin-top:2px">
+        <button onClick="{{ showLocked }}" style="flex:1;padding:5px;background:transparent;border:1px dashed var(--color-neutral-800);border-radius:var(--radius-sm);color:var(--color-neutral-600);font:inherit;font-size:10.5px;cursor:pointer">429 鎖定</button>
+        <button onClick="{{ showBusy }}" style="flex:1;padding:5px;background:transparent;border:1px dashed var(--color-neutral-800);border-radius:var(--radius-sm);color:var(--color-neutral-600);font:inherit;font-size:10.5px;cursor:pointer">503 排隊已滿</button>
+        <button onClick="{{ showWrong }}" style="flex:1;padding:5px;background:transparent;border:1px dashed var(--color-neutral-800);border-radius:var(--radius-sm);color:var(--color-neutral-600);font:inherit;font-size:10.5px;cursor:pointer">401 密碼錯</button>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:{{ conflictShow }};position:absolute;inset:0;place-items:center;padding:20px;background:color-mix(in srgb, var(--color-neutral-900) 62%, transparent);z-index:22;animation:dd-fade 140ms ease-out">
+    <div style="width:min(548px,100%);display:flex;flex-direction:column;background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);overflow:hidden;animation:dd-rise 220ms ease-out">
+      <div style="padding:16px 18px 0">
+        <div data-en="There is already a file with that name at the destination" style="font-family:var(--font-heading);font-weight:500;font-size:17px;letter-spacing:-.01em">目的地已經有同名的檔案</div>
+        <div style="margin-top:3px;font-size:12.5px;color:var(--color-neutral-500)">
+          <span data-en="Restoring">還原</span>
+          <b style="font-weight:500;color:var(--color-text)">{{ conflictName }}</b>
+          <span data-en="into">到</span>
+          <span style="font-family:var(--mono)">{{ conflictDir }}</span>
+        </div>
+      </div>
+      <div style="padding:14px 18px">
+        <sc-for list="{{ choices }}" as="c" hint-placeholder-count="3">
+          <button onClick="{{ c.pick }}" style="display:flex;gap:11px;width:100%;text-align:left;padding:11px 12px;margin-bottom:8px;background:transparent;border:1px solid var(--color-divider);border-radius:var(--radius-md);color:var(--color-text);font:inherit;cursor:pointer">
+            <i class="{{ c.icon }}" style="font-size:16px;color:var(--color-accent);flex:none;margin-top:1px"></i>
+            <span style="min-width:0">
+              <b style="display:block;font-weight:500;font-size:13px">{{ c.title }}</b>
+              <small style="display:block;margin-top:2px;font-size:12px;color:var(--color-neutral-500)">{{ c.note }}</small>
+            </span>
+          </button>
+        </sc-for>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px">
+          <div style="padding:10px 11px;border:1px solid var(--color-divider);border-radius:var(--radius-md)">
+            <div data-en="IN THE TRASH" style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:6px">垃圾桶裡的</div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:11px">
+              <div data-en="Size" style="color:var(--color-neutral-600);white-space:nowrap">大小</div><div style="text-align:right;font-family:var(--mono);color:var(--color-neutral-300)">{{ cmpA1 }}</div>
+              <div data-en="Modified" style="color:var(--color-neutral-600);white-space:nowrap">修改</div><div style="text-align:right;font-family:var(--mono);color:var(--color-neutral-300)">{{ cmpA2 }}</div>
+              <div data-en="Deleted" style="color:var(--color-neutral-600);white-space:nowrap">刪除</div><div style="text-align:right;font-family:var(--mono);color:var(--color-neutral-300)">{{ cmpA3 }}</div>
+            </div>
+          </div>
+          <div style="padding:10px 11px;border:1px solid var(--color-accent);border-radius:var(--radius-md);background:color-mix(in srgb, var(--color-accent) 10%, transparent)">
+            <div data-en="ALREADY THERE" style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-accent-300);margin-bottom:6px">目前在這裡的</div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:11px">
+              <div data-en="Size" style="color:var(--color-neutral-600);white-space:nowrap">大小</div><div style="text-align:right;font-family:var(--mono);color:var(--color-neutral-300)">{{ cmpB1 }}</div>
+              <div data-en="Modified" style="color:var(--color-neutral-600);white-space:nowrap">修改</div><div style="text-align:right;font-family:var(--mono);color:var(--color-neutral-300)">{{ cmpB2 }}</div>
+              <div data-en="Deleted" style="color:var(--color-neutral-600);white-space:nowrap">刪除</div><div style="text-align:right;font-family:var(--mono);color:var(--color-neutral-300)">—</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--color-divider)">
+        <button class="btn btn-secondary" onClick="{{ closeOverlay }}" style="height:30px;font-size:12.5px;flex:none;white-space:nowrap"><span data-en="Cancel">取消</span></button>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:{{ confirmShow }};position:absolute;inset:0;place-items:center;padding:20px;background:color-mix(in srgb, var(--color-neutral-900) 62%, transparent);z-index:22;animation:dd-fade 140ms ease-out">
+    <div style="width:min(452px,100%);display:flex;flex-direction:column;gap:12px;padding:18px;background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);animation:dd-rise 220ms ease-out">
+      <div style="font-family:var(--font-heading);font-weight:500;font-size:17px;letter-spacing:-.01em">{{ confirmTitle }}</div>
+      <div style="font-size:12.5px;color:var(--color-neutral-500)">{{ confirmSub }}</div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 12px;padding:11px 12px;border-radius:var(--radius-md);background:var(--color-bg);font-size:11.5px">
+        <sc-for list="{{ confirmRows }}" as="k" hint-placeholder-count="3">
+          <div style="color:var(--color-neutral-600);white-space:nowrap">{{ k.label }}</div>
+          <div style="text-align:right;font-family:var(--mono);color:var(--color-neutral-300)">{{ k.value }}</div>
+        </sc-for>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:8px;font-size:11.5px;line-height:1.5;color:{{ confirmNoteColor }}">
+        <i class="ph ph-warning-octagon" style="font-size:14px;flex:none;margin-top:2px"></i>
+        <span>{{ confirmNote }}</span>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:2px">
+        <button class="btn btn-secondary" onClick="{{ closeOverlay }}" style="height:30px;font-size:12.5px;flex:none;white-space:nowrap"><span data-en="Cancel">取消</span></button>
+        <button class="btn" onClick="{{ confirmGo }}" style="height:30px;font-size:12.5px;flex:none;white-space:nowrap;border-color:color-mix(in srgb, var(--integrity) 55%, transparent);color:var(--integrity)">{{ confirmAction }}</button>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:{{ expiredShow }};position:absolute;inset:0;place-items:center;padding:20px;background:color-mix(in srgb, var(--color-bg) 86%, transparent);z-index:24;animation:dd-fade 160ms ease-out">
+    <div style="width:min(432px,100%);display:flex;flex-direction:column;gap:11px;padding:20px;background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg)">
+      <div style="display:flex;align-items:center;gap:9px">
+        <i class="ph ph-lock-key" style="font-size:18px;color:var(--color-accent)"></i>
+        <span data-en="The session went idle" style="font-family:var(--font-heading);font-weight:500;font-size:17px;letter-spacing:-.01em">連線已閒置到期</span>
+      </div>
+      <div data-en="The master key has been released from this process's memory. Nothing is readable until you sign in again — that is the point of the deadline, not a side effect of it. Files already uploaded are untouched." style="font-size:12.5px;line-height:1.6;color:var(--color-neutral-400)">
+        主金鑰已經從這個行程的記憶體釋放。在你重新登入之前，什麼都讀不出來——這是期限的目的，不是它的副作用。已經上傳的檔案不受影響。
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-primary" onClick="{{ toLogin }}" style="flex:1;height:32px"><span data-en="Sign in again">重新登入</span></button>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:{{ tooSmallShow }};position:absolute;inset:0;place-items:center;padding:24px;background:var(--color-bg);z-index:40">
+    <div style="max-width:400px;text-align:center;display:flex;flex-direction:column;gap:9px;align-items:center">
+      <i class="ph ph-arrows-out" style="font-size:28px;color:var(--color-neutral-600)"></i>
+      <div data-en="The window is too small" style="font-family:var(--font-heading);font-weight:500;font-size:16px">視窗太小</div>
+      <div data-en="This layout is guaranteed at 1024 × 640 and up. Below that the tree, the list and the details panel cannot all be honest at once, so the window refuses rather than reflowing into something unintended." style="font-size:12.5px;line-height:1.6;color:var(--color-neutral-500)">
+        這個版面保證在 1024 × 640 以上。再小下去，側欄樹、清單和詳細資訊沒辦法同時誠實呈現，所以視窗直接擋住，而不是硬擠成沒人設計過的樣子。
+      </div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--color-neutral-600);margin-top:2px">{{ vpText }}</div>
+      <div data-en="A phone / narrow layout is a separate design, not this one squeezed." style="margin-top:8px;padding:7px 10px;border:1px dashed var(--color-accent-700);border-radius:var(--radius-md);font-size:11px;color:var(--color-accent-300)">手機／窄視窗是另外一版設計，不是把這一版擠小。</div>
+    </div>
+  </div>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;layout&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;three&quot;,&quot;dense&quot;],&quot;default&quot;:&quot;three&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;版面方向&quot;},&quot;lang&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;zh&quot;,&quot;en&quot;],&quot;default&quot;:&quot;zh&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;版面方向&quot;},&quot;showAnnotations&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;版面方向&quot;}}">
+const MIB = 1048576;
+const CHUNK = 9 * MIB;
+const DAY = 86400;
+
+const KIND = {
+  dir: ["資料夾", "Folder", "ph ph-folder"],
+  md: ["Markdown", "Markdown", "ph ph-file-text"],
+  pdf: ["PDF", "PDF", "ph ph-file-pdf"],
+  gz: ["封存檔", "Archive", "ph ph-file-zip"],
+  zip: ["封存檔", "Archive", "ph ph-file-zip"],
+  xlsx: ["試算表", "Spreadsheet", "ph ph-table"],
+  csv: ["資料表", "Data", "ph ph-table"],
+  png: ["圖片", "Image", "ph ph-image"],
+  jpg: ["圖片", "Image", "ph ph-image"],
+  bin: ["二進位", "Binary", "ph ph-file"],
+  log: ["紀錄", "Log", "ph ph-file-text"],
+  sql: ["傾印", "Dump", "ph ph-database"],
+  def: ["檔案", "File", "ph ph-file"],
+};
+
+const T = (y, m, d, h, mi) => Date.UTC(y, m - 1, d, h, mi);
+const f = (name, size, at) => ({ name, is_dir: false, size, modified_at: at, permissions: 0o644 });
+const dir = (name, at) => ({ name, is_dir: true, size: 0, modified_at: at, permissions: 0o755 });
+
+const FS = {
+  "/": [dir("專案", T(2026, 8, 1, 17, 2)), dir("照片", T(2026, 7, 26, 20, 11)), dir("備份", T(2026, 8, 3, 4, 0)), f("README.md", 3182, T(2026, 7, 12, 9, 3))],
+  "/專案": [dir("2026", T(2026, 8, 2, 22, 41)), dir("封存", T(2026, 5, 30, 13, 20))],
+  "/專案/2026": [
+    dir("草稿", T(2026, 7, 28, 9, 14)),
+    dir("交付", T(2026, 8, 1, 17, 2)),
+    f("kickoff-notes.md", 4198, T(2026, 7, 30, 11, 48)),
+    f("報告.pdf", 2411724, T(2026, 8, 2, 21, 6)),
+    f("dataset.tar.gz", 1943862272, T(2026, 8, 2, 22, 41)),
+    f("budget.xlsx", 90112, T(2026, 6, 11, 8, 20)),
+  ],
+  "/專案/2026/草稿": [],
+  "/專案/2026/交付": [f("v1-交付說明.md", 8871, T(2026, 8, 1, 16, 40)), f("build-471.zip", 41598976, T(2026, 8, 1, 17, 2))],
+  "/專案/封存": [f("2025-結算.xlsx", 214016, T(2025, 12, 31, 18, 5)), f("2025-合約.pdf", 1180672, T(2025, 11, 4, 10, 12))],
+  "/照片": [dir("2025", T(2025, 12, 20, 22, 0)), f("cover.png", 4718592, T(2026, 7, 26, 20, 11))],
+  "/照片/2025": [f("IMG_0417.png", 8912896, T(2025, 8, 9, 15, 22))],
+  "/備份": [f("mongo-2026-08-03.sql", 268435456, T(2026, 8, 3, 4, 0)), f("scratch.bin", 12582912, T(2026, 7, 4, 2, 30))],
+};
+
+const TREE = [
+  { path: "/", name: "根目錄", en: "Root", depth: 0 },
+  { path: "/專案", name: "專案", en: "Projects", depth: 1 },
+  { path: "/專案/2026", name: "2026", en: "2026", depth: 2 },
+  { path: "/專案/2026/草稿", name: "草稿", en: "Drafts", depth: 3 },
+  { path: "/專案/2026/交付", name: "交付", en: "Delivery", depth: 3 },
+  { path: "/專案/封存", name: "封存", en: "Archive", depth: 2 },
+  { path: "/照片", name: "照片", en: "Photos", depth: 1 },
+  { path: "/照片/2025", name: "2025", en: "2025", depth: 2 },
+  { path: "/備份", name: "備份", en: "Backups", depth: 1 },
+];
+
+const TRASH0 = [
+  { id: "n_7f21", name: "報告.pdf", is_dir: false, size: 2201971, modified_at: T(2026, 7, 29, 14, 2), original_path: "/專案/2026/報告.pdf", trashed_at: T(2026, 8, 1, 9, 30), conflict: true, attachments: 1 },
+  { id: "n_c04a", name: "舊素材", is_dir: true, size: 431984640, modified_at: T(2026, 7, 22, 11, 5), original_path: "/照片/舊素材", trashed_at: T(2026, 7, 25, 18, 12), items: 41, attachments: 211 },
+  { id: "n_19be", name: "scratch.bin", is_dir: false, size: 12582912, modified_at: T(2026, 7, 4, 2, 30), original_path: "/備份/scratch.bin", trashed_at: T(2026, 7, 5, 8, 1), soon: true, attachments: 2 },
+];
+
+const SEARCH_HITS = [
+  { name: "報告.pdf", path: "/專案/2026", size: 2411724, modified_at: T(2026, 8, 2, 21, 6) },
+  { name: "2025-合約.pdf", path: "/專案/封存", size: 1180672, modified_at: T(2025, 11, 4, 10, 12) },
+  { name: "v1-交付說明.md", path: "/專案/2026/交付", size: 8871, modified_at: T(2026, 8, 1, 16, 40) },
+];
+
+const NOW = T(2026, 8, 3, 11, 20);
+
+function extOf(name) {
+  const i = name.lastIndexOf(".");
+  return i > 0 ? name.slice(i + 1).toLowerCase() : "";
+}
+function kindOf(entry) {
+  if (entry.is_dir) return KIND.dir;
+  return KIND[extOf(entry.name)] || KIND.def;
+}
+function human(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  const u = ["KiB", "MiB", "GiB", "TiB"];
+  let v = bytes / 1024, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (v >= 100 ? v.toFixed(0) : v.toFixed(v >= 10 ? 1 : 2)) + " " + u[i];
+}
+function chunksOf(bytes) { return Math.max(1, Math.ceil(bytes / CHUNK)); }
+function stamp(ms) { return new Date(ms).toISOString().slice(0, 16).replace("T", " "); }
+function clock(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+}
+function mmss(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+}
+function suffixed(name) {
+  const i = name.lastIndexOf(".");
+  return i > 0 ? name.slice(0, i) + " (2)" + name.slice(i) : name + " (2)";
+}
+const NONE = "none";
+const FLEX = "flex";
+const GRID = "grid";
+
+class Component extends DCLogic {
+  state = {
+    view: "browse",
+    cwd: "/專案/2026",
+    history: ["/專案/2026"],
+    expanded: { "/": true, "/專案": true },
+    selected: ["報告.pdf"],
+    overlay: null,
+    editing: null,
+    editValue: "",
+    transfers: [],
+    trayOpen: false,
+    integrity: false,
+    uploadfail: false,
+    purging: null,
+    expired: false,
+    toast: null,
+    dragging: false,
+    left: 6112,
+    idle: 592,
+    lang: null,
+    layout: null,
+    display: "list",
+    trash: TRASH0.slice(),
+    login: null,
+    loginErr: null,
+    retry: 47,
+    ttl: 600,
+    loginUser: "operator",
+    loginPass: "••••••••••••",
+    vw: 1440,
+    vh: 900,
+    rail: true,
+    extra: {},
+  };
+
+  componentDidMount() {
+    this._root = this._root || React.createRef();
+    this._onResize = () => this.setState({ vw: window.innerWidth, vh: window.innerHeight });
+    window.addEventListener("resize", this._onResize);
+    this._onResize();
+    this._timer = setInterval(() => this.tick(), 700);
+    this._i18n();
+  }
+  componentDidUpdate() { this._i18n(); }
+  componentWillUnmount() {
+    window.removeEventListener("resize", this._onResize);
+    clearInterval(this._timer);
+  }
+
+  /* English lives in data-en on the leaf that holds the Chinese, so the
+     template keeps real editable copy and the toggle is a swap rather than a
+     second tree of strings. React repaints the Chinese on every render, so
+     this re-applies after each one. */
+  _i18n() {
+    const root = this._root && this._root.current;
+    if (!root) return;
+    if (this.lang() !== "en") return;
+    root.querySelectorAll("[data-en]").forEach((el) => { el.textContent = el.dataset.en; });
+  }
+
+  lang() { return this.state.lang || this.props.lang || "zh"; }
+  layout() { return this.state.layout || this.props.layout || "three"; }
+  t(zh, en) { return this.lang() === "en" ? en : zh; }
+  entries() { return FS[this.state.cwd] || []; }
+
+  tick() {
+    const s = this.state;
+    let next = {};
+    if (s.view !== "login" && !s.expired) {
+      next.left = Math.max(0, s.left - 1);
+      next.idle = Math.max(0, s.idle - 1);
+    }
+    if (s.transfers.length) {
+      const moved = s.transfers.map((u) => {
+        if (u.sent >= u.size) return u;
+        const step = u.dirn === "up" ? 2.6 * MIB : 5.2 * MIB;
+        return { ...u, sent: Math.min(u.size, u.sent + step * (0.8 + Math.random() * 0.5)) };
+      });
+      next.transfers = moved;
+    }
+    this.setState(next);
+  }
+
+  nav = (path) => {
+    if (!FS[path]) return;
+    this.setState({ view: "browse", cwd: path, selected: [], overlay: null, editing: null, idle: 600 });
+  };
+  select = (name, ev) => {
+    const multi = ev && (ev.metaKey || ev.ctrlKey || ev.shiftKey);
+    const cur = this.state.selected;
+    if (multi) {
+      this.setState({ selected: cur.includes(name) ? cur.filter((n) => n !== name) : cur.concat([name]), idle: 600 });
+    } else {
+      this.setState({ selected: [name], editing: null, idle: 600 });
+    }
+  };
+
+  push = (text, undo) => this.setState({ toast: { text, undo: !!undo } });
+
+  startUploads = (names) => {
+    const items = names.map((n, i) => ({
+      id: "u" + Date.now() + i, name: n[0], size: n[1], sent: 0, dirn: "up",
+    }));
+    this.setState({ transfers: this.state.transfers.concat(items), trayOpen: true, dragging: false });
+  };
+
+  renderVals() {
+    const s = this.state;
+    const L = this.layout();
+    const three = L === "three";
+    const zh = this.lang() === "zh";
+    const tt = (a, b) => (zh ? a : b);
+    const rows = [];
+    const sel = s.selected;
+    const list = s.view === "search" ? SEARCH_HITS.map((h) => ({ ...h, is_dir: false, permissions: 0o644, path: h.path })) : this.entries();
+
+    if (s.view !== "trash") {
+      list.forEach((e) => {
+        const k = kindOf(e);
+        const isSel = sel.includes(e.name);
+        const failed = s.integrity && e.name === "報告.pdf" && s.cwd === "/專案/2026";
+        const up = s.transfers.find((u) => u.name === e.name && u.sent < u.size);
+        rows.push({
+          name: e.name,
+          icon: k[2],
+          iconColor: e.is_dir ? "var(--color-accent)" : "var(--color-neutral-500)",
+          nameColor: failed ? "var(--integrity)" : "var(--color-text)",
+          kind: zh ? k[0] : k[1],
+          sizeText: e.is_dir ? "—" : human(e.size),
+          timeText: s.view === "search" ? e.path : stamp(e.modified_at),
+          bg: isSel ? "color-mix(in srgb, var(--color-accent) 14%, transparent)" : "transparent",
+          cardBorder: isSel ? "var(--color-accent)" : "var(--color-divider)",
+          verifyIcon: failed ? "ph ph-shield-warning" : e.is_dir ? "ph ph-shield" : "ph ph-shield-check",
+          verifyColor: failed ? "var(--integrity)" : e.is_dir ? "var(--color-neutral-700)" : "var(--color-accent-600)",
+          verifyTitle: failed ? tt("完整性驗證失敗", "integrity check failed") : tt("標籤已驗證 · tag v3", "tag verified · v3"),
+          editShow: s.editing === e.name ? "block" : NONE,
+          barShow: up ? "block" : NONE,
+          pct: up ? Math.round((up.sent / up.size) * 100) : 0,
+          chunkShow: up ? "inline" : NONE,
+          chunkText: up ? Math.ceil(up.sent / CHUNK) + "/" + chunksOf(up.size) : "",
+          click: (ev) => this.select(e.name, ev),
+          open: () => (e.is_dir ? this.nav((s.cwd === "/" ? "" : s.cwd) + "/" + e.name) : null),
+        });
+      });
+    }
+
+    const one = sel.length === 1 ? list.find((e) => e.name === sel[0]) : null;
+    const k1 = one ? kindOf(one) : null;
+    const oneFailed = !!(one && s.integrity && one.name === "報告.pdf");
+    const multi = sel.length > 1;
+    const multiBytes = sel.reduce((n, name) => { const e = list.find((x) => x.name === name); return n + (e && !e.is_dir ? e.size : 0); }, 0);
+
+    const totalBytes = this.entries().reduce((n, e) => n + (e.is_dir ? 0 : e.size), 0);
+    const trashBytes = s.trash.reduce((n, t) => n + t.size, 0);
+
+    const crumbParts = s.cwd === "/" ? [] : s.cwd.slice(1).split("/");
+    const crumbs = [{ name: "/", path: "/" }].concat(crumbParts.map((p, i) => ({ name: p, path: "/" + crumbParts.slice(0, i + 1).join("/") })));
+
+    const tree = TREE.filter((n) => {
+      if (n.depth === 0) return true;
+      const parent = n.path.slice(0, n.path.lastIndexOf("/")) || "/";
+      if (!s.expanded[parent]) return false;
+      let p = parent;
+      while (p !== "/") { const up = p.slice(0, p.lastIndexOf("/")) || "/"; if (!s.expanded[up]) return false; p = up; }
+      return true;
+    }).map((n) => {
+      const hasKids = TREE.some((x) => (x.path.slice(0, x.path.lastIndexOf("/")) || "/") === n.path);
+      const open = !!s.expanded[n.path];
+      const active = s.view === "browse" && s.cwd === n.path;
+      return {
+        name: zh ? n.name : n.en,
+        pad: 6 + n.depth * 13,
+        caret: hasKids ? (open ? "ph ph-caret-down" : "ph ph-caret-right") : "",
+        bg: active ? "color-mix(in srgb, var(--color-accent) 16%, transparent)" : "transparent",
+        color: active ? "var(--color-text)" : "var(--color-neutral-400)",
+        iconColor: active ? "var(--color-accent)" : "var(--color-neutral-600)",
+        count: open && FS[n.path] ? String(FS[n.path].length) : "",
+        click: () => this.nav(n.path),
+        twist: (ev) => { ev.stopPropagation(); this.setState({ expanded: { ...s.expanded, [n.path]: !open } }); },
+      };
+    });
+
+    const trashRows = s.view !== "trash" ? [] : s.trash.map((t) => {
+      const k = kindOf(t);
+      const daysLeft = Math.ceil((t.trashed_at + 30 * DAY * 1000 - NOW) / (DAY * 1000));
+      return {
+        name: t.name,
+        icon: k[2],
+        iconColor: t.is_dir ? "var(--color-accent)" : "var(--color-neutral-500)",
+        from: t.original_path,
+        sizeText: human(t.size),
+        leftText: daysLeft <= 1 ? tt("明天永久刪除", "destroyed tomorrow") : tt(daysLeft + " 天後永久刪除", "destroyed in " + daysLeft + "d"),
+        leftColor: daysLeft <= 1 ? "var(--warn)" : "var(--color-neutral-500)",
+        restore: () => (t.conflict
+          ? this.setState({ overlay: { type: "conflict", id: t.id } })
+          : (this.setState({ trash: s.trash.filter((x) => x.id !== t.id) }), this.push(tt("已還原到 " + t.original_path.slice(0, t.original_path.lastIndexOf("/")), "Restored to " + t.original_path), false))),
+        purge: () => this.setState({ overlay: { type: "purge", id: t.id } }),
+      };
+    });
+
+    const ov = s.overlay;
+    const cItem = ov && ov.type === "conflict" ? s.trash.find((t) => t.id === ov.id) : null;
+    const pItem = ov && ov.type === "purge" ? s.trash.find((t) => t.id === ov.id) : null;
+
+    let confirmTitle = "", confirmSub = "", confirmRows = [], confirmNote = "", confirmAction = "", confirmNoteColor = "var(--warn)", confirmGo = () => this.setState({ overlay: null });
+    if (pItem) {
+      confirmTitle = tt("永久刪除「" + pItem.name + "」？", "Destroy “" + pItem.name + "” for ever?");
+      confirmSub = tt("這個動作沒有辦法復原。", "There is no undo for this.");
+      confirmRows = [
+        { label: pItem.is_dir ? tt("資料夾（含 " + pItem.items + " 個項目）", "Folder (" + pItem.items + " items)") : tt("檔案", "File"), value: "1" },
+        { label: tt("要釋放的 Discord 附件", "Discord attachments to free"), value: String(pItem.attachments) },
+        { label: tt("釋放後可回收", "Reclaimed"), value: human(pItem.size) },
+      ];
+      confirmNote = tt("附件會逐一刪除，過程中可以中斷；已經刪掉的不會回來。", "Attachments are deleted one at a time and the run can be interrupted; what is gone is gone.");
+      confirmAction = tt("永久刪除", "Destroy");
+      confirmGo = () => { this.setState({ trash: s.trash.filter((x) => x.id !== pItem.id), overlay: null }); this.push(tt("已永久刪除 " + pItem.name + "，釋放 " + pItem.attachments + " 個附件", "Destroyed " + pItem.name)); };
+    } else if (ov && ov.type === "empty") {
+      confirmTitle = tt("清空垃圾桶？永久刪除 " + s.trash.length + " 個項目", "Empty the trash? " + s.trash.length + " items");
+      confirmSub = tt("這個動作沒有辦法復原。", "There is no undo for this.");
+      confirmRows = [
+        { label: tt("檔案", "Files"), value: String(s.trash.filter((t) => !t.is_dir).length) },
+        { label: tt("資料夾", "Folders"), value: String(s.trash.filter((t) => t.is_dir).length) },
+        { label: tt("要釋放的 Discord 附件", "Discord attachments to free"), value: String(s.trash.reduce((n, t) => n + t.attachments, 0)) },
+        { label: tt("釋放後可回收", "Reclaimed"), value: human(trashBytes) },
+      ];
+      confirmNote = tt("附件會逐一刪除，過程中可以中斷；已經刪掉的不會回來。", "Attachments are deleted one at a time; the run can be interrupted.");
+      confirmAction = tt("永久刪除", "Destroy all");
+      confirmGo = () => { this.setState({ trash: [], overlay: null }); this.push(tt("垃圾桶已清空", "Trash emptied")); };
+    } else if (ov && ov.type === "rmdir") {
+      const name = ov.name;
+      confirmTitle = tt("把「" + name + "」整棵移到垃圾桶？", "Move all of “" + name + "” to the trash?");
+      confirmSub = tt("這個資料夾裡還有東西。", "This folder is not empty.");
+      confirmRows = [
+        { label: tt("資料夾裡的項目", "Items inside"), value: String((FS[(s.cwd === "/" ? "" : s.cwd) + "/" + name] || []).length) },
+        { label: tt("端點", "Endpoint"), value: "DELETE /api/dir?recursive=true" },
+      ];
+      confirmNote = tt("SFTP 的 rmdir 仍然要求空目錄——整棵進垃圾桶只走這裡，因為這裡有人正在看對話框。", "SFTP's rmdir still demands an empty directory. Recursive trashing only happens here, because here somebody is looking at a dialog.");
+      confirmNoteColor = "var(--color-neutral-500)";
+      confirmAction = tt("移到垃圾桶", "Move to trash");
+      confirmGo = () => { this.setState({ overlay: null, selected: [] }); this.push(tt("「" + name + "」已移到垃圾桶", "Moved to trash"), true); };
+    }
+
+    const failing = s.integrity;
+    const tooSmall = s.vw < 1024 || s.vh < 640;
+
+    const stateList = [
+      ["login", tt("登入", "Sign in"), "ph ph-sign-in"],
+      ["browse", tt("瀏覽", "Browse"), "ph ph-folder-open"],
+      ["empty", tt("空目錄 · 加密說明", "Empty · explainer"), "ph ph-sparkle"],
+      ["upload", tt("上傳中（分塊）", "Uploading"), "ph ph-upload-simple"],
+      ["download", tt("下載 · 串流", "Downloading"), "ph ph-download-simple"],
+      ["rename", tt("行內重新命名", "Inline rename"), "ph ph-pencil-simple"],
+      ["newdir", tt("新增資料夾", "New folder"), "ph ph-folder-plus"],
+      ["trash", tt("垃圾桶", "Trash"), "ph ph-trash"],
+      ["conflict", tt("還原撞名", "Restore conflict"), "ph ph-copy"],
+      ["rmdir", tt("刪非空資料夾", "Delete non-empty"), "ph ph-warning"],
+      ["integrity", tt("完整性失敗", "Integrity failed"), "ph ph-shield-warning"],
+      ["uploadfail", tt("上傳失敗 · 已回滾", "Upload failed · rolled back"), "ph ph-cloud-slash"],
+      ["throttled", tt("批次刪除撞 429", "Batch delete throttled"), "ph ph-gauge"],
+      ["search", tt("全域搜尋", "Global search"), "ph ph-magnifying-glass"],
+      ["expired", tt("連線到期", "Session expired"), "ph ph-lock-key"],
+      ["locked", tt("429 登入鎖定", "429 locked"), "ph ph-hand-palm"],
+      ["busy", tt("503 排隊已滿", "503 queue full"), "ph ph-hourglass-high"],
+    ];
+    const activeState = s.view === "login" ? (s.loginErr === "locked" ? "locked" : s.loginErr === "busy" ? "busy" : "login")
+      : s.expired ? "expired"
+      : s.view === "trash" ? (ov && ov.type === "conflict" ? "conflict" : "trash")
+      : s.view === "search" ? "search"
+      : ov && ov.type === "rmdir" ? "rmdir"
+      : s.integrity ? "integrity"
+      : s.uploadfail ? "uploadfail"
+      : s.purging ? "throttled"
+      : s.editing && s.editing === "__new__" ? "newdir"
+      : s.editing ? "rename"
+      : s.transfers.some((u) => u.dirn === "down" && u.sent < u.size) ? "download"
+      : s.transfers.length ? "upload"
+      : this.entries().length === 0 ? "empty" : "browse";
+
+    return {
+      rootRef: (this._root = this._root || React.createRef()),
+      screenLabel: activeState,
+      titlePath: s.view === "trash" ? tt("垃圾桶", "Trash") : s.view === "search" ? tt("搜尋", "Search") : s.cwd,
+      cwd: s.cwd,
+      langLabel: zh ? "中文" : "EN",
+      layoutIcon: three ? "ph ph-sidebar-simple" : "ph ph-rows",
+      layoutLabel: three ? tt("三欄", "3-pane") : tt("密集", "Dense"),
+      toggleLang: () => this.setState({ lang: zh ? "en" : "zh" }),
+      toggleLayout: () => this.setState({ layout: three ? "dense" : "three" }),
+
+      colName: tt("名稱", "Name"),
+      colTime: s.view === "search" ? tt("位置", "Location") : tt("修改時間", "Modified"),
+      colKind: tt("種類", "Kind"),
+
+      crumbs: crumbs.map((c, i) => ({
+        name: c.name, go: () => this.nav(c.path),
+        bg: i === crumbs.length - 1 ? "color-mix(in srgb, var(--color-text) 7%, transparent)" : "transparent",
+        color: i === crumbs.length - 1 ? "var(--color-text)" : "var(--color-neutral-500)",
+        weight: i === crumbs.length - 1 ? "500" : "400",
+        sep: i === crumbs.length - 1 ? NONE : "block",
+      })),
+      goBack: () => this.nav(s.cwd === "/" ? "/" : s.cwd.slice(0, s.cwd.lastIndexOf("/")) || "/"),
+      goFwd: () => null,
+      goUp: () => this.nav(s.cwd.slice(0, s.cwd.lastIndexOf("/")) || "/"),
+      openSearch: () => this.setState({ view: "search", selected: [] }),
+
+      listBg: s.display === "list" ? "color-mix(in srgb, var(--color-accent) 16%, transparent)" : "transparent",
+      listFg: s.display === "list" ? "var(--color-accent)" : "var(--color-neutral-500)",
+      gridBg: s.display === "grid" ? "color-mix(in srgb, var(--color-accent) 16%, transparent)" : "transparent",
+      gridFg: s.display === "grid" ? "var(--color-accent)" : "var(--color-neutral-500)",
+      setList: () => this.setState({ display: "list" }),
+      setGrid: () => this.setState({ display: "grid" }),
+      newFolder: () => this.setState({ view: "browse", editing: "__new__", editValue: "", selected: [] }),
+      pickUpload: () => this.startUploads([["dataset-2026-08.tar.gz", 1610612736], ["notes.md", 6120]]),
+
+      sidebarShow: three ? FLEX : NONE,
+      detailsShow: three && s.view !== "trash" ? FLEX : NONE,
+      inspectorShow: !three && one ? FLEX : NONE,
+      annShow: three && (this.props.showAnnotations ?? true) ? "block" : NONE,
+
+      tree,
+      trashBg: s.view === "trash" ? "color-mix(in srgb, var(--color-accent) 16%, transparent)" : "transparent",
+      trashFg: s.view === "trash" ? "var(--color-text)" : "var(--color-neutral-400)",
+      trashIcon: s.view === "trash" ? "var(--color-accent)" : "var(--color-neutral-600)",
+      trashCount: s.trash.length ? String(s.trash.length) : "",
+      openTrash: () => this.setState({ view: "trash", selected: [], overlay: null }),
+
+      integrityShow: failing ? FLEX : NONE,
+      clearIntegrity: () => this.setState({ integrity: false }),
+      searchShow: s.view === "search" ? FLEX : NONE,
+
+      failShow: s.uploadfail ? FLEX : NONE,
+      clearFail: () => this.setState({ uploadfail: false }),
+      retryUpload: () => this.setState({ uploadfail: false, trayOpen: true, transfers: [{ id: "u1", name: "dataset.tar.gz", size: 1943862272, sent: 0, dirn: "up" }] }),
+
+      purgeShow: s.purging ? FLEX : NONE,
+      purgeCount: s.purging ? s.purging.done + " / " + s.purging.total : "",
+      purgePct: s.purging ? Math.round((s.purging.done / s.purging.total) * 100) : 0,
+      purge429: s.purging ? tt("已收到 " + s.purging.r429 + " 次 429", s.purging.r429 + "× 429") : "",
+      stopPurge: () => { const p = s.purging; this.setState({ purging: null }); this.push(tt("已中斷，剩下 " + (p.total - p.done) + " 個附件下次續跑", "Interrupted; " + (p.total - p.done) + " attachments left to resume")); },
+
+      isList: s.display === "list" && s.view !== "trash",
+      isGrid: s.display === "grid" && s.view !== "trash",
+      rows,
+      rowh: three ? 32 : 26,
+      emptyShow: s.view === "browse" && rows.length === 0 && s.editing !== "__new__" ? FLEX : NONE,
+
+      trashToolShow: s.view === "trash" ? FLEX : NONE,
+      trashRows,
+
+      editNewShow: s.editing === "__new__" ? GRID : NONE,
+      editValue: s.editValue,
+      onEditChange: (e) => this.setState({ editValue: e.target.value }),
+      onEditKey: (e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") this.setState({ editing: null }); },
+      commitEdit: () => {
+        const v = s.editValue.trim();
+        if (s.editing === "__new__") {
+          this.setState({ editing: null });
+          if (v) this.push(tt("已建立資料夾 " + v, "Created " + v));
+        } else if (s.editing) {
+          this.setState({ editing: null });
+          if (v && v !== s.editing) this.push(tt("已改名為 " + v + "（rename 不覆蓋既有檔案）", "Renamed to " + v));
+        }
+      },
+
+      selName: one ? one.name : "",
+      selPath: one ? (s.cwd === "/" ? "/" : s.cwd) + (s.cwd === "/" ? "" : "/") + one.name : "",
+      selIcon: k1 ? k1[2] : "ph ph-file",
+      selIconColor: one && one.is_dir ? "var(--color-accent)" : "var(--color-neutral-500)",
+      selKind: k1 ? (zh ? k1[0] : k1[1]) : "",
+      selSize: one ? (one.is_dir ? "—" : human(one.size)) : "",
+      selSizeExact: one ? (one.is_dir ? "—" : human(one.size) + "  (" + one.size.toLocaleString("en-US") + " B)") : "",
+      selChunks: one && !one.is_dir ? chunksOf(one.size) + " chunks" : "",
+      selChunkN: one && !one.is_dir ? String(chunksOf(one.size)) : "—",
+      selAttach: one && !one.is_dir ? chunksOf(one.size) + " att." : "",
+      selAttachN: one && !one.is_dir ? String(chunksOf(one.size)) : "—",
+      selTag: "3",
+      selTime: one ? stamp(one.modified_at) : "",
+      selPerm: one ? "0" + (one.permissions || 0).toString(8) : "",
+      selVerifyIcon: oneFailed ? "ph ph-shield-warning" : "ph ph-shield-check",
+      selVerifyColor: oneFailed ? "var(--integrity)" : "var(--color-accent-400)",
+      selVerifyBg: oneFailed ? "color-mix(in srgb, var(--integrity) 10%, transparent)" : "var(--color-bg)",
+      selVerifyText: oneFailed ? tt("完整性驗證失敗", "Integrity check failed") : tt("標籤已驗證", "Tag verified"),
+      selVerifyNote: oneFailed
+        ? tt("認證標籤與內容對不上，沒有回傳任何位元組。", "The tag does not match the content; no bytes were returned.")
+        : tt("每塊的 HMAC、有序的分塊清單、檔名與所在目錄都涵蓋在標籤裡（tag v3，含垃圾桶狀態）。權限位與時間戳刻意不在裡面。", "Per-chunk HMACs, the ordered chunk list, the filename and its parent are all covered (tag v3, including trashed state). Permission bits and timestamps are deliberately outside it."),
+      detailShow: one ? FLEX : NONE,
+      detailEmptyShow: !one && !multi ? FLEX : NONE,
+      detailMultiShow: multi ? FLEX : NONE,
+      folderSummary: this.entries().length + " " + tt("個項目", "items") + " · " + human(totalBytes),
+      multiTitle: tt("選取了 " + sel.length + " 個項目", sel.length + " items selected"),
+      multiSize: human(multiBytes),
+      multiChunks: String(sel.reduce((n, name) => { const e = list.find((x) => x.name === name); return n + (e && !e.is_dir ? chunksOf(e.size) : 0); }, 0)),
+      startDownload: () => one && this.setState({ transfers: s.transfers.concat([{ id: "d" + Date.now(), name: one.name, size: one.size, sent: 0, dirn: "down" }]), trayOpen: true }),
+      startRename: () => one && this.setState({ editing: one.name, editValue: one.name }),
+      askDelete: () => {
+        const target = sel[0];
+        const e = list.find((x) => x.name === target);
+        if (e && e.is_dir && (FS[(s.cwd === "/" ? "" : s.cwd) + "/" + target] || []).length) {
+          this.setState({ overlay: { type: "rmdir", name: target } });
+        } else {
+          this.setState({ selected: [] });
+          this.push(tt(sel.length > 1 ? sel.length + " 個項目已移到垃圾桶" : "「" + target + "」已移到垃圾桶", "Moved to trash"), true);
+        }
+      },
+
+      dragShow: s.dragging ? GRID : NONE,
+      onDragOver: (e) => { e.preventDefault(); if (!s.dragging) this.setState({ dragging: true }); },
+      onDragLeave: (e) => { if (e.currentTarget === e.target) this.setState({ dragging: false }); },
+      onDrop: (e) => { e.preventDefault(); this.startUploads([["dropped-video.mov", 2952790016], ["cover.png", 4718592]]); },
+
+      trayShow: s.trayOpen && s.transfers.length ? FLEX : NONE,
+      clearTray: () => this.setState({ trayOpen: false, transfers: [] }),
+      trayMeta: s.transfers.filter((u) => u.sent < u.size).length + "/" + s.transfers.length,
+      transfers: s.transfers.map((u) => ({
+        name: u.name,
+        dirIcon: u.dirn === "up" ? "ph ph-arrow-up" : "ph ph-arrow-down",
+        pct: Math.round((u.sent / u.size) * 100),
+        pctText: u.sent >= u.size ? tt("完成", "done") : Math.round((u.sent / u.size) * 100) + "%",
+        chunkText: tt("分塊 ", "chunk ") + Math.min(chunksOf(u.size), Math.ceil(u.sent / CHUNK) || 1) + " / " + chunksOf(u.size),
+        sizeText: human(u.sent) + " / " + human(u.size),
+        rate: u.sent >= u.size ? "" : (u.dirn === "up" ? "2.6 MiB/s" : "5.2 MiB/s"),
+      })),
+
+      statusLeft: s.view === "trash"
+        ? tt("垃圾桶 · " + s.trash.length + " 個項目 · " + human(trashBytes) + " · 保留 30 天", "Trash · " + s.trash.length + " items · " + human(trashBytes) + " · 30-day retention")
+        : s.view === "search"
+        ? tt(SEARCH_HITS.length + " 個結果 · 需要新端點", SEARCH_HITS.length + " results · needs a new endpoint")
+        : this.entries().length + " " + tt("個項目", "items") + " · " + human(totalBytes) + (sel.length ? "  ·  " + tt("已選 " + sel.length, sel.length + " selected") : ""),
+      statusVerify: failing ? tt("1 項驗證失敗", "1 failed") : tt("全部已驗證 tag v3", "all verified · tag v3"),
+      statusVerifyIcon: failing ? "ph ph-shield-warning" : "ph ph-shield-check",
+      statusVerifyColor: failing ? "var(--integrity)" : "var(--color-neutral-500)",
+      keyFp: "263b89",
+      sessionText: mmss(s.idle) + " / " + clock(s.left),
+      idleColor: s.idle < 120 ? "var(--warn)" : "var(--color-neutral-500)",
+
+      toastShow: s.toast ? FLEX : NONE,
+      toastText: s.toast ? s.toast.text : "",
+      undoShow: s.toast && s.toast.undo ? "inline" : NONE,
+      undoLabel: tt("復原", "Undo"),
+      undoToast: () => { this.setState({ toast: null }); this.push(tt("已復原", "Undone")); },
+
+      loginShow: s.view === "login" ? GRID : NONE,
+      loginUser: s.loginUser,
+      loginPass: s.loginPass,
+      onLoginUser: (e) => this.setState({ loginUser: e.target.value }),
+      onLoginPass: (e) => this.setState({ loginPass: e.target.value }),
+      ttls: [[120, tt("2 分鐘", "2 min")], [300, tt("5 分鐘", "5 min")], [600, tt("10 分鐘（上限）", "10 min (max)")]].map(([v, label]) => ({
+        label,
+        pick: () => this.setState({ ttl: v }),
+        bg: s.ttl === v ? "color-mix(in srgb, var(--color-accent) 14%, transparent)" : "transparent",
+        border: s.ttl === v ? "var(--color-accent)" : "var(--color-divider)",
+        color: s.ttl === v ? "var(--color-accent-200)" : "var(--color-neutral-400)",
+      })),
+      loginErrShow: s.loginErr ? FLEX : NONE,
+      loginErrBg: s.loginErr === "busy" ? "color-mix(in srgb, var(--warn) 8%, transparent)" : "color-mix(in srgb, var(--integrity) 8%, transparent)",
+      loginErrBorder: s.loginErr === "busy" ? "color-mix(in srgb, var(--warn) 40%, transparent)" : "color-mix(in srgb, var(--integrity) 40%, transparent)",
+      loginErrColor: s.loginErr === "busy" ? "var(--warn)" : "var(--integrity)",
+      loginErrIcon: s.loginErr === "locked" ? "ph ph-hand-palm" : s.loginErr === "busy" ? "ph ph-hourglass-high" : "ph ph-x-circle",
+      loginErrTitle: s.loginErr === "locked" ? tt("429 · 這個來源暫時被鎖住", "429 · this source is locked out")
+        : s.loginErr === "busy" ? tt("503 · 登入排隊已滿", "503 · the sign-in queue is full")
+        : tt("401 · 使用者名稱或密碼錯誤", "401 · wrong username or password"),
+      loginErrBody: s.loginErr === "locked"
+        ? tt("鎖定的鍵是（來源位址＋裝置 id），永遠不鎖帳號——只有一個帳號，鎖帳號等於誰打錯幾次就能把擁有者關在門外。Retry-After " + s.retry + " 秒。", "The lock is keyed on (source address + device id) and never on the account: with one account, locking it means anybody can shut the owner out. Retry-After " + s.retry + "s.")
+        : s.loginErr === "busy"
+        ? tt("一次登入要跑兩輪 Argon2id，各 64 MiB。超過佇列深度直接回 503 而不是繼續排——無上限的佇列是同一個故障多繞幾步。Retry-After 5 秒。", "One sign-in runs two rounds of Argon2id at 64 MiB each. Past the queue depth the server refuses rather than queueing further — an unbounded queue is the same failure with extra steps. Retry-After 5s.")
+        : tt("伺服器不會說是哪一半錯了。帳號不存在時照樣跑一次假驗證，時間看起來一樣。", "The server will not say which half was wrong. A missing account still runs a dummy verification, so the timing looks the same."),
+      doLogin: () => this.setState({ view: "browse", cwd: "/專案/2026", expired: false, loginErr: null, overlay: null, editing: null, toast: null, idle: s.ttl, left: 7200, selected: [] }),
+      showLocked: () => this.setState({ loginErr: "locked" }),
+      showBusy: () => this.setState({ loginErr: "busy" }),
+      showWrong: () => this.setState({ loginErr: "wrong" }),
+
+      conflictShow: cItem ? GRID : NONE,
+      conflictName: cItem ? cItem.name : "",
+      conflictDir: cItem ? cItem.original_path.slice(0, cItem.original_path.lastIndexOf("/")) || "/" : "",
+      cmpA1: cItem ? human(cItem.size) : "",
+      cmpA2: cItem ? stamp(cItem.modified_at).slice(0, 10) : "",
+      cmpA3: cItem ? stamp(cItem.trashed_at).slice(0, 10) : "",
+      cmpB1: human(2411724),
+      cmpB2: "2026-08-02",
+      choices: !cItem ? [] : [
+        { icon: "ph ph-swap", title: tt("取代目的地的檔案", "Replace the file at the destination"), note: tt("目前那一份會被移到垃圾桶，不會直接消失，之後仍可還原。", "The copy sitting there moves to the trash instead of vanishing — having a trash and still losing something for ever makes no sense."), pick: () => this.resolve(cItem, tt("已還原 " + cItem.name + "，原本在那裡的檔案移到了垃圾桶", "Restored; the old copy went to the trash")) },
+        { icon: "ph ph-arrow-u-up-left", title: tt("略過這個檔案", "Skip this one"), note: tt("什麼都不做，被刪除的那一份繼續留在垃圾桶裡。", "Nothing happens; the deleted copy stays in the trash."), pick: () => this.setState({ overlay: null, toast: { text: tt("已略過，" + cItem.name + " 仍留在垃圾桶裡", "Skipped") } }) },
+        { icon: "ph ph-copy", title: tt("兩個都保留", "Keep both"), note: tt("還原成 " + suffixed(cItem.name) + "。", "Restored as " + suffixed(cItem.name) + "."), pick: () => this.resolve(cItem, tt("已還原為 " + suffixed(cItem.name), "Restored as " + suffixed(cItem.name))) },
+      ],
+
+      confirmShow: pItem || (ov && (ov.type === "empty" || ov.type === "rmdir")) ? GRID : NONE,
+      confirmTitle, confirmSub, confirmRows, confirmNote, confirmAction, confirmNoteColor, confirmGo,
+      askEmpty: () => this.setState({ overlay: { type: "empty" } }),
+      closeOverlay: () => this.setState({ overlay: null }),
+
+      expiredShow: s.expired ? GRID : NONE,
+      toLogin: () => this.setState({ view: "login", expired: false, loginErr: null }),
+
+      tooSmallShow: tooSmall ? GRID : NONE,
+      vpText: s.vw + " × " + s.vh + "  ·  min 1024 × 640",
+
+      railShow: s.rail ? FLEX : NONE,
+      railBtnShow: s.rail ? NONE : GRID,
+      hideRail: () => this.setState({ rail: false }),
+      showRail: () => this.setState({ rail: true }),
+      states: stateList.map(([id, label, icon]) => ({
+        label, icon,
+        bg: activeState === id ? "color-mix(in srgb, var(--color-accent) 18%, transparent)" : "transparent",
+        color: activeState === id ? "var(--color-accent-200)" : "var(--color-neutral-500)",
+        go: () => this.goState(id),
+      })),
+    };
+  }
+
+  resolve = (item, text) => {
+    this.setState({ trash: this.state.trash.filter((t) => t.id !== item.id), overlay: null, toast: { text } });
+  };
+
+  goState = (id) => {
+    const base = { overlay: null, editing: null, expired: false, integrity: false, uploadfail: false, purging: null, toast: null, loginErr: null, dragging: false, transfers: [], trayOpen: false };
+    const M = {
+      login: { ...base, view: "login" },
+      browse: { ...base, view: "browse", cwd: "/專案/2026", selected: ["報告.pdf"], transfers: [], trayOpen: false },
+      empty: { ...base, view: "browse", cwd: "/專案/2026/草稿", selected: [], transfers: [], trayOpen: false },
+      upload: { ...base, view: "browse", cwd: "/專案/2026", selected: [], trayOpen: true, transfers: [{ id: "u1", name: "dataset.tar.gz", size: 1943862272, sent: 402653184, dirn: "up" }, { id: "u2", name: "cover.png", size: 4718592, sent: 1048576, dirn: "up" }] },
+      download: { ...base, view: "browse", cwd: "/專案/備份", selected: [], trayOpen: true, transfers: [{ id: "d1", name: "mongo-2026-08-03.sql", size: 268435456, sent: 96468992, dirn: "down" }] },
+      rename: { ...base, view: "browse", cwd: "/專案/2026", selected: ["報告.pdf"], editing: "報告.pdf", editValue: "2026-Q3 報告.pdf", transfers: [], trayOpen: false },
+      newdir: { ...base, view: "browse", cwd: "/專案/2026", selected: [], editing: "__new__", editValue: "", transfers: [], trayOpen: false },
+      trash: { ...base, view: "trash", selected: [] },
+      conflict: { ...base, view: "trash", overlay: { type: "conflict", id: "n_7f21" } },
+      rmdir: { ...base, view: "browse", cwd: "/專案/2026", selected: ["交付"], overlay: { type: "rmdir", name: "交付" } },
+      integrity: { ...base, view: "browse", cwd: "/專案/2026", selected: ["報告.pdf"], integrity: true },
+      uploadfail: { ...base, view: "browse", cwd: "/專案/2026", selected: [], uploadfail: true },
+      throttled: { ...base, view: "trash", selected: [], purging: { done: 47, total: 120, r429: 7 } },
+      search: { ...base, view: "search", selected: [] },
+      expired: { ...base, view: "browse", cwd: "/專案/2026", expired: true, idle: 0 },
+      locked: { ...base, view: "login", loginErr: "locked" },
+      busy: { ...base, view: "login", loginErr: "busy" },
+    };
+    if (M[id]) this.setState(M[id]);
+  };
+}
+
+</script>
+</body>
+</html>
