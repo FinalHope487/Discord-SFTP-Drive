@@ -33,3 +33,9 @@ client/app/dist/
 # Packaged desktop apps. ~90 MB each; `npm run dist` in client/shell rebuilds
 # them, and a release belongs on a releases page rather than in the history.
 dist-desktop/
+
+# Developer mode: a second, throwaway stack (its own MongoDB volume, its own
+# master key, ports 2223/8081) used to exercise the UI against real
+# dependencies. Enabled when needed and deleted when not, so it stays out of
+# the history entirely -- see .env.dev, which `.env.*` above already covers.
+dev-stack/
