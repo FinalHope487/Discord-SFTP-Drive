@@ -15,6 +15,23 @@
 
 <!-- 格式：- [標記] 說明（可附上下文/來源 session） -->
 
+- [next] **五項只有真依賴才驗得了的東西，至今一項都沒驗過**（2026-08-06 從 `session-handoff.md`
+  移入——那個檔案每輪重寫，繼續留在那裡等於下一輪就消失）。共同點是 `tests/fakes.py` 自己
+  宣告了不模擬這些，所以**綠色的 515 項測試對這五項不構成證據**；`SOP.md` 那條推論已經
+  用垃圾桶索引示範過一次代價（測試綠了三天，服務起不來）。
+  - **用真密碼在 UI 上手動點一輪**。UI 那半目前只用 fakes 後端驗過。真密碼是主金鑰的包裝，
+    刻意不讓它進入對話或指令紀錄，**所以這一項只能由人自己在 `127.0.0.1:8080` 上點**，
+    不是可以委派的工作。
+  - **附件 URL 真的過期之後的重取路徑**。`FakeDiscord` 的 URL 不會過期，`_url_cache` 的
+    失效與重取分支從來沒對著真的過期跑過。
+  - **`_rollback()` 的保護在 HTTP 這個新呼叫點上真的有效**。它只刪這個 handle 建立的附件，
+    而「Discord 那側沒有殘留」目前是被相信而不是被證明——與下面「上傳失敗要回報三個數字」同源，
+    那條就是要把這件事變成可對帳的數字。
+  - **上傳中途斷線的清理路徑**（真的把連線砍掉，不是讓假件回傳例外）。
+  - **session 真的閒置到期**，而不是測試裡把時鐘往前撥。
+  **建議排在其餘 `[next]` 之前**：它最便宜（服務起著就能做），而後面每一條都還會再往真環境
+  寫入一次，先確認現況是乾淨的，比事後分辨「這是本來就壞的還是我剛弄壞的」便宜得多。
+
 - [next] **上傳失敗要回報三個數字**（2026-08-05 從 `client/backend-todo.md` 移入）。
   `PUT /api/file` 失敗時目前只回一個訊息。`_rollback()` 只刪這個 handle 建立的附件，
   而 HTTP 是新的呼叫點，所以「Discord 那側沒有殘留」這件事要能被證明而不是被相信：
@@ -31,6 +48,18 @@
   原型畫過這個狀態，這一版**沒有做進去**——沒有後端支撐的進度條是動畫，不是進度。
   多使用者第 4 步（刪帳號）會再掀出這一條。
 
+- [next] **`SFTP_PASSWORD` 走 docker secret**。**2026-08-02 拍板要做，排在 Client UI 之後**——
+  **那個前置條件已於 2026-08-05 解除**（六個步驟全部落地），所以 2026-08-06 從 `[later]` 提上來；
+  它從來不是還在評估，只是排序。現在它是明文環境變數，`docker inspect` 與
+  `/proc/<pid>/environ` 都看得到，等於把「讀得到容器設定」直接升級成「解得開所有資料」。
+  做法：compose 加 `secrets:`、`config.py` 支援 `*_FILE` 後綴。
+
+- [next] **重新產出 `BLUEPRINT.md`**。它以 `e288ff7` 為準，之後 H1 與 H2 都落地了，
+  §3 / §4 的 tag 涵蓋範圍與 `_rollback()` 行為都已不同，目前靠開頭橫幅與逐條註記撐著。
+  原本的條件是「等 Client UI 落地後再跑 `/blueprint`」——**條件已滿足**（2026-08-05），
+  2026-08-06 從 `[later]` 提上來。現在它還缺的是整個 HTTP 層、前端與桌面外殼。
+  **排在 docker secret 之後**：那條會動到 `config.py` 的設定載入路徑。
+
 - [later] **全包版 .exe：把後端也塞進去**（2026-08-05 列入，方案二）。
   這一輪選的是方案一：exe 只是視窗，後端仍是 `docker compose`。方案二是 PyInstaller 打包
   Python、換掉 MongoDB 改用內嵌資料庫，雙擊即用、不需要 Docker。
@@ -38,30 +67,6 @@
   塞進 app 之後那條邊界不存在；每台裝置各自一份資料互不相通；等於重寫儲存層。
   **要做的前提**是先想清楚「一台裝置一份資料」到底是不是想要的語意——如果是，那它其實是
   另一個產品，不是這個服務的打包方式。
-
-- [now] **Client UI**（2026-08-02 列入）。原本唯一的對外介面是 SFTP，`src/` 裡沒有 HTTP 層，
-  所以這不是「加一個前端」，是先長出一層 API。
-  - ~~1. `users` collection 與密碼雜湊~~ **已完成**（`src/users.py`）。Argon2id `PasswordHasher`，
-    與 `derive_kek` 各走各的；帳號不存在與帳號停用都照樣跑一次假驗證。
-  - ~~2. `keystore` 改 per-user~~ **已完成**。`adopt_legacy_record()` 只動 `id` 一個欄位、不重包。
-  - ~~3. root 改 per-user~~ **已完成**。`DiscordVFS(key, root_id)`，`root_id` 無預設值；
-    `extra_info` 改為帶 key／root_id／username 的 `users.Session`。
-  - ~~4. HTTP API 層~~ **已完成**（`src/web.py` / `websession.py` / `webauth.py`）。
-    `aiohttp` app 掛在 `main.py`，與 SFTP server 同 process、共用 `_node_versions`。
-  - ~~5. 前端~~ **已完成**（2026-08-05，`client/app/`）。Vite + React，由 `web.py` 的
-    static route 吐出來。同一輪加了 `GET /api/search`、`/api/session` 的雙期限與連線數、
-    `POST /api/sessions/revoke-others`，以及可辨識的 `integrity_failure` 錯誤碼。
-  - ~~6. 桌面外殼~~ **已完成**（2026-08-05，`client/shell/`）。Electron，產出可攜版與安裝檔
-    兩種 `.exe`。打包步驟在 `BUILD.md`。
-
-- [later] **重新產出 `BLUEPRINT.md`**。它以 `e288ff7` 為準，之後 H1 與 H2 都落地了，
-  §3 / §4 的 tag 涵蓋範圍與 `_rollback()` 行為都已不同，目前靠開頭橫幅與逐條註記撐著。
-  **等 Client UI 落地後再跑** `/blueprint`——UI 會動到認證、金鑰與樹根，現在重產出會立刻過期。
-
-- [later] **`SFTP_PASSWORD` 走 docker secret**。**2026-08-02 拍板要做，排在 Client UI 之後**；
-  維持 `[later]` 只是排序，不是還在評估。現在它是明文環境變數，`docker inspect` 與
-  `/proc/<pid>/environ` 都看得到，等於把「讀得到容器設定」直接升級成「解得開所有資料」。
-  做法：compose 加 `secrets:`、`config.py` 支援 `*_FILE` 後綴。
 
 - [later] **多使用者的第 4 步：真正開放第二個帳號**——管理 CLI、建帳號流程、per-user 配額。
   第 1～3 步已隨 Client UI 落地。方案見 `design-multi-user.md`，三個決策點已於 2026-08-02
@@ -325,6 +330,35 @@
 只記「日期 / 做了什麼 / 測試數」，加上不在別處的教訓。
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
+
+**2026-08-05 · 前端與桌面外殼（Client UI 第 5、6 步），以及垃圾桶索引的修正** — 515 項測試（+24），
+image 內同樣 515 過，**實地驗收：檔案操作矩陣 61 項全過**，另加雙 session 的一組與收尾對帳
+（`nodes=1 live=1 users=1 keystore=1 chunk_records=0`，前後一致），**已上線**。
+`client/app/`（Vite + React）、`client/shell/`（Electron）、`vfs.search()`、`web.py` 的 static route。
+- **起容器時就撞到一個真 bug：垃圾桶的部分唯一索引從 2026-08-03 到這天從來沒建成功過**，
+  伺服器根本起不來。文法限制與判別方式在 `SOP.md`，修法在上方決策。這裡只記時間軸：
+  **綠色的 491 項測試撐了三天，因為那三天沒有在真環境重啟過。**
+- **UI 那半刻意不用真密碼驗**——那組密碼是主金鑰的包裝，不該進入任何對話或指令紀錄。
+  改用 fakes 後端跑同一份 `dist/` 與同一份 `web.py`，雙連線的行為逐項驗過。
+  **代價是「用真密碼在 UI 上手動點一輪」至今沒做過**，見上方 `[next]` 的驗證缺口那一條。
+- **證明 exe 真的載到 SPA 的方法**：啟動後去 Electron 的 cache 裡撈一段只存在於我們 bundle 的
+  字串。與 2026-08-02 那條 keystore fingerprint 同類——**要驗的是「它有沒有載到我們的東西」，
+  不是「它有沒有畫出東西來」**，後者連載到一頁快取的舊版都會通過。
+- **`electron-builder` 的 `files` 白名單漏一個檔案就是打包後 crash**（`server-url.js` 漏過一次）。
+  本機 `npm start` 一切正常，因為那時讀的是原始目錄，不是 asar。加檔案後用
+  `npx @electron/asar list` 對一次。
+- 驗收抓到的兩個 bug 有同一個形狀，**都只在「第一次」或非典型輸入時發生，happy path 一次都碰不到**：
+  初次量測到的 `0 × 0` 被當成「視窗太小」而永久蓋上遮罩（之後不會再有 `resize` 事件來修正）；
+  伺服器位址的正規化把 `http://` 硬黏在前面，於是 `file:///etc/passwd` 變成一個 host 叫 `file`
+  的合法 origin。後者抽成 `server-url.js` 並補了測試。
+
+**2026-08-03 · 垃圾桶** — 491 項測試（+36），`TAG_VERSION` 2→3，附一支 `scripts/migrate_tag_v3.py`。
+`src/vfs.py` 的 `trash()` / 還原、`db.py` 的部分唯一索引、背景 sweeper、`DELETE /api/dir?recursive=true`。
+四條設計決策（標記在節點上並納入標籤／保留期 30 天由 sweeper 執行／`rm` 進垃圾桶而 `rmdir` 契約不變／
+還原撞名走 Windows 對話框行為）見上方，不複述。
+- **這一輪沒有實地驗收，也沒有在真環境重啟過。** 上面每一條變更紀錄都寫著「實地驗收 N/N」，
+  唯獨這一輪沒有——而那個空白正好就是後果：一個 MongoDB 會直接拒絕的 `partialFilterExpression`
+  就這樣上線，兩天後才在 2026-08-05 起容器時炸出來。**這一條補記於 2026-08-06。**
 
 **2026-08-02 · HTTP API 層（Client UI 第 4 步）** — 455 項測試（+59），突變 15/15，
 image 內同樣 455 過，**實地驗收 25/25，已上線**。`src/web.py`、`websession.py`、`webauth.py`。
