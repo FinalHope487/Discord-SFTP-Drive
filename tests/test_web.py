@@ -809,3 +809,100 @@ async def test_an_unbuilt_client_says_so_instead_of_crashing(
         assert (await c.get("/api/health")).status == 200
     finally:
         await c.close()
+
+
+# ------------------------------------------- what a failed upload reports back
+
+
+async def test_a_failed_upload_reports_the_three_numbers(client, fake_discord):
+    """The shape the client needs in order to say the right thing.
+
+    `_rollback()` deletes only what the handle uploaded, so "nothing is left on
+    Discord" has to be evidenced rather than asserted -- HTTP is a newer caller
+    than that rule, which is the whole reason this endpoint reports counts.
+    """
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    fake_discord.fail_uploads_from = 2
+    data = os.urandom(TEST_CHUNK_SIZE * 2)
+
+    response = await client.put("/api/file?path=/doomed.bin", data=data,
+                                headers=headers)
+    assert response.status == 500
+    body = await response.json()
+
+    assert body["error"] == "upload_failed"
+    assert body["code"] == "upload_failed"
+    assert body["chunks_uploaded"] == 1
+    assert body["attachments_released"] == 1
+    assert body["orphans"] == 0
+    assert body["detail"], "the underlying failure should still be readable"
+
+    # And the claim the numbers are making is true.
+    assert fake_discord.store == {}
+    assert (await client.get("/api/stat?path=/doomed.bin")).status == 404
+
+
+async def test_an_upload_that_orphans_a_chunk_says_so(client, fake_discord):
+    """`orphans != 0` is the reconcile-by-hand case, not the retry case."""
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    fake_discord.fail_uploads_from = 2
+    fake_discord.fail_deletes = True
+
+    response = await client.put("/api/file?path=/doomed.bin",
+                                data=os.urandom(TEST_CHUNK_SIZE * 2),
+                                headers=headers)
+    assert response.status == 500
+    body = await response.json()
+
+    assert body["chunks_uploaded"] == 1
+    assert body["attachments_released"] == 0
+    assert body["orphans"] == 1
+    assert len(fake_discord.store) == 1, "the orphan is genuinely still up there"
+
+
+async def test_a_name_conflict_is_still_a_409_and_not_an_upload_failure(client):
+    """Errors that already mean something keep their meaning.
+
+    Flattening every write failure into `upload_failed` would take the one
+    distinction the client acts on and throw it away.
+    """
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    assert (await client.post("/api/dir", json={"path": "/adir"},
+                              headers=headers)).status == 201
+
+    response = await client.put("/api/file?path=/adir", data=b"x", headers=headers)
+    assert response.status != 500, await response.text()
+    assert (await response.json()).get("code") != "upload_failed"
+
+
+async def test_a_failed_upload_that_leaves_a_stale_row_says_so(client, fake_discord,
+                                                              fake_db):
+    """`stale_node` is the one the user meets in the listing.
+
+    An orphan is invisible to them -- it sits on Discord referenced by
+    nothing. A stale row is a file that appears, at full size, and fails on
+    the first read, so telling them the upload simply did not happen is worse
+    than saying nothing.
+    """
+    payload = await sign_in(client)
+    headers = csrf(payload)
+
+    fake_discord.fail_uploads_from = 2
+    fake_db.nodes.fail_deletes = True
+
+    response = await client.put("/api/file?path=/doomed.bin",
+                                data=os.urandom(TEST_CHUNK_SIZE * 2),
+                                headers=headers)
+    assert response.status == 500
+    body = await response.json()
+
+    assert body["code"] == "upload_failed"
+    assert body["stale_node"] is True
+    assert body["orphans"] == 0
+    assert body["attachments_released"] == 1

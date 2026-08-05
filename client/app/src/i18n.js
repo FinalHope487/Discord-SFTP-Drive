@@ -198,6 +198,22 @@ const DICT = {
     "error.rateLimited": "伺服器暫時忙不過來，稍後再試。",
     "error.dismiss": "關閉",
 
+    "upload.failed.title": "上傳沒有完成",
+    "upload.failed.short": "沒有完成",
+    "upload.failed.reclaimed":
+      "已經送上 Discord 的分塊都收回來了，這個檔案不存在，可以直接重試。",
+    "upload.failed.orphaned":
+      "有分塊留在 Discord 上而且刪不掉。這個檔案不存在，但那些分塊也沒有任何東西指向它們。",
+    "upload.failed.uploaded": "送上 Discord 的分塊",
+    "upload.failed.released": "已收回",
+    "upload.failed.orphans": "收不回來",
+    "upload.failed.note":
+      "這一項要人去對帳，不是按重試就好——重試會再上傳一份，不會把先前那份收回來。",
+    "upload.failed.stale":
+      "伺服器收回了 Discord 上的分塊，卻沒能把這個檔案的紀錄刪掉。清單上會看到它、大小看起來正常，但一讀就會失敗。",
+    "upload.failed.staleNote":
+      "先把清單上那個項目刪掉，再重新上傳。直接重試會在一個讀不出來的項目旁邊多放一份。",
+
     "act.logout": "登出",
     "act.language": "語言",
     "act.copyPath": "複製路徑",
@@ -401,6 +417,22 @@ const DICT = {
       "That is gone — another connection may have moved or deleted it.",
     "error.rateLimited": "The server is busy; try again shortly.",
     "error.dismiss": "Dismiss",
+
+    "upload.failed.title": "The upload did not finish",
+    "upload.failed.short": "Did not finish",
+    "upload.failed.reclaimed":
+      "Every chunk that reached Discord was taken back again. The file is not there; trying again is fine.",
+    "upload.failed.orphaned":
+      "Chunks were left on Discord and could not be deleted. The file is not there, and nothing points at those chunks either.",
+    "upload.failed.uploaded": "Chunks that reached Discord",
+    "upload.failed.released": "Taken back",
+    "upload.failed.orphans": "Could not be taken back",
+    "upload.failed.note":
+      "This one needs reconciling by hand rather than a retry — retrying uploads a second copy, it does not reclaim the first.",
+    "upload.failed.stale":
+      "The chunks were taken back off Discord, but the file's record could not be removed. It will be listed, at what looks like a normal size, and fail on the first read.",
+    "upload.failed.staleNote":
+      "Delete that entry from the listing first, then upload again. Retrying straight away leaves a second copy next to an unreadable one.",
 
     "act.logout": "Sign out",
     "act.language": "Language",

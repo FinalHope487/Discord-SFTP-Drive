@@ -352,6 +352,68 @@ export function ErrorDialog({ t, error, onClose }) {
   );
 }
 
+/* ----------------------------------------------------------- upload failed */
+
+/**
+ * A write that did not finish, reported as what it left behind.
+ *
+ * The three numbers come from the server; none of them is inferred here. The
+ * only decision this component makes is which of two things to say, and it
+ * makes it on `orphans` alone:
+ *
+ *   orphans === 0  the unwind reclaimed everything it had uploaded, so the
+ *                  file simply is not there and trying again is reasonable.
+ *   orphans !== 0  chunks are on Discord that nothing references and nothing
+ *                  will collect. Retrying uploads a second copy instead of
+ *                  reclaiming the first, so this asks for a person rather
+ *                  than offering a button.
+ */
+export function UploadFailedDialog({ t, error, onClose }) {
+  const orphans = error.orphans;
+  const stale = error.staleNode;
+  const body = error.body || {};
+
+  // Order matters: a stale row is what the user will actually run into, since
+  // it is the one that shows up in the listing looking like a working file.
+  const summary = stale
+    ? t("upload.failed.stale")
+    : orphans
+      ? t("upload.failed.orphaned")
+      : t("upload.failed.reclaimed");
+
+  return (
+    <Scrim onClose={onClose}>
+      <h2>{t("upload.failed.title")}</h2>
+      <div className="sub">{summary}</div>
+      <div className="factbox">
+        <div>{t("upload.failed.uploaded")}</div>
+        <div>{Number(body.chunks_uploaded) || 0}</div>
+        <div>{t("upload.failed.released")}</div>
+        <div>{Number(body.attachments_released) || 0}</div>
+        <div>{t("upload.failed.orphans")}</div>
+        <div style={{ color: orphans ? "var(--integrity)" : undefined }}>{orphans}</div>
+        {body.detail ? (
+          <>
+            <div>detail</div>
+            <div style={{ wordBreak: "break-all" }}>{body.detail}</div>
+          </>
+        ) : null}
+      </div>
+      {orphans || stale ? (
+        <div style={{ display: "flex", gap: 8, fontSize: 11.5, lineHeight: 1.5, color: "var(--warn)" }}>
+          <Icon name="warning" size={14} style={{ marginTop: 2 }} />
+          <span>{stale ? t("upload.failed.staleNote") : t("upload.failed.note")}</span>
+        </div>
+      ) : null}
+      <div className="actions">
+        <button className="btn btn-primary" onClick={onClose}>
+          {t("error.dismiss")}
+        </button>
+      </div>
+    </Scrim>
+  );
+}
+
 /* ----------------------------------------------------------------- expired */
 
 /**

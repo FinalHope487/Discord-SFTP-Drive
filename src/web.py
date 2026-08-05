@@ -465,6 +465,7 @@ async def upload(request):
     handle = await session.vfs.open(path, read=False, write=True, create=True,
                                     truncate=True)
     offset = 0
+    failure = None
     try:
         while True:
             data = await request.content.read(STREAM_CHUNK)
@@ -472,14 +473,60 @@ async def upload(request):
                 break
             await handle.write_at(offset, data)
             offset += len(data)
+    except Exception as exc:
+        # Held rather than raised, so the close below still runs and its own
+        # outcome can be folded in before anything is reported.
+        failure = exc
     finally:
         # Always. Buffered bytes only reach Discord on close, so skipping this
         # on the error path would drop the tail of every interrupted upload --
         # the same bug the SFTP shutdown drain exists to avoid.
-        await handle.close()
+        try:
+            await handle.close()
+        except Exception as exc:
+            # A flush that fails is still this upload failing. An earlier
+            # failure is the more informative of the two, so it keeps its place.
+            failure = exc if failure is None else failure
+
+    if failure is not None:
+        raise _upload_failed(failure, handle)
 
     node = await session.vfs.require_node(path)
     return web.json_response({"path": path, **_entry(node)}, status=201)
+
+
+def _upload_failed(exc: Exception, handle) -> BaseException:
+    """Turn a failed upload into three numbers somebody can act on.
+
+    `DiscordFile._rollback()` only ever deletes attachments the handle itself
+    created, and deliberately so. That makes "nothing was left behind on
+    Discord" a claim, and HTTP is a newer caller than the rule is -- so the
+    claim is reported as evidence rather than taken on trust.
+
+    `orphans` is the only one that needs a person: it counts chunks that
+    reached Discord and could not be deleted again, so they are referenced by
+    nothing and will not be cleaned up by anything. Retrying the upload does
+    not remove them.
+
+    Failures that already mean something keep their meaning. A 409 for a name
+    already in use, or a tampered-file 500, are not upload failures, and
+    flattening them into one would throw away the distinction the client acts
+    on.
+    """
+    if isinstance(exc, (VFSError, IntegrityError, web.HTTPException)):
+        return exc
+
+    tally = handle.failure_tally
+    logger.warning(
+        "Upload failed: chunks_uploaded=%s attachments_released=%s orphans=%s "
+        "stale_node=%s",
+        tally["chunks_uploaded"], tally["attachments_released"], tally["orphans"],
+        tally["stale_node"], exc_info=exc)
+    # `error` carries the token the shape was specified with; `code` carries it
+    # again so the client can discriminate the same way it does for
+    # `integrity_failure` rather than by matching on prose.
+    return _error(500, "upload_failed", code="upload_failed",
+                  detail=str(exc) or exc.__class__.__name__, **tally)
 
 
 async def remove_file(request):

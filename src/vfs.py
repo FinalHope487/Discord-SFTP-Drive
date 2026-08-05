@@ -246,6 +246,20 @@ class DiscordFile:
         self._closed = False
         self._failed = False
 
+        # What this handle put on Discord and what it managed to take back.
+        # Kept as a running tally rather than reconstructed after the fact
+        # because the only moment anybody knows whether a delete worked is the
+        # moment it is attempted -- `_safe_delete_message` swallows the failure
+        # by design, and a swallowed failure is exactly what an orphan is.
+        self._chunks_uploaded = 0
+        self._attachments_released = 0
+        self._orphans = 0
+        # Whether the unwind managed to remove the node it had created.
+        # `None` means it never needed to. `False` is the state nobody should
+        # have to discover by opening the file: the row survives, pointing at
+        # attachments the unwind has already deleted.
+        self._node_removed = None
+
         # An mtime the client asked for on this handle, still unspent. See
         # `_effective_mtime`.
         self._pinned_mtime = None
@@ -575,8 +589,11 @@ class DiscordFile:
         try:
             message_id, _url, _size = await discord_api.upload_chunk(ciphertext, filename)
         except Exception:
+            # Nothing reached Discord, so there is nothing of this chunk's to
+            # reclaim; the tally stays honest by not counting it.
             await self._rollback()
             raise
+        self._chunks_uploaded += 1
 
         chunk = {
             "index": index,
@@ -596,7 +613,7 @@ class DiscordFile:
         except Exception:
             # The attachment exists but nothing references it — drop it before
             # unwinding so it does not become an orphan.
-            await _safe_delete_message(message_id)
+            self._tally_delete(await _safe_delete_message(message_id))
             self._node["chunks"].pop()
             self._node["size"] = previous_size
             await self._rollback()
@@ -637,7 +654,7 @@ class DiscordFile:
             return
 
         for chunk in self._node.get("chunks", []):
-            await _safe_delete_message(chunk["message_id"])
+            self._tally_delete(await _safe_delete_message(chunk["message_id"]))
 
         self._node["chunks"] = []
         self._node["size"] = 0
@@ -645,10 +662,54 @@ class DiscordFile:
         try:
             await db.get_db().nodes.delete_one({"id": self._node["id"]})
             _node_versions.pop(self._node["id"], None)
+            self._node_removed = True
         except Exception:
+            # Still not fatal -- there is nothing better for an unwinding write
+            # to do -- but no longer only a log line. The attachments above are
+            # already gone, so a surviving row is a file that lists at its full
+            # size and fails on the first read. Whoever is told the upload
+            # failed has to be told that too, or "just try again" is advice
+            # that leaves an unreadable file sitting in the directory.
+            self._node_removed = False
             logger.exception("Rollback bookkeeping failed for node %s", self._node["id"])
 
         self._reindex()
+
+    def _tally_delete(self, released: bool):
+        if released:
+            self._attachments_released += 1
+        else:
+            self._orphans += 1
+
+    @property
+    def failure_tally(self) -> dict:
+        """What a failed write left behind, as three numbers.
+
+        `chunks_uploaded` counts the chunks this handle got onto Discord.
+        `attachments_released` counts the ones it then deleted.  `orphans`
+        counts the ones it tried to delete and could not, and is the only one
+        that means somebody has to go and look: everything else the unwind
+        already took care of.
+
+        The three do not have to add up. A handle that finished cleanly
+        reports its uploads with nothing released, and a handle that failed
+        over a file it did not create releases nothing on purpose -- those
+        chunks belong to the file's last good commit, and deleting them is the
+        bug this class's `_rollback` docstring exists to prevent.
+
+        `stale_node` is the fourth thing, and it is not a count. The unwind
+        deletes the attachments before it deletes the row, so a database that
+        goes away in between leaves a file that lists at full size and fails on
+        its first read. Found against a real stack by stopping MongoDB part way
+        through a 30 MiB upload: two chunks released from Discord, the row
+        still there, and the client cheerfully saying the file did not exist.
+        """
+        return {
+            "chunks_uploaded": self._chunks_uploaded,
+            "attachments_released": self._attachments_released,
+            "orphans": self._orphans,
+            "stale_node": self._node_removed is False,
+        }
 
     # -------------------------------------------------------------- resizing
 
@@ -723,11 +784,21 @@ class DiscordFile:
             await self._flush_buffer()
 
 
-async def _safe_delete_message(message_id: str):
+async def _safe_delete_message(message_id: str) -> bool:
+    """Delete an attachment, reporting whether it actually went away.
+
+    Failure stays non-fatal -- an unwinding write path has nothing better to
+    do than carry on -- but it is no longer silent to the caller. A delete
+    that fails here leaves a chunk on Discord that nothing references, and
+    the count of those is the one number a person has to act on rather than
+    retry past.
+    """
     try:
         await discord_api.delete_message(message_id)
+        return True
     except Exception:
         logger.warning("Could not delete Discord message %s", message_id, exc_info=True)
+        return False
 
 
 def _covered_end(node: dict) -> int:

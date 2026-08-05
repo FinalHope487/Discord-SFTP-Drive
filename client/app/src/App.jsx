@@ -10,6 +10,7 @@ import {
   PromptDialog,
   SessionsDialog,
   TooSmall,
+  UploadFailedDialog,
 } from "./Dialogs.jsx";
 import Login from "./Login.jsx";
 import {
@@ -136,6 +137,14 @@ export default function App() {
         detail: error.body.detail || "",
         at: Date.now(),
       });
+      return;
+    }
+
+    // A write that did not finish. The server says what it managed to take
+    // back, and that decides what to say: an upload that cleaned up after
+    // itself is worth retrying, one that could not is worth looking at.
+    if (error instanceof api.ApiError && error.isUploadFailed) {
+      setDialog({ type: "uploadfailed", error });
       return;
     }
 
@@ -381,13 +390,21 @@ export default function App() {
           );
         } catch (error) {
           const cancelled = error.name === "AbortError";
+          // `upload_failed` is the machine-readable token the endpoint is
+          // specified to return, and `message` falls back to it. Printing it
+          // in the transfer row would put a wire constant in front of a
+          // person; the dialog is where the three numbers get explained.
+          const shown =
+            error instanceof api.ApiError && error.isUploadFailed
+              ? t("upload.failed.short")
+              : error.message;
           setTransfers((current) =>
             current.map((item) =>
               item.id === id
                 ? {
                     ...item,
                     state: cancelled ? "cancelled" : "failed",
-                    error: cancelled ? "" : error.message,
+                    error: cancelled ? "" : shown,
                   }
                 : item,
             ),
@@ -397,7 +414,7 @@ export default function App() {
       }
       await refreshCurrent();
     },
-    [handle, refreshCurrent],
+    [handle, refreshCurrent, t],
   );
 
   const askUpload = useCallback(
@@ -928,6 +945,10 @@ export default function App() {
 
     if (dialog.type === "error") {
       return <ErrorDialog t={t} error={dialog.error} onClose={close} />;
+    }
+
+    if (dialog.type === "uploadfailed") {
+      return <UploadFailedDialog t={t} error={dialog.error} onClose={close} />;
     }
 
     if (dialog.type === "sessions") {

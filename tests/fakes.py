@@ -54,6 +54,8 @@ class FakeCollection:
         # creations. Lets a test drive the upgrade path MongoDB takes when an
         # index of the same shape already exists without `unique`.
         self.create_index_errors = []
+        # Makes `delete_one` raise. See the note there.
+        self.fail_deletes = False
         # Lets a test assert on database traffic directly -- e.g. that a
         # handle's cross-handle sync check skips the round trip when nothing
         # actually changed underneath it.
@@ -130,6 +132,11 @@ class FakeCollection:
         raise AssertionError(f"replace_one matched nothing: {flt}")
 
     async def delete_one(self, flt):
+        # A delete that raises is what a database going away mid-unwind looks
+        # like, and it is the one way a rollback can leave a node behind that
+        # points at attachments it has already deleted.
+        if self.fail_deletes:
+            raise DatabaseFailure(f"injected delete failure on {self.name}")
         for i, d in enumerate(self.docs):
             if _matches(d, flt):
                 del self.docs[i]
@@ -147,6 +154,11 @@ class FakeDB:
 
     async def command(self, *a, **k):
         return {"ok": 1}
+
+
+class DatabaseFailure(RuntimeError):
+    """MongoDB unreachable. Distinct from a Discord outage on purpose: the two
+    fail at different points of a write and leave different messes behind."""
 
 
 class DiscordFailure(RuntimeError):
@@ -182,6 +194,12 @@ class FakeDiscord:
         # `uploads` counts attempts, failed ones included, so it and this
         # threshold are on the same scale.
         self.fail_uploads_from = None
+        # Deletes that raise. An orphan is precisely a chunk that reached
+        # Discord and could not be deleted again, so a test cannot produce one
+        # without this: the unwind path swallows the delete failure on purpose,
+        # and what it swallows is exactly what `orphans` counts.
+        self.fail_deletes = False
+        self.delete_attempts = 0
 
     async def upload_chunk(self, data, filename):
         self.uploads += 1
@@ -204,6 +222,9 @@ class FakeDiscord:
         return await self.download_chunk(await self.get_attachment_url(message_id))
 
     async def delete_message(self, message_id):
+        self.delete_attempts += 1
+        if self.fail_deletes:
+            raise DiscordFailure(f"injected delete failure ({message_id})")
         self.deleted.append(message_id)
         self.store.pop(message_id, None)
 

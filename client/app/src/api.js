@@ -42,6 +42,35 @@ export class ApiError extends Error {
     return this.status === 429 || this.status === 503;
   }
 
+  // A write that did not finish. Distinguished by the same mechanism as an
+  // integrity failure and for the same reason: what the user should be told
+  // depends on `orphans`, and that is a number, not a turn of phrase.
+  get isUploadFailed() {
+    return this.code === "upload_failed";
+  }
+
+  /**
+   * Chunks that reached Discord and could not be deleted again.
+   *
+   * Non-zero means nothing is referencing them and nothing will collect them,
+   * so it is the one case where retrying is the wrong instinct -- a retry
+   * uploads a second copy rather than reclaiming the first.
+   */
+  get orphans() {
+    return Number(this.body.orphans) || 0;
+  }
+
+  /**
+   * The unwind deleted the attachments but could not delete the row.
+   *
+   * Worse than an orphan from where the user is standing: the file is listed,
+   * at its full size, and fails on the first read. "Try again" is the wrong
+   * advice here -- the stale entry has to go first.
+   */
+  get staleNode() {
+    return Boolean(this.body.stale_node);
+  }
+
   get retryAfter() {
     return Number(this.body.retry_after || 0) || 0;
   }

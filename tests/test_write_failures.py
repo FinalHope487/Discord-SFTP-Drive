@@ -284,3 +284,116 @@ async def test_a_failed_append_over_sftp_leaves_the_file_intact(
             assert (await client.stat("/blob.bin")).size == len(PAYLOAD)
             async with client.open("/blob.bin", "rb") as f:
                 assert await f.read() == PAYLOAD
+
+
+# ------------------------------------------------------------- the three numbers
+#
+# `_rollback()` only ever deletes what the handle itself uploaded, which is the
+# whole point of the docstring above it. That makes "nothing was left behind on
+# Discord" a claim rather than an observation, and these pin the evidence for
+# it: what went up, what came back down, and what is still up there referenced
+# by nothing.
+
+
+async def test_the_tally_counts_what_reached_discord_and_what_came_back(
+    vfs, fake_discord
+):
+    # Chunk one lands and commits; chunk two never leaves the ground.
+    fake_discord.fail_uploads_from = 2
+
+    handle = await vfs.open("/new.bin", read=False, write=True, create=True)
+    with pytest.raises(DiscordFailure):
+        await handle.write_at(0, PAYLOAD)
+
+    assert handle.failure_tally == {
+        "chunks_uploaded": 1,
+        "attachments_released": 1,
+        "orphans": 0,
+        "stale_node": False,
+    }, "the chunk that landed was released, so nothing should be reported orphaned"
+    assert fake_discord.store == {}
+
+
+async def test_a_delete_that_fails_is_reported_as_an_orphan(vfs, fake_discord):
+    """The number that means somebody has to go and look.
+
+    An orphan is not a retryable condition: the chunk is on Discord, nothing
+    references it, and running the upload again makes a second one rather than
+    reclaiming the first.
+    """
+    fake_discord.fail_uploads_from = 2
+    fake_discord.fail_deletes = True
+
+    handle = await vfs.open("/new.bin", read=False, write=True, create=True)
+    with pytest.raises(DiscordFailure):
+        await handle.write_at(0, PAYLOAD)
+
+    assert handle.failure_tally == {
+        "chunks_uploaded": 1,
+        "attachments_released": 0,
+        "orphans": 1,
+        "stale_node": False,
+    }
+    assert fake_discord.delete_attempts == 1, "the delete was attempted, not skipped"
+    assert len(fake_discord.store) == 1, "the orphan really is still on Discord"
+
+
+async def test_an_existing_file_reports_no_releases_because_it_deletes_nothing(
+    vfs, fake_discord
+):
+    """The counts must not paper over the rule they exist to evidence.
+
+    A handle appending to a file it did not create deletes nothing on purpose
+    -- those chunks are the file's last good commit. Reporting them as
+    "released" would describe the very deletion this class refuses to do.
+    """
+    await _seed(vfs, "/blob.bin", PAYLOAD)
+    fake_discord.fail_uploads_from = fake_discord.uploads + 1
+
+    handle = await vfs.open("/blob.bin", read=False, write=True, append=True)
+    with pytest.raises(DiscordFailure):
+        await handle.write_at(0, EXTRA)
+
+    assert handle.failure_tally == {
+        "chunks_uploaded": 0,
+        "attachments_released": 0,
+        "orphans": 0,
+        "stale_node": False,
+    }
+    assert fake_discord.deleted == []
+
+
+async def test_a_rollback_that_cannot_delete_the_row_says_so(vfs, fake_discord, fake_db):
+    """The failure mode a real stack found and the fakes never would have.
+
+    Stopping MongoDB part way through a 30 MiB upload against the dev stack
+    produced this: the unwind deleted both attachments from Discord, then
+    could not delete the node, because deleting the node needs the database
+    that had just gone away. The row survived pointing at message ids Discord
+    now answers `10008 Unknown Message` for -- a file listed at 9 MiB that
+    fails on its first read.
+
+    The bookkeeping failure was always swallowed here and stays swallowed;
+    what changes is that it is no longer swallowed *silently*, because the
+    client was telling people the file did not exist.
+    """
+    fake_discord.fail_uploads_from = 2
+    fake_db.nodes.fail_deletes = True
+
+    handle = await vfs.open("/doomed.bin", read=False, write=True, create=True)
+    with pytest.raises(DiscordFailure):
+        await handle.write_at(0, PAYLOAD)
+
+    tally = handle.failure_tally
+    assert tally["stale_node"] is True, (
+        "the node could not be deleted, and nothing said so"
+    )
+    assert tally["attachments_released"] == 1
+    assert tally["orphans"] == 0, (
+        "the attachment really was released -- the mess is the row, not the chunk"
+    )
+
+    # The shape of the mess, stated outright: a node that outlived its bytes.
+    left = [d for d in fake_db.nodes.docs if d.get("filename") == "doomed.bin"]
+    assert len(left) == 1, "the regression this test exists for"
+    assert fake_discord.store == {}, "its chunks are gone from Discord"
