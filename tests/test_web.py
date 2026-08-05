@@ -556,3 +556,256 @@ async def test_the_trash_needs_a_session_and_a_csrf_token(client):
 
     await client.post("/api/logout", headers=headers)
     assert (await client.get("/api/trash")).status == 401
+
+
+# ------------------------------------------------------------------ search
+
+
+async def _tree_for_search(client, headers):
+    """A small tree with matches at three depths and one decoy."""
+    await client.post("/api/dir", json={"path": "/docs"}, headers=headers)
+    await client.post("/api/dir", json={"path": "/docs/2026"}, headers=headers)
+    await client.post("/api/dir", json={"path": "/other"}, headers=headers)
+    await client.put("/api/file?path=/report.txt", data=b"a", headers=headers)
+    await client.put("/api/file?path=/docs/report-draft.txt", data=b"bb",
+                     headers=headers)
+    await client.put("/api/file?path=/docs/2026/REPORT-final.txt", data=b"ccc",
+                     headers=headers)
+    await client.put("/api/file?path=/other/unrelated.txt", data=b"d",
+                     headers=headers)
+
+
+async def test_search_walks_the_whole_tree_and_returns_full_paths(client):
+    payload = await sign_in(client)
+    await _tree_for_search(client, csrf(payload))
+
+    body = await (await client.get("/api/search?q=report")).json()
+    paths = {r["path"] for r in body["results"]}
+
+    # Every depth, and the path is absolute -- the UI shows where a hit lives,
+    # so a bare filename would make two files called the same thing
+    # indistinguishable in the one view where telling them apart is the point.
+    assert paths == {"/report.txt", "/docs/report-draft.txt",
+                     "/docs/2026/REPORT-final.txt"}
+    assert body["truncated"] is False
+
+
+async def test_search_ignores_case(client):
+    payload = await sign_in(client)
+    await _tree_for_search(client, csrf(payload))
+
+    upper = await (await client.get("/api/search?q=REPORT")).json()
+    lower = await (await client.get("/api/search?q=report")).json()
+    assert {r["path"] for r in upper["results"]} == \
+           {r["path"] for r in lower["results"]}
+
+
+async def test_search_reports_directories_as_well_as_files(client):
+    payload = await sign_in(client)
+    await _tree_for_search(client, csrf(payload))
+
+    body = await (await client.get("/api/search?q=docs")).json()
+    [hit] = body["results"]
+    assert hit["path"] == "/docs"
+    assert hit["is_dir"] is True
+
+
+async def test_search_says_when_it_stopped_rather_than_looking_complete(client):
+    payload = await sign_in(client)
+    await _tree_for_search(client, csrf(payload))
+
+    body = await (await client.get("/api/search?q=report&limit=2")).json()
+    # Two results and an honest flag. A short list with no flag is the failure
+    # mode that matters: it reads as "there are only two", and a search
+    # trusted for absence is a search that hides a file.
+    assert len(body["results"]) == 2
+    assert body["truncated"] is True
+
+
+async def test_search_clamps_a_limit_above_the_server_ceiling(client):
+    payload = await sign_in(client)
+    await _tree_for_search(client, csrf(payload))
+
+    body = await (await client.get("/api/search?q=report&limit=999999")).json()
+    # Honoured downward, clamped upward -- the same asymmetry the session
+    # lifetimes have, and for the same reason: the cost is not the caller's.
+    assert len(body["results"]) <= web_mod._SEARCH_LIMIT
+    assert body["truncated"] is False
+
+
+async def test_search_does_not_find_trashed_files(client):
+    payload = await sign_in(client)
+    headers = csrf(payload)
+    await _tree_for_search(client, headers)
+    await client.delete("/api/file?path=/report.txt", headers=headers)
+
+    body = await (await client.get("/api/search?q=report")).json()
+    paths = {r["path"] for r in body["results"]}
+    # `entries_of` filters the trash out, and search goes through it rather
+    # than around it. A hit that cannot be opened would be worse than no hit.
+    assert "/report.txt" not in paths
+    assert "/docs/report-draft.txt" in paths
+
+
+async def test_search_without_a_query_is_refused(client):
+    await sign_in(client)
+    assert (await client.get("/api/search")).status == 400
+    assert (await client.get("/api/search?q=   ")).status == 400
+
+
+async def test_search_needs_a_session(client):
+    assert (await client.get("/api/search?q=x")).status == 401
+
+
+# ------------------------------------------------- sessions and connections
+
+
+async def test_the_session_body_carries_both_deadlines(client):
+    payload = await sign_in(client)
+
+    # Both, separately. A client shown only the nearer one cannot tell "go and
+    # make coffee, you will have to sign in again" from "this ends at 4pm
+    # whatever you do", and those call for different behaviour.
+    assert payload["idle_expires_in"] > 0
+    assert payload["absolute_expires_in"] >= payload["idle_expires_in"]
+    assert payload["expires_in"] == min(payload["idle_expires_in"],
+                                        payload["absolute_expires_in"])
+
+
+async def test_a_second_sign_in_on_one_account_is_visible_to_the_first(app):
+    first, second = _client_for(app), _client_for(app)
+    await first.start_server()
+    await second.start_server()
+    try:
+        payload = await sign_in(first)
+        assert payload["connections"] == 1
+
+        await sign_in(second)
+        # Nothing stopped two people sharing this account before; what is new
+        # is that the owner can see it rather than infer it from a file
+        # appearing.
+        refreshed = await (await first.get("/api/session")).json()
+        assert refreshed["connections"] == 2
+    finally:
+        await first.close()
+        await second.close()
+
+
+async def test_revoking_other_sessions_keeps_the_caller_signed_in(app):
+    mine, theirs = _client_for(app), _client_for(app)
+    await mine.start_server()
+    await theirs.start_server()
+    try:
+        payload = await sign_in(mine)
+        await sign_in(theirs)
+
+        body = await (await mine.post("/api/sessions/revoke-others",
+                                      headers=csrf(payload))).json()
+        assert body["signed_out"] == 1
+        assert body["connections"] == 1
+
+        # The other one is over; mine is not. A control that signs the caller
+        # out too is a control nobody dares press with an intruder on the line.
+        assert (await theirs.get("/api/files?path=/")).status == 401
+        assert (await mine.get("/api/files?path=/")).status == 200
+    finally:
+        await mine.close()
+        await theirs.close()
+
+
+async def test_revoking_other_sessions_needs_a_csrf_token(client):
+    await sign_in(client)
+    assert (await client.post("/api/sessions/revoke-others")).status == 403
+
+
+# ----------------------------------------------------------- static client
+
+
+@pytest.fixture
+def built_client(tmp_path):
+    bundle = tmp_path / "bundle"
+    (bundle / "assets").mkdir(parents=True)
+    (bundle / "index.html").write_text("<title>app</title>", encoding="utf-8")
+    (bundle / "assets" / "app-abc123.js").write_text("//js", encoding="utf-8")
+    return bundle
+
+
+@pytest.fixture
+async def static_client(fake_db, fake_discord, account, built_client):
+    c = _client_for(web_mod.create_app(static_dir=str(built_client)))
+    await c.start_server()
+    try:
+        yield c
+    finally:
+        await c.close()
+
+
+async def test_the_client_is_served_without_a_session(static_client):
+    # The sign-in screen is part of the bundle, so requiring a session to
+    # fetch it would be a door that can only be opened from inside.
+    response = await static_client.get("/")
+    assert response.status == 200
+    assert "<title>app</title>" in await response.text()
+
+
+async def test_a_client_side_route_returns_the_app_not_a_404(static_client):
+    response = await static_client.get("/trash")
+    assert response.status == 200
+    assert "<title>app</title>" in await response.text()
+
+
+async def test_an_unknown_api_path_is_json_not_the_html_shell(static_client):
+    # The catch-all is registered last and would otherwise swallow these. A
+    # client that asked for JSON and got 200 plus HTML reports a parse error,
+    # which is a far worse diagnostic than the status it was owed.
+    anonymous = await static_client.get("/api/nope")
+    # 401 rather than 404 while signed out, because auth runs first -- which
+    # also means an unauthenticated caller cannot map the API by watching
+    # which paths come back as missing.
+    assert anonymous.status == 401
+    assert anonymous.content_type == "application/json"
+
+    await sign_in(static_client)
+    signed_in = await static_client.get("/api/nope")
+    assert signed_in.status == 404
+    assert signed_in.content_type == "application/json"
+
+
+async def test_hashed_assets_are_immutable_and_the_shell_is_not(static_client):
+    asset = await static_client.get("/assets/app-abc123.js")
+    assert "immutable" in asset.headers["Cache-Control"]
+    # index.html is the one file whose bytes change while its name does not,
+    # so a cached copy pins the browser to assets the next build deleted.
+    shell = await static_client.get("/")
+    assert shell.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize("attempt", [
+    "/../../../etc/passwd",
+    "/assets/../../secret.txt",
+    "/%2e%2e%2f%2e%2e%2fsecret.txt",
+])
+async def test_a_static_path_cannot_climb_out_of_the_bundle(static_client,
+                                                            attempt,
+                                                            built_client):
+    (built_client.parent / "secret.txt").write_text("leaked", encoding="utf-8")
+    response = await static_client.get(attempt)
+    # Either refused outright or answered with the shell; never the file.
+    assert "leaked" not in await response.text()
+
+
+async def test_an_unbuilt_client_says_so_instead_of_crashing(
+        fake_db, fake_discord, account, tmp_path):
+    empty = tmp_path / "not-built"
+    empty.mkdir()
+    c = _client_for(web_mod.create_app(static_dir=str(empty)))
+    await c.start_server()
+    try:
+        response = await c.get("/")
+        assert response.status == 503
+        assert "npm run build" in await response.text()
+        # The API is untouched by a missing frontend. Refusing to serve it
+        # would turn a cosmetic problem into an outage for the SFTP side too.
+        assert (await c.get("/api/health")).status == 200
+    finally:
+        await c.close()

@@ -21,13 +21,14 @@ import json
 import logging
 import secrets
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 from aiohttp import web
 
 from src import keystore, users
 from src.config import (trash_settings, web_cookie_secure, web_login_limits,
-                        web_session_limits)
+                        web_session_limits, web_static_dir)
 from src.crypto import IntegrityError, KeyUnwrapError
 from src.vfs import (
     AlreadyExists,
@@ -85,10 +86,16 @@ _ERROR_CLASSES = {
 }
 
 
-def _error(status: int, message: str) -> web.HTTPException:
-    """An aiohttp exception whose body is JSON, like every other response."""
+def _error(status: int, message: str, **extra) -> web.HTTPException:
+    """An aiohttp exception whose body is JSON, like every other response.
+
+    `extra` carries a machine-readable `code` where the client has to act
+    differently rather than just say something differently -- an integrity
+    failure is not a 500 to retry past, and telling them apart by matching on
+    prose is how a retry loop ends up hammering a tampered file.
+    """
     cls = _ERROR_CLASSES.get(status, web.HTTPBadRequest)
-    return cls(text=json.dumps({"error": message}),
+    return cls(text=json.dumps({"error": message, **extra}),
                content_type="application/json")
 
 
@@ -119,7 +126,10 @@ async def error_middleware(request, handler):
         # check entirely. Same reasoning as the SFTP layer's `_translate`.
         logger.error("Integrity check failed in %s %s: %s",
                      request.method, request.path, exc)
-        raise _error(500, "integrity check failed") from exc
+        raise _error(500, "integrity check failed",
+                     code="integrity_failure",
+                     path=request.query.get("path") or "",
+                     detail=str(exc)) from exc
     except VFSError as exc:
         raise _error(_status_for(exc),
                      str(exc) or exc.__class__.__name__) from exc
@@ -183,7 +193,11 @@ async def auth_middleware(request, handler):
     session = store.get(request.cookies.get(SESSION_COOKIE))
     request["session"] = session
 
-    if request.path in _PUBLIC_PATHS:
+    # Everything outside `/api/` is the static client, and the sign-in screen
+    # has to load before there is a session to check it against. The entire
+    # protected surface lives under one prefix precisely so this can be a
+    # prefix test rather than a list somebody forgets to extend.
+    if request.path in _PUBLIC_PATHS or not request.path.startswith("/api/"):
         return await handler(request)
 
     if session is None:
@@ -203,14 +217,23 @@ async def auth_middleware(request, handler):
 # ------------------------------------------------------------ session shape
 
 
-def _session_body(session) -> dict:
+def _session_body(session, store) -> dict:
+    now = time.monotonic()
     return {
         "signed_in": True,
         "username": session.username,
         "csrf_token": session.csrf_token,
-        "expires_in": session.expires_in(time.monotonic()),
+        "expires_in": session.expires_in(now),
+        # Both deadlines, separately. The client displays the countdown from
+        # these and never from a timer of its own: a local timer drifts, and
+        # it drifts towards "you still have time" -- which is the direction
+        # that loses an upload rather than the direction that annoys somebody.
+        "idle_expires_in": session.idle_expires_in(now),
+        "absolute_expires_in": session.absolute_expires_in(now),
         "idle_seconds": session.idle_seconds,
         "absolute_seconds": session.absolute_seconds,
+        # Everybody signed into this same tree, this session included.
+        "connections": store.count_for_tree(session.root_id, now=now),
     }
 
 
@@ -229,7 +252,7 @@ async def session_info(request):
             "max_idle_seconds": limits.idle_ceiling,
             "max_absolute_seconds": limits.absolute_ceiling,
         })
-    return web.json_response(_session_body(session))
+    return web.json_response(_session_body(session, request.app[SESSIONS]))
 
 
 async def login(request):
@@ -292,7 +315,7 @@ async def login(request):
         absolute=_positive_int(payload.get("absolute_seconds")),
     )
 
-    response = web.json_response(_session_body(session))
+    response = web.json_response(_session_body(session, store))
     # No max_age, so closing the browser drops it. The server-side deadlines
     # are what actually bound the session; this only stops the id outliving
     # its window in a cookie jar.
@@ -355,6 +378,44 @@ async def stat_path(request):
     path = _path_of(request)
     node = await session.vfs.require_node(path)
     return web.json_response({"path": path, **_entry(node)})
+
+
+# The ceiling a client cannot raise. `limit` below it is honoured; above it is
+# clamped, because the walk holds its results in this process's memory and
+# "give me a million" is a request to spend the server's memory, not the
+# caller's.
+_SEARCH_LIMIT = 200
+
+
+async def search(request):
+    session = request["session"]
+    needle = request.query.get("q") or ""
+    if not needle.strip():
+        raise _error(400, "a q query parameter is required")
+    asked = _positive_int(request.query.get("limit"))
+    return web.json_response(await session.vfs.search(
+        needle, limit=min(asked or _SEARCH_LIMIT, _SEARCH_LIMIT)))
+
+
+async def revoke_other_sessions(request):
+    """Sign out every other session on this tree, keeping this one.
+
+    One account can be signed in from several places at once, which is what
+    sharing this drive looks like today. This is the control for the moment
+    that stops being intentional -- and it keeps the caller signed in, because
+    a button that logs you out as well is a button nobody presses while an
+    intruder is the one they are trying to remove.
+    """
+    session = request["session"]
+    store = request.app[SESSIONS]
+    dropped = store.drop_others(session.root_id,
+                                keep=request.cookies.get(SESSION_COOKIE) or "")
+    logger.info("Signed out %d other session(s) for %r",
+                dropped, session.username)
+    return web.json_response({
+        "signed_out": dropped,
+        "connections": store.count_for_tree(session.root_id),
+    })
 
 
 def _disposition(filename: str) -> str:
@@ -546,10 +607,80 @@ async def _json_body(request):
     return payload
 
 
+# ----------------------------------------------------------- the static client
+
+
+_NOT_BUILT = """<!doctype html><meta charset="utf-8">
+<title>Discord Drive</title>
+<style>body{margin:0;height:100vh;display:grid;place-items:center;
+background:#161826;color:#e9e9ed;font:14px/1.7 system-ui,"Noto Sans TC",sans-serif}
+div{max-width:52ch;padding:24px}code{font-family:ui-monospace,monospace;color:#9184d9}
+h1{font-size:17px;font-weight:500;margin:0 0 8px}p{color:#9a9aa8;margin:0 0 10px}</style>
+<div><h1>前端還沒有建置</h1>
+<p>API 是好的，SFTP 也是。缺的只有這個畫面。在 repo 目錄跑：</p>
+<p><code>cd client/app &amp;&amp; npm install &amp;&amp; npm run build</code></p>
+<p>然後重新整理這一頁。不需要重建 image：<code>client/app/dist</code>
+是挂進容器的，不是烤進去的。</p>
+<p>The API and the SFTP surface are fine; only this page is missing.
+Build the client with the command above and reload.</p></div>"""
+
+
+def _asset_headers(rel: str) -> dict:
+    """Cache policy, decided by whether the URL can ever mean different bytes.
+
+    Vite content-hashes everything under `assets/`, so those URLs are
+    immutable by construction. `index.html` is the opposite: it is the one
+    file whose contents change while its name does not, and a cached copy of
+    it pins a browser to asset names that the next build deleted.
+    """
+    if rel.startswith("assets/"):
+        return {"Cache-Control": "public, max-age=31536000, immutable"}
+    return {"Cache-Control": "no-store"}
+
+
+def _add_client_routes(app, directory: str):
+    """Serve the built SPA, and let it own its own URLs.
+
+    Registered last on purpose. aiohttp resolves in registration order, so the
+    catch-all below can only be reached by a path no API route claimed -- and
+    a stray `/api/...` is still answered as a missing endpoint rather than
+    handed the HTML shell, because a client that gets a 200 and an HTML body
+    where it expected JSON reports a parse error instead of a 404.
+    """
+    root = Path(directory).resolve()
+
+    async def client(request):
+        rel = request.match_info.get("tail", "")
+        if request.path.startswith("/api/"):
+            raise _error(404, "no such endpoint")
+
+        index = root / "index.html"
+        if not index.is_file():
+            return web.Response(text=_NOT_BUILT, content_type="text/html",
+                                charset="utf-8", status=503)
+
+        if rel:
+            candidate = (root / rel).resolve()
+            # Resolve first, then check containment. The path arrives from the
+            # network and `../../` is the first thing anybody tries; comparing
+            # the resolved result is what makes symlinks and encoded traversal
+            # land inside the check rather than around it.
+            if (candidate == root or root in candidate.parents) \
+                    and candidate.is_file():
+                return web.FileResponse(candidate, headers=_asset_headers(rel))
+
+        # Not a file, so it is a client-side route. A reload on /trash has to
+        # return the app, not a 404 -- the SPA owns its history.
+        return web.FileResponse(index, headers={"Cache-Control": "no-store"})
+
+    app.router.add_get("/", client)
+    app.router.add_get("/{tail:.*}", client)
+
+
 # ----------------------------------------------------------------- assembly
 
 
-def create_app(*, sessions=None, guard=None) -> web.Application:
+def create_app(*, sessions=None, guard=None, static_dir=None) -> web.Application:
     limits = web_session_limits()
     login_limits = web_login_limits()
 
@@ -566,8 +697,11 @@ def create_app(*, sessions=None, guard=None) -> web.Application:
     app.router.add_post("/api/login", login)
     app.router.add_post("/api/logout", logout)
 
+    app.router.add_post("/api/sessions/revoke-others", revoke_other_sessions)
+
     app.router.add_get("/api/files", list_dir)
     app.router.add_get("/api/stat", stat_path)
+    app.router.add_get("/api/search", search)
     app.router.add_get("/api/file", download)
     app.router.add_put("/api/file", upload)
     app.router.add_delete("/api/file", remove_file)
@@ -582,6 +716,10 @@ def create_app(*, sessions=None, guard=None) -> web.Application:
     # a route of its own, so a client that forgets the `id` on the line above
     # gets a 400 instead of emptying the bin.
     app.router.add_post("/api/trash/empty", empty_trash)
+
+    # Last, so every API route above wins the match. See `_add_client_routes`.
+    _add_client_routes(app, web_static_dir() if static_dir is None
+                       else static_dir)
 
     app.on_startup.append(_start_sweeper)
     app.on_cleanup.append(_stop_sweeper)

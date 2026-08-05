@@ -1140,6 +1140,66 @@ class DiscordVFS:
             _verify_node(self._key, child)
         return live
 
+    async def search(self, needle: str, *, limit: int = 200,
+                     max_nodes: int = 20000) -> dict:
+        """Live nodes whose name contains `needle`, each with its full path.
+
+        A walk, not an index, and the reason is the same one that keeps
+        filenames inside the tag. `node_tag` covers `filename`, so a second
+        normalised copy of the name sitting in its own indexed column would be
+        a copy no tag covers -- editable by anyone with database access
+        without being caught. Bringing it under the tag means TAG_VERSION
+        3 -> 4 and a real migration. Costed, and not worth it at this size.
+
+        Every directory on the way down goes through `entries_of`, so the
+        membership tag is checked at each level rather than only on the
+        directory the caller happens to be looking at. Skipping it would open
+        a "visible to search, missing when opened" side channel -- the same
+        shape as the `scandir` bug that bypassed `list_dir`.
+
+        Both ceilings report themselves through `truncated`. A caller cannot
+        tell "that is all of them" from "that is where I stopped" by looking
+        at a short list, and a search quietly cut off is a search that gets
+        trusted for absence.
+        """
+        wanted = needle.strip().casefold()
+        if not wanted:
+            return {"results": [], "truncated": False, "scanned": 0}
+
+        results = []
+        scanned = 0
+        truncated = False
+        # Breadth-first: hits near the root come back first, and the queue is
+        # bounded by the width of one level instead of by recursion depth.
+        queue = [(await self.require_node("/"), "")]
+
+        while queue and not truncated:
+            node, prefix = queue.pop(0)
+            for child in await self.entries_of(node):
+                scanned += 1
+                if scanned > max_nodes:
+                    truncated = True
+                    break
+                name = child.get("filename") or ""
+                path = f"{prefix}/{name}"
+                if wanted in name.casefold():
+                    if len(results) >= limit:
+                        truncated = True
+                        break
+                    results.append({
+                        "path": path,
+                        "name": name,
+                        "is_dir": bool(child.get("is_dir")),
+                        "size": int(child.get("size") or 0),
+                        "modified_at": int(child.get("modified_at")
+                                           or child.get("created_at") or 0),
+                        "permissions": int(child.get("permissions") or 0),
+                    })
+                if child.get("is_dir"):
+                    queue.append((child, path))
+
+        return {"results": results, "truncated": truncated, "scanned": scanned}
+
     async def _stage_entries(self, dir_id: str, *, add=(), remove=()):
         """Prepare a directory's next entry tag, returning its commit step.
 

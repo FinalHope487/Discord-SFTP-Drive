@@ -109,6 +109,17 @@ WEB_LOGIN_QUEUE = os.getenv("WEB_LOGIN_QUEUE", "16")
 # the deployment that should have to make that choice explicitly.
 WEB_COOKIE_SECURE = os.getenv("WEB_COOKIE_SECURE", "1")
 
+# Where the built client lives. It is served by this same process, for the same
+# reason the API is: a second service in front of the same MongoDB is the
+# replica README.md forbids.
+#
+# Mounted rather than baked into the image, so rebuilding the frontend does not
+# mean rebuilding the image and dropping every live session with it. A missing
+# or empty directory is deliberately not a startup error -- the API and the
+# SFTP surface do not depend on it, and refusing to boot over an unbuilt
+# frontend would turn a cosmetic problem into an outage.
+WEB_STATIC_DIR = os.getenv("WEB_STATIC_DIR", "web")
+
 # ----------------------------------------------------------------- the trash
 #
 # Deleting is two steps: `remove` marks a node, and a sweep destroys it once
@@ -369,6 +380,10 @@ def web_port():
 
 def web_cookie_secure():
     return WEB_COOKIE_SECURE.strip().lower() in _TRUTHY
+
+
+def web_static_dir():
+    return WEB_STATIC_DIR.strip()
 
 
 def web_session_limits():

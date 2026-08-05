@@ -73,6 +73,20 @@ class WebSession:
         return max(0, int(min(self.last_seen + self.idle_seconds,
                               self.created_at + self.absolute_seconds) - now))
 
+    def idle_expires_in(self, now: float) -> int:
+        return max(0, int(self.last_seen + self.idle_seconds - now))
+
+    def absolute_expires_in(self, now: float) -> int:
+        """Seconds left on the ceiling that no amount of activity resets.
+
+        Reported separately from the idle one because they mean different
+        things to whoever is reading the clock. The idle number is a warning
+        that going for coffee will cost a re-login; this one is a deadline no
+        keystroke can move, and a client that showed only the larger of the
+        two would be counting down the wrong one.
+        """
+        return max(0, int(self.created_at + self.absolute_seconds - now))
+
 
 @dataclass
 class SessionStore:
@@ -182,6 +196,33 @@ class SessionStore:
                 continue
             trees.setdefault(session.root_id, session)
         return list(trees.values())
+
+    def count_for_tree(self, root_id: str, *, now=None) -> int:
+        """How many live sessions are open against one tree.
+
+        There is one account, and nothing stops two people signing into it at
+        once -- that is what sharing this drive looks like today. Nothing
+        stopped it before either; the difference is that the number is now
+        visible, so "somebody else is signed in" is something the owner can
+        see rather than something they have to infer from a file appearing.
+        """
+        now = time.monotonic() if now is None else now
+        return sum(1 for s in self._sessions.values()
+                   if s.root_id == root_id and not s.expired_at(now))
+
+    def drop_others(self, root_id: str, *, keep: str, now=None) -> int:
+        """End every other session on this tree, keeping the caller's.
+
+        Deliberately not "end every session including mine": signing yourself
+        out as a side effect of evicting somebody else is the kind of surprise
+        that makes people avoid the button that stops an intruder.
+        """
+        now = time.monotonic() if now is None else now
+        doomed = [sid for sid, s in self._sessions.items()
+                  if s.root_id == root_id and sid != keep]
+        for session_id in doomed:
+            self.drop(session_id)
+        return len(doomed)
 
     def sweep(self, *, now=None) -> int:
         now = time.monotonic() if now is None else now
