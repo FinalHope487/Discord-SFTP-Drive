@@ -4,6 +4,12 @@
 .env.*
 !.env.example
 
+# Docker secrets, mounted into the container at /run/secrets. `sftp_password`
+# holds the password that unwraps the master key -- the whole reason it stopped
+# being an environment variable is that fewer things should be able to read it,
+# and a git history is one of those things.
+secrets/
+
 # SSH host key. Not a secret you can rotate cheaply -- replacing it makes every
 # client report a host key mismatch, which is the same warning a real
 # man-in-the-middle produces.

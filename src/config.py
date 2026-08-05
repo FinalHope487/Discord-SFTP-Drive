@@ -31,21 +31,109 @@ class ConfigError(RuntimeError):
     """Raised when the environment cannot support a working server."""
 
 
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+# --------------------------------------------------------- secrets in files
+#
+# `FOO_FILE=/run/secrets/foo` supplies the value of `FOO` from a file. This is
+# what lets a docker secret carry the password.
+#
+# An environment variable is readable by anything that can run `docker
+# inspect` or open `/proc/<pid>/environ`, and for SFTP_PASSWORD that turns
+# "can read the container's configuration" into "can decrypt every stored
+# file" -- the password is not a login credential, it wraps the master key. A
+# secret arrives instead as a file mounted at 0400 and never enters the
+# process environment at all.
+#
+# Only secrets are listed. A file indirection for WEB_PORT would be a setting
+# nobody wants and one more way for startup to fail.
+_FILE_BACKED = (
+    "DISCORD_BOT_TOKEN",
+    "MONGO_URI",
+    "SFTP_PASSWORD",
+    "SFTP_PASSWORD_OLD",
+)
+
+_FILE_SUFFIX = "_FILE"
+
+
+def _read_secret_file(path):
+    """The file's contents as text, minus at most one trailing newline.
+
+    Stripping exactly one newline -- and nothing else -- is the deliberate
+    part. `echo hunter2 > secret.txt` appends one, as does every editor that
+    ends files with a newline, so leaving it on would make the ordinary way of
+    writing a secret produce a password nobody typed. Stripping all trailing
+    whitespace instead would silently mangle a password that genuinely ends in
+    a space.
+
+    That asymmetry matters more here than it would for a login credential:
+    this password derives the key-encryption key, so a value differing by one
+    byte from the one the master key was wrapped under is indistinguishable at
+    startup from an outright wrong password. The trade is that a password
+    ending in a newline cannot be expressed this way; `.env.example` says so.
+    """
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    if raw.endswith(b"\r\n"):
+        raw = raw[:-2]
+    elif raw.endswith(b"\n"):
+        raw = raw[:-1]
+    return raw.decode("utf-8")
+
+
+def _resolve(env, name):
+    """`(value, problem)` for `name`, following its `_FILE` variant if set.
+
+    Having both set is refused rather than resolved by precedence. Either
+    order would be a guess about which one the operator meant, and the cost of
+    guessing wrong is a server that starts up under the wrong password.
+    """
+    direct = env.get(name)
+    path = env.get(name + _FILE_SUFFIX)
+    if not path:
+        return direct, None
+    if direct:
+        return None, (
+            f"both {name} and {name}{_FILE_SUFFIX} are set; use one or the "
+            "other, since which of them wins would otherwise be a guess"
+        )
+    try:
+        return _read_secret_file(path), None
+    except OSError as exc:
+        reason = exc.strerror or exc
+        return None, f"{name}{_FILE_SUFFIX} is {path!r} but it cannot be read: {reason}"
+    except UnicodeDecodeError:
+        return None, (
+            f"{name}{_FILE_SUFFIX} is {path!r} but its contents are not valid "
+            "UTF-8"
+        )
+
+
+def _setting(name):
+    """The import-time value of `name`, with any problem left for `check()`.
+
+    Import stays non-fatal on purpose: an unreadable secret file must surface
+    as one line in the startup validation report alongside every other
+    problem, not as a traceback raised before `validate()` gets to run.
+    """
+    value, problem = _resolve(os.environ, name)
+    return None if problem else value
+
+
+DISCORD_BOT_TOKEN = _setting("DISCORD_BOT_TOKEN")
 DISCORD_USER_ID = os.getenv("DISCORD_USER_ID")
 DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017")
+MONGO_URI = _setting("MONGO_URI") or "mongodb://127.0.0.1:27017"
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "discord_sftp_vfs")
 
 SFTP_USER = os.getenv("SFTP_USER")
-SFTP_PASSWORD = os.getenv("SFTP_PASSWORD")
+SFTP_PASSWORD = _setting("SFTP_PASSWORD")
 
 # Only needed while changing the password: it lets the server open the
 # existing wrapped master key once and re-wrap it under the new one. There is
 # no AES_SECRET_KEY any more -- the data key is random, lives in the database
 # wrapped under the password, and never appears in the environment.
-SFTP_PASSWORD_OLD = os.getenv("SFTP_PASSWORD_OLD")
+SFTP_PASSWORD_OLD = _setting("SFTP_PASSWORD_OLD")
 
 SFTP_PORT = os.getenv("SFTP_PORT", "2222")
 SFTP_HOST_KEY_PATH = os.getenv("SFTP_HOST_KEY_PATH", "host_key")
@@ -203,11 +291,28 @@ def check(env=None):
     env = os.environ if env is None else env
     problems = []
 
+    # Resolve the file-backed secrets first: everything below wants their
+    # effective values, not the raw variables. A mapping with no `_FILE` keys
+    # -- which is every existing caller -- comes back through this unchanged.
+    resolved = {}
+    unresolved = set()
+    for name in _FILE_BACKED:
+        value, problem = _resolve(env, name)
+        if problem:
+            problems.append(problem)
+            unresolved.add(name)
+        resolved[name] = value
+
+    def setting(name):
+        return resolved[name] if name in resolved else env.get(name)
+
     for name in _REQUIRED:
-        if not env.get(name):
+        # A secret whose file could not be read has already been reported, and
+        # saying "is not set" about it as well would point at the wrong fix.
+        if name not in unresolved and not setting(name):
             problems.append(f"{name} is not set")
 
-    password = env.get("SFTP_PASSWORD")
+    password = setting("SFTP_PASSWORD")
     if password:
         size = len(password.encode("utf-8"))
         if size < MIN_PASSWORD_BYTES:

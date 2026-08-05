@@ -147,3 +147,118 @@ def test_the_error_message_lists_every_problem():
         validate(env(DISCORD_BOT_TOKEN=None, SFTP_USER=None))
     message = str(excinfo.value)
     assert "DISCORD_BOT_TOKEN" in message and "SFTP_USER" in message
+
+
+# ------------------------------------------------------- secrets from files
+#
+# `FOO_FILE` exists so a docker secret can carry the password instead of an
+# environment variable that `docker inspect` and `/proc/<pid>/environ` both
+# hand out. The password wraps the master key, so that difference is the
+# difference between reading the container's configuration and decrypting
+# every stored file.
+
+
+def secret(tmp_path, name, contents):
+    """Write `contents` to a file and return its path, bytes written verbatim."""
+    path = tmp_path / name
+    path.write_bytes(contents)
+    return str(path)
+
+
+def test_a_secret_file_supplies_the_value(tmp_path):
+    path = secret(tmp_path, "pw", b"x" * MIN_PASSWORD_BYTES)
+    assert check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path)) == []
+
+
+def test_one_trailing_newline_is_stripped(tmp_path):
+    # `echo hunter2 > secret.txt` appends one, as does every editor that ends
+    # files with a newline. Keeping it would make the ordinary way of writing
+    # a secret produce a password nobody typed -- and since this password
+    # derives the KEK, the failure would look like a wrong password.
+    path = secret(tmp_path, "pw", b"x" * MIN_PASSWORD_BYTES + b"\n")
+    assert check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path)) == []
+
+
+def test_a_crlf_line_ending_is_stripped_whole(tmp_path):
+    # A file written on Windows would otherwise keep a stray \r on the end.
+    path = secret(tmp_path, "pw", b"x" * MIN_PASSWORD_BYTES + b"\r\n")
+    assert check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path)) == []
+
+
+def test_only_one_trailing_newline_is_stripped(tmp_path):
+    # Two newlines mean the second one is part of the password. Stripping
+    # greedily here would be a guess, and the file is the authority.
+    path = secret(tmp_path, "pw", b"x" * (MIN_PASSWORD_BYTES - 1) + b"\n\n")
+    # 11 x's + one surviving newline = 12 bytes, so the floor is met exactly.
+    assert check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path)) == []
+
+
+def test_trailing_spaces_are_not_stripped(tmp_path):
+    # A password may legitimately end in a space. Stripping all whitespace
+    # would silently mangle it into one that opens nothing.
+    path = secret(tmp_path, "pw", b"x" * (MIN_PASSWORD_BYTES - 2) + b"  \n")
+    assert check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path)) == []
+
+
+def test_a_short_password_in_a_file_is_still_measured(tmp_path):
+    # The length floor has to apply to the resolved value, or routing the
+    # password through a file would quietly bypass it.
+    path = secret(tmp_path, "pw", b"short\n")
+    problems = check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path))
+    assert any("SFTP_PASSWORD" in p and "5 bytes" in p for p in problems)
+
+
+def test_a_missing_secret_file_is_reported_not_raised(tmp_path):
+    path = str(tmp_path / "absent")
+    problems = check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path))
+    assert any("SFTP_PASSWORD_FILE" in p and "cannot be read" in p
+               for p in problems)
+
+
+def test_an_unreadable_secret_file_is_not_also_called_unset(tmp_path):
+    # Two messages for one cause, and the second would point at the wrong fix.
+    path = str(tmp_path / "absent")
+    problems = check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path))
+    assert not any(p == "SFTP_PASSWORD is not set" for p in problems)
+
+
+def test_a_non_utf8_secret_file_is_reported(tmp_path):
+    path = secret(tmp_path, "pw", b"\xff\xfe" * 8)
+    problems = check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path))
+    assert any("SFTP_PASSWORD_FILE" in p and "UTF-8" in p for p in problems)
+
+
+def test_setting_both_the_variable_and_the_file_is_refused(tmp_path):
+    # Resolving this by precedence either way would be a guess about which the
+    # operator meant, and guessing wrong starts the server under the wrong
+    # password.
+    path = secret(tmp_path, "pw", b"y" * MIN_PASSWORD_BYTES)
+    problems = check(env(SFTP_PASSWORD_FILE=path))
+    assert any("both SFTP_PASSWORD and SFTP_PASSWORD_FILE" in p
+               for p in problems)
+
+
+def test_an_empty_secret_file_counts_as_unset(tmp_path):
+    # Same rule as `FOO=` in a .env file: it is a typo, not a deliberate empty
+    # password.
+    path = secret(tmp_path, "pw", b"\n")
+    problems = check(env(SFTP_PASSWORD=None, SFTP_PASSWORD_FILE=path))
+    assert any("SFTP_PASSWORD is not set" in p for p in problems)
+
+
+@pytest.mark.parametrize(
+    "name", ["DISCORD_BOT_TOKEN", "MONGO_URI", "SFTP_PASSWORD_OLD"]
+)
+def test_the_other_secrets_are_file_backed_too(tmp_path, name):
+    path = secret(tmp_path, name, b"value-from-a-file")
+    overrides = {name: None, name + "_FILE": path}
+    assert check(env(**overrides)) == []
+
+
+def test_a_settings_variable_is_not_file_backed(tmp_path):
+    # `_FILE` is for secrets. WEB_PORT_FILE is not a thing, and must not
+    # silently become one -- it would be ignored, which is the shape of
+    # configuration error this module exists to refuse.
+    path = secret(tmp_path, "port", b"8080")
+    assert any("WEB_PORT" in p
+               for p in check(env(WEB_PORT="nonsense", WEB_PORT_FILE=path)))

@@ -66,9 +66,16 @@ services:
       - MONGO_URI=mongodb://${MONGO_ROOT_USERNAME:-discorddrive}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=${MONGO_DB_NAME:-discord_sftp_vfs}
       - SFTP_USER=${SFTP_USER:?set SFTP_USER in .env}
-      # Also wraps the encryption key; there is no AES_SECRET_KEY any more.
-      - SFTP_PASSWORD=${SFTP_PASSWORD:?set SFTP_PASSWORD in .env}
-      # Only needed while changing the password, and only read at startup.
+      # The password itself is NOT here; it arrives as a file, mounted from
+      # the `sftp_password` secret defined at the bottom of this file. See the
+      # comment there for why. This names where to read it, not what it is.
+      - SFTP_PASSWORD_FILE=/run/secrets/sftp_password
+      # Only needed while changing the password, and only read at startup --
+      # so it stays an environment variable rather than a second secret that
+      # would have to exist on every ordinary boot. It is exposed for the one
+      # restart that rotates the key and should be removed straight after;
+      # `SFTP_PASSWORD_OLD_FILE` works too if you would rather not have it in
+      # the environment even for that long.
       - SFTP_PASSWORD_OLD=${SFTP_PASSWORD_OLD:-}
       # Key derivation. Only the costs belonging to the selected KDF are used,
       # and every stored key record carries the ones it was made with, so
@@ -130,6 +137,8 @@ services:
       # If `client/app/dist` does not exist yet, Docker creates it empty and
       # the server serves a page saying how to build it. See client/BUILD.md.
       - ./client/app/dist:/app/web:ro
+    secrets:
+      - sftp_password
     depends_on:
       mongodb:
         condition: service_healthy
@@ -143,6 +152,31 @@ services:
     # chunk with. Docker's default here is 10s, which is shorter than the
     # drain and would have made it pointless.
     stop_grace_period: 30s
+
+secrets:
+  # The password reaches the container as a file at /run/secrets/sftp_password
+  # instead of an environment variable.
+  #
+  # The distinction is not cosmetic here. This password is not a login
+  # credential -- it derives the key-encryption key that unwraps the master
+  # key, so whoever reads it decrypts every stored file. An environment
+  # variable is handed out by `docker inspect`, printed by `docker compose
+  # config`, inherited by every child process, and readable at
+  # /proc/<pid>/environ by anything sharing the PID namespace. That made
+  # "can read this container's configuration" the same privilege as "can
+  # decrypt the data", which is the gap this closes.
+  #
+  # Compose refuses to start if the file is missing, which is the same
+  # fail-fast the `:?` variables above rely on: one clear message rather than
+  # a container that restarts five times and exits.
+  #
+  # A note for Linux hosts: outside swarm mode Compose bind-mounts this file
+  # as-is, so `uid`/`gid`/`mode` are not applied and the container's own
+  # account (uid 10001) must be able to read it. `chmod 0444` is the simple
+  # answer on a single-admin host; 0400 works only if the file is owned by
+  # 10001. Docker Desktop's file sharing makes this moot.
+  sftp_password:
+    file: ${SFTP_PASSWORD_SECRET:-./secrets/sftp_password}
 
 volumes:
   mongo_data:
