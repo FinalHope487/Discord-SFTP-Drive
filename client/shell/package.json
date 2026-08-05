@@ -1,0 +1,68 @@
+{
+  "name": "discord-drive-shell",
+  "productName": "Discord Drive",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop shell for Discord Drive. A window with a size floor and a first-run server address; the file manager itself is served by the drive's own server.",
+  "main": "main.js",
+  "author": "Discord Drive",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "icon": "python make-icon.py",
+    "pack": "electron-builder --win --dir",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable",
+    "dist:installer": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "dev.discorddrive.desktop",
+    "productName": "Discord Drive",
+    "copyright": "Discord Drive",
+    "directories": {
+      "output": "../../dist-desktop",
+      "buildResources": "."
+    },
+    "files": [
+      "main.js",
+      "server-url.js",
+      "setup.html",
+      "setup-preload.js",
+      "icon.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        { "target": "portable", "arch": ["x64"] },
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "portable": {
+      "artifactName": "DiscordDrive-${version}-portable.exe",
+      "unicode": true
+    },
+    "nsis": {
+      "artifactName": "DiscordDrive-${version}-setup.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "unicode": true
+    },
+    "linux": {
+      "icon": "icon.png",
+      "category": "Utility",
+      "target": ["AppImage"]
+    },
+    "mac": {
+      "icon": "icon.png",
+      "category": "public.app-category.utilities",
+      "target": ["dmg"]
+    }
+  }
+}

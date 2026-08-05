@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>Discord Drive — 連線設定</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #161826;
+        --surface: #232532;
+        --text: #e9e9ed;
+        --muted: #9397ab;
+        --dim: #75798c;
+        --accent: #9184d9;
+        --ok: #6fbf8b;
+        --warn: #e0a93b;
+        --bad: #e5484d;
+        --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 26px 28px 30px;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.6 system-ui, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      }
+      h1 { font-size: 17px; font-weight: 500; margin: 0 0 4px; letter-spacing: -0.01em; }
+      p { margin: 0 0 10px; color: var(--muted); }
+      code { font-family: var(--mono); color: var(--accent); }
+      label { display: block; font-size: 12px; color: var(--muted); margin: 18px 0 5px; }
+      input {
+        width: 100%;
+        height: 34px;
+        padding: 0 10px;
+        background: var(--bg);
+        border: 1px solid #3f424d;
+        border-radius: 8px;
+        color: var(--text);
+        font: inherit;
+        font-family: var(--mono);
+      }
+      input:focus { border-color: var(--accent); outline: none; }
+      .row { display: flex; gap: 8px; margin-top: 12px; }
+      button {
+        height: 32px;
+        padding: 0 14px;
+        border-radius: 8px;
+        border: 1px solid #3f424d;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { background: #ffffff10; }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #14121f;
+        font-weight: 500;
+      }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .status {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #3f424d;
+        background: var(--surface);
+        font-size: 12px;
+        display: none;
+      }
+      .status.on { display: block; }
+      .status.ok { border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+      .status.bad { border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
+      .status.warn { border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+      .status b { display: block; font-weight: 500; margin-bottom: 3px; }
+      .status.ok b { color: var(--ok); }
+      .status.bad b { color: var(--bad); }
+      .status.warn b { color: var(--warn); }
+      .note {
+        margin-top: 22px;
+        padding: 13px 14px;
+        border-radius: 8px;
+        background: var(--surface);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .note h2 {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text);
+        margin: 0 0 6px;
+      }
+      .note + .note { margin-top: 10px; }
+      ol { margin: 6px 0 0; padding-left: 18px; }
+      li { margin-bottom: 5px; }
+      .en { color: var(--dim); font-size: 11.5px; }
+    </style>
+  </head>
+  <body>
+    <h1>連線到你的 Discord Drive</h1>
+    <p>
+      這個 app 是視窗，硬碟本身跑在別的地方。填入伺服器的位址就會連過去。
+      <span class="en">This app is the window; the drive runs elsewhere.</span>
+    </p>
+
+    <label for="url">伺服器位址 · Server address</label>
+    <input id="url" spellcheck="false" placeholder="http://127.0.0.1:8080" />
+
+    <div class="row">
+      <button id="test" type="button">測試連線</button>
+      <button id="go" class="primary" type="button">連線並記住</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div class="note">
+      <h2>Discord bot token 不在這裡填</h2>
+      token、頻道 id 與 MongoDB 帳密是<b style="display:inline">伺服器</b>的設定，寫在伺服器那台機器的
+      <code>.env</code> 裡，跟著 <code>docker compose up -d</code> 一起生效。它們不從這個畫面送過去：
+      token 是伺服器的祕密，不是使用者的祕密，讓客戶端寫得到它就等於讓任何登入的人讀得到它。
+    </div>
+
+    <div class="note">
+      <h2>從別的裝置連過來</h2>
+      預設只綁在伺服器自己的 <code>127.0.0.1</code>。要從這台以外的裝置連，
+      伺服器那邊的 <code>.env.example</code> 寫了三條路與各自的代價：
+      <ol>
+        <li>私人網路（Tailscale / WireGuard）— 兩邊各裝一個軟體，其他都不用改。</li>
+        <li>反向代理配真憑證（Caddy 兩行）— app 本身仍不上網路。</li>
+        <li>LAN 明文 — 要同時改 <code>WEB_BIND=0.0.0.0</code> 與 <code>WEB_COOKIE_SECURE=0</code>，不建議。</li>
+      </ol>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const url = $("url");
+      const status = $("status");
+
+      function show(kind, title, body) {
+        status.className = `status on ${kind}`;
+        status.innerHTML = "";
+        const b = document.createElement("b");
+        b.textContent = title;
+        const span = document.createElement("span");
+        span.textContent = body || "";
+        status.append(b, span);
+      }
+
+      const REASONS = {
+        url: ["位址看不懂", "檢查有沒有打錯字。像 127.0.0.1:8080 這樣就可以，http:// 可以省略。"],
+        scheme: ["只接受 http 或 https", "這個欄位填的是伺服器位址，不是檔案路徑。"],
+        timeout: [
+          "連得上但沒有回應",
+          "位址對、但那一端沒有在時限內回話。伺服器可能正在啟動，或中間有東西擋著。",
+        ],
+        unreachable: [
+          "連不上",
+          "沒有東西在這個位址上聽。在伺服器那台機器跑 docker compose up -d，或確認位址與埠號。",
+        ],
+        "not-discord-drive": [
+          "有東西在聽，但不是 Discord Drive",
+          "埠號多半打錯了。/api/health 沒有回傳預期的內容。",
+        ],
+      };
+
+      function report(result) {
+        if (result.ok) {
+          show("ok", "連線正常", `${result.origin} 回應了 /api/health。`);
+          return true;
+        }
+        const [title, body] = REASONS[result.reason] || ["連線失敗", result.detail || ""];
+        show("bad", title, result.detail ? `${body}（${result.detail}）` : body);
+        return false;
+      }
+
+      async function withBusy(button, work) {
+        const label = button.textContent;
+        button.disabled = true;
+        button.textContent = "…";
+        try {
+          return await work();
+        } finally {
+          button.disabled = false;
+          button.textContent = label;
+        }
+      }
+
+      $("test").addEventListener("click", () =>
+        withBusy($("test"), async () => report(await window.dd.probe(url.value))),
+      );
+
+      $("go").addEventListener("click", () =>
+        withBusy($("go"), async () => {
+          // Probed before it is saved, so a typo is caught here rather than by
+          // a blank window that says nothing about which half was wrong.
+          const probed = await window.dd.probe(url.value);
+          if (!report(probed)) return;
+          const result = await window.dd.connect(url.value);
+          if (!result.ok) report(result);
+        }),
+      );
+
+      url.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") $("go").click();
+      });
+
+      window.dd.onProblem((problem) => {
+        if (!problem) return;
+        show(
+          "warn",
+          `連不上 ${problem.url || ""}`,
+          `${problem.description || ""}${problem.code ? ` (${problem.code})` : ""}。` +
+            "後端可能還沒起來——在 repo 目錄跑 docker compose up -d，再按「連線並記住」。",
+        );
+      });
+
+      window.dd.current().then((saved) => {
+        url.value = saved || "http://127.0.0.1:8080";
+        url.focus();
+        url.select();
+      });
+    </script>
+  </body>
+</html>
