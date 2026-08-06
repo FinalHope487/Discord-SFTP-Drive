@@ -369,7 +369,7 @@ function VerifyNote({ t, failed }) {
         </span>
       </div>
       <div style={{ fontSize: 11, lineHeight: 1.5, color: "var(--color-neutral-500)" }}>
-        {failed ? t("integrity.body", { path: "" }) : t("detail.unverifiedNote")}
+        {failed ? t("integrity.bodyShort") : t("detail.unverifiedNote")}
       </div>
     </div>
   );
