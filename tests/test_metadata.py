@@ -197,8 +197,17 @@ async def test_opening_for_writing_without_writing_does_not_change_mtime(sftp):
 
 
 # ------------------------------------------------------------------ indexes
+#
+# These three read `fake_db.nodes.indexes` -- the fake's record of what was
+# asked for, not indexes that exist -- and the last two drive MongoDB's
+# refusal to change an index in place by injecting `OperationFailure`. None of
+# that has a SQLite counterpart, so they are marked `mongo_only` and skipped
+# under `--db=sqlite`, where the same indexes are instead built for real and
+# enforced. What `_ensure_indexes` asks for is pinned backend-independently in
+# `test_db_indexes.py`.
 
 
+@pytest.mark.mongo_only
 async def test_the_name_index_is_created_unique(fake_db):
     """Two files sharing a name under one parent make lookups order-dependent.
 
@@ -229,6 +238,7 @@ async def test_the_name_index_is_created_unique(fake_db):
                for o in by_name)
 
 
+@pytest.mark.mongo_only
 async def test_an_existing_non_unique_index_is_upgraded(fake_db):
     """What an upgrade actually hits.
 
@@ -256,6 +266,7 @@ async def test_an_existing_non_unique_index_is_upgraded(fake_db):
     assert any(o.get("unique") for o in by_name), "the index was never upgraded"
 
 
+@pytest.mark.mongo_only
 async def test_duplicates_block_the_upgrade_with_a_readable_error(fake_db):
     # The one case that cannot be resolved automatically: which duplicate to
     # keep is not the server's decision.

@@ -57,6 +57,40 @@ TEST_CHUNK_SIZE = 64 * 1024
 SFTP_CREDENTIALS = {"username": TEST_USER, "password": TEST_PASSWORD}
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--db", action="store", default="fake", choices=("fake", "sqlite"),
+        help="which metadata store the suite runs against: the in-memory fake "
+             "(default) or the real SQLite backend the standalone build uses")
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "mongo_only: exercises MongoDB-specific behaviour and is skipped "
+        "under --db=sqlite")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip the MongoDB-only tests when the suite is running on SQLite.
+
+    Skipped rather than adapted. The three tests this touches drive the index
+    *migration* path -- MongoDB refusing to change an index in place, and the
+    recovery `db.py` performs when that happens -- by injecting
+    `pymongo.errors.OperationFailure`. SQLite has no such behaviour to have,
+    and a shim that pretended to would be testing the shim.
+
+    Following `test_compose_coverage.py`: a skip says the question was not
+    asked, while a pass would answer it wrongly.
+    """
+    if config.getoption("--db") != "sqlite":
+        return
+    skip = pytest.mark.skip(reason="MongoDB-specific; --db=sqlite is running")
+    for item in items:
+        if "mongo_only" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def isolated_directory_locks():
     """Empty the VFS's directory-lock registry between tests.
@@ -108,9 +142,30 @@ def fake_discord(monkeypatch):
 
 
 @pytest.fixture
-def fake_db(monkeypatch):
-    """A fresh empty node collection per test, so tests cannot leak into each
-    other through the metadata store."""
+async def fake_db(request, monkeypatch, tmp_path):
+    """A fresh empty metadata store per test, so tests cannot leak into each
+    other through it.
+
+    Under `--db=sqlite` this is the real SQLite backend on a file in the
+    test's own tmp directory, not a stand-in. Running the whole suite that way
+    is what proves `src/sqlitedb.py` agrees with MongoDB about the things this
+    project depends on, using the assertions that were written against
+    MongoDB's behaviour rather than a second set written against my reading of
+    it.
+
+    The indexes are built for real in that mode, which makes it *stricter*
+    than the fake: `tests/fakes.py` says outright that it does not enforce
+    uniqueness, so nothing in this suite has ever proved that two live
+    siblings cannot share a name. Here they cannot.
+    """
+    if request.config.getoption("--db") == "sqlite":
+        from tests.sqlite_support import SqliteTestDB
+
+        db = SqliteTestDB(str(tmp_path / "metadata.sqlite3"))
+        monkeypatch.setattr(Database, "db", db)
+        await Database._ensure_indexes()
+        return db
+
     db = FakeDB()
     monkeypatch.setattr(Database, "db", db)
     return db

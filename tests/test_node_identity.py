@@ -84,7 +84,22 @@ async def test_swapping_two_filenames_is_caught_on_both(vfs, fake_db):
 
     a = _doc(fake_db, filename="report-2024.pdf")
     b = _doc(fake_db, filename="report-2026.pdf")
-    a["filename"], b["filename"] = b["filename"], a["filename"]
+
+    # Through a spare name, rather than the direct swap this used to do.
+    #
+    # A direct swap writes one of them onto the other's live name before the
+    # other has let it go, and the unique index over live nodes refuses that
+    # -- on MongoDB and on SQLite alike. So the original two lines described
+    # an attack that could not be carried out against either real database,
+    # and passed only because `FakeDB` does not enforce uniqueness. Running
+    # this suite under `--db=sqlite`, where the index is real, is what
+    # surfaced it.
+    #
+    # The end state and the assertions below are exactly what they were. Only
+    # the route is one an attacker could actually take.
+    a["filename"] = "report-swap.tmp"
+    b["filename"] = "report-2024.pdf"
+    a["filename"] = "report-2026.pdf"
 
     with pytest.raises(IntegrityError):
         await vfs.get_node("/report-2026.pdf")
