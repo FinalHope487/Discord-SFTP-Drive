@@ -262,6 +262,38 @@ class DiscordAPI:
         self._remember_url(message_id, url)
         return message_id, url, size
 
+    async def iter_messages(self, *, page: int = 100):
+        """Every message in the target channel, newest first.
+
+        Read-only, and the only thing in this client that walks history rather
+        than addressing one message by id. It exists for
+        `scripts/find_orphans.py`: an attachment whose node is gone cannot be
+        found from the database side, because from the database's point of view
+        there is nothing there to find. The only way to see it is to ask
+        Discord what it is holding and subtract what we still reference.
+
+        Paginated with `before` rather than an offset. Discord has no offset
+        paging, and snowflake ids are monotonic, so this walks strictly
+        backwards and cannot skip or repeat a message if one is posted while
+        it runs. `_request` carries the retry and rate-limit handling, which
+        matters more here than anywhere else: this is the one call that issues
+        hundreds of requests in a row with nothing else pacing it.
+        """
+        channel_id = await self.get_target_channel_id()
+        before = None
+
+        while True:
+            params = {"limit": page}
+            if before is not None:
+                params["before"] = before
+            batch = await self._request(
+                "GET", f"/channels/{channel_id}/messages", params=params)
+            if not batch:
+                return
+            for message in batch:
+                yield message
+            before = batch[-1]["id"]
+
     def _remember_url(self, message_id: str, url: str):
         self._url_cache[message_id] = (url, _url_expiry(url))
         self._url_cache.move_to_end(message_id)
