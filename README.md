@@ -20,6 +20,21 @@ the next read or listing.
 
 ## Running it
 
+Once `.env` and `secrets/sftp_password` exist, one command builds the client,
+starts everything, and waits until the drive can actually be opened:
+
+```powershell
+.\scripts\start.ps1
+```
+
+It prints the address to open — `http://127.0.0.1:8080` on the default mapping,
+though it asks Docker where port 8080 really landed rather than assuming. The
+wait matters: `docker compose up -d` returns while the server is still
+authenticating against Discord and building its indexes, and opening the address
+in that window gives a connection refused that reads like a broken deployment.
+
+The steps by hand, which is what the script runs:
+
 ```bash
 cp .env.example .env   # then fill it in; every REQUIRED value has no default
 docker compose up -d --build
