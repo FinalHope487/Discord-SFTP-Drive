@@ -27,6 +27,7 @@ settings.json
 
 # Personal-eyes-only project notes, not meant for the tracked history.
 BLUEPRINT.md
+BLUEPRINT.md.bak
 AGY_GEMINI_EVAL.md
 
 # The client. `dist/` is a build product -- it is mounted into the container

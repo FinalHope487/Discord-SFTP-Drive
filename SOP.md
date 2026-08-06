@@ -46,3 +46,6 @@
 
 `改動牽涉到資料庫「約束」（唯一索引、外鍵之類）時，測試全綠但真實 MongoDB 會炸 → 1. 先問「這個假件有沒有假裝實作它其實不強制的東西」：tests/fakes.py 的 create_index 明講了『唯一性是 MongoDB 的職責，這裡只記錄不強制』，所以任何依賴唯一索引的設計在假件上必然全綠 2. 判準是「我的改動有沒有讓兩份文件共用同一組索引鍵」——垃圾桶讓被刪節點保留原本的 (parent_id, filename)，於是『刪掉再建同名檔案』在真 DB 上是 duplicate key，在假件上什麼事都沒有 3. 補法是斷言「我們有沒有去要求那個約束」（索引選項、partialFilterExpression 的內容），而不是斷言約束生效 → 假件刻意不模擬的那一半，非應用程式邏輯問題`
 （2026-08-03 寫入。「單元測試全綠、實地才壞」的第二個軸線：上一條是協定層繞過 VFS 層，這條是持久層假件與真件行為不同。共同點是**測試證明的東西比它看起來證明的少**，而發現方式不是更用力寫測試，是去讀那個替身自己宣告了不做什麼。順帶：改索引選項時，舊的「重新 create 一次以取得名稱」復原路徑會失效，因為那次 create 也會撞 conflict；改用 index_information() 依 key spec 反查名稱。）
+
+`測試單獨跑都過，一起跑就有一個之後全部卡住不動（沒有錯誤、沒有 timeout，就是停住）→ 1. 先懷疑模組層級的 asyncio 同步原語（本專案是 src/vfs.py 的 _dir_locks），不要先去看卡住的那一支測試——它多半是受害者不是兇手 2. 判準：pytest 的 event loop 是每支測試一個，而 asyncio.Lock 屬於它被 await 的那個 loop。一支測試結束時若還有 task 停在 async with 裡（被 abort 的 SSH 連線、還沒收尾的背景 task），那個 finally 永遠不會跑，鎖就以「已鎖住」的狀態留在字典裡；而它的鍵是 root 這種跨測試不變的 id，於是之後每一支都在等一個屬於已消失的 loop 的鎖 3. 定位方法是 autouse fixture 在每支測試後印出 registry 內容與持有者 task，兇手會自己現形（本專案就是這樣一次抓到的）4. 修法兩層：conftest 加 autouse fixture 在每支測試「之前」清空 registry，以及回頭修那支留下 pending task 的測試（多半是等錯了事件——共用的 Event 被前一個連線先 set 過而忘了 clear）→ 模組層級狀態跨 event loop，非受測程式邏輯錯`
+（2026-08-06 寫入，第一次出現就寫：這是工具本身決定、必然重現的一類。症狀完全不指向原因——卡住的是後面的測試，錯的是前面那支——而且它與 src/db.py 開頭警告的 Motor「attached to a different loop」是同一個根因的兩種長相。順帶：這也是為什麼 _node_versions 那種純快取的模組層級 dict 無害，而帶鎖的不是。）
