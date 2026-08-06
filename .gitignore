@@ -41,6 +41,19 @@ client/app/dist/
 # them, and a release belongs on a releases page rather than in the history.
 dist-desktop/
 
+# The standalone drive. `pyinstaller discord-drive.spec` rebuilds both; the
+# spec file itself is committed, its output is not.
+dist-standalone/
+build-standalone/
+
+# A drive's own metadata, if anyone runs the standalone build from a checkout
+# with DISCORD_DRIVE_HOME pointed here. Committing one would publish the
+# filenames, sizes and structure of somebody's whole drive -- the chunks are
+# encrypted, this is what says how they fit together.
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
 # Developer mode: a second, throwaway stack (its own MongoDB volume, its own
 # master key, ports 2223/8081) used to exercise the UI against real
 # dependencies. Enabled when needed and deleted when not, so it stays out of

@@ -9,3 +9,12 @@
 pytest==8.3.3
 pytest-asyncio==0.24.0
 pyflakes==3.4.0
+
+# Builds the standalone drive -- the one that runs without Docker, on SQLite.
+# A build tool, not a runtime dependency: nothing under src/ imports it, and
+# the compose deployment never needs it installed.
+#
+# It can only build for the platform it runs on, the same restriction
+# electron-builder has (see BUILD.md). A Linux binary has to be built on
+# Linux.
+pyinstaller==6.21.0
