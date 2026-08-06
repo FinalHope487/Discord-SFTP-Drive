@@ -1,10 +1,20 @@
 """In-memory stand-ins for MongoDB and the Discord API.
 
 These cover the call contracts the VFS depends on -- nothing more. They do not
-model Discord rate limits, attachment URL expiry, or MongoDB concurrency, so a
-green suite is not a substitute for one run against real credentials.
+model Discord rate limits, attachment URL expiry, index specifications, or
+uniqueness enforcement, so a green suite is not a substitute for one run
+against real credentials.
+
+What they *do* model, since 2026-08-06, is that a database call suspends the
+coroutine that made it. Every method here yields to the event loop before doing
+its work, because every one of them is a network round trip against the real
+thing. Without that, two coroutines run to completion one after the other and
+no interleaving is reachable at all -- which meant the fake could not express
+the concurrent-write bug that made a directory stop listing, and 578 green
+tests said nothing about it. See `test_concurrent_writes.py`.
 """
 
+import asyncio
 import copy
 import uuid
 
@@ -41,6 +51,7 @@ class FakeCursor:
         self._docs = docs
 
     async def to_list(self, length=None):
+        await asyncio.sleep(0)
         return [copy.deepcopy(d) for d in self._docs]
 
 
@@ -96,6 +107,7 @@ class FakeCollection:
                         if self._index_name(keys) != name]
 
     async def find_one(self, flt):
+        await asyncio.sleep(0)
         self.find_one_calls += 1
         for d in self.docs:
             if _matches(d, flt):
@@ -103,11 +115,13 @@ class FakeCollection:
         return None
 
     async def insert_one(self, doc):
+        await asyncio.sleep(0)
         doc.setdefault("_id", str(uuid.uuid4()))
         self.docs.append(copy.deepcopy(doc))
         return type("R", (), {"inserted_id": doc["_id"]})()
 
     async def update_one(self, flt, update):
+        await asyncio.sleep(0)
         for d in self.docs:
             if _matches(d, flt):
                 d.update(copy.deepcopy(update.get("$set") or {}))
@@ -122,6 +136,7 @@ class FakeCollection:
         raise AssertionError(f"update_one matched nothing: {flt}")
 
     async def replace_one(self, flt, doc, upsert=False):
+        await asyncio.sleep(0)
         for i, d in enumerate(self.docs):
             if _matches(d, flt):
                 self.docs[i] = copy.deepcopy(doc)
@@ -132,6 +147,7 @@ class FakeCollection:
         raise AssertionError(f"replace_one matched nothing: {flt}")
 
     async def delete_one(self, flt):
+        await asyncio.sleep(0)
         # A delete that raises is what a database going away mid-unwind looks
         # like, and it is the one way a rollback can leave a node behind that
         # points at attachments it has already deleted.
@@ -179,6 +195,12 @@ class FakeDiscord:
 
     def __init__(self):
         self.store = {}
+        # message id -> the attachment name it was uploaded under. Kept
+        # separately from `store` because `iter_messages` is the one caller
+        # that cares what things are called: an orphan scan matches on the
+        # `{file_id}_chunk_{index}.bin` shape to avoid claiming a message
+        # somebody else posted in the channel.
+        self.filenames = {}
         self.uploads = 0
         self.deleted = []
         # Attempt number, counted from 1, at which uploads start raising and
@@ -213,7 +235,28 @@ class FakeDiscord:
                 f"injected upload failure on attempt {self.uploads} ({filename})")
         mid = str(uuid.uuid4())
         self.store[mid] = bytes(data)
+        self.filenames[mid] = filename
         return mid, f"https://cdn.test/{mid}", len(data)
+
+    async def iter_messages(self, *, page=100):
+        """The channel's history, newest first, shaped like Discord's.
+
+        Insertion order stands in for snowflake order, which is enough for a
+        scan that only subtracts one set from another. `post_foreign` is how a
+        test puts something in the channel that is not ours at all.
+        """
+        for mid in reversed(list(self.store)):
+            await asyncio.sleep(0)
+            yield {"id": mid,
+                   "attachments": [{"filename": self.filenames.get(mid, ""),
+                                    "size": len(self.store[mid])}]}
+
+    def post_foreign(self, filename, data=b"not ours"):
+        """An attachment in the channel that this project did not upload."""
+        mid = str(uuid.uuid4())
+        self.store[mid] = data
+        self.filenames[mid] = filename
+        return mid
 
     async def get_attachment_url(self, message_id, *, refresh=False):
         if message_id not in self.store:

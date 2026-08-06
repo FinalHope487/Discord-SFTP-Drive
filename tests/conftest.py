@@ -57,6 +57,34 @@ TEST_CHUNK_SIZE = 64 * 1024
 SFTP_CREDENTIALS = {"username": TEST_USER, "password": TEST_PASSWORD}
 
 
+@pytest.fixture(autouse=True)
+def isolated_directory_locks():
+    """Empty the VFS's directory-lock registry between tests.
+
+    `src.vfs._dir_locks` is module-level on purpose -- the coroutines it
+    serialises are on different connections, and a connection gets its own
+    `DiscordVFS`, so a per-instance lock would protect nothing. In the server
+    that is exactly right: one process, one event loop, and the registry
+    empties itself as soon as nobody wants an entry.
+
+    Under pytest it is neither. Every test gets a fresh event loop, and an
+    `asyncio.Lock` belongs to the loop it was awaited on -- the same hazard
+    `src/db.py` documents for Motor. A test that ends while a task is still
+    inside `_locked_dirs` (an aborted SSH connection whose cleanup has not
+    finished, say) leaves that lock *held*, keyed by `root`, which is the same
+    id the next test uses. Every test after it then blocks for ever on a lock
+    whose owner belongs to a loop that no longer exists.
+
+    Cleared before rather than after, so a test is protected from its
+    predecessors rather than relying on each test to tidy up after itself.
+    """
+    import src.vfs as vfs_mod
+
+    vfs_mod._dir_locks.clear()
+    vfs_mod._dirs_held_by.clear()
+    return None
+
+
 @pytest.fixture(scope="session")
 def host_key(tmp_path_factory):
     # Key generation costs about a second, so it is generated once and shared;

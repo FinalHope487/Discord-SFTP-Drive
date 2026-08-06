@@ -145,13 +145,40 @@ async def test_readlink_reports_unsupported(sftp):
 # ------------------------------------------------------ overwrite and delete
 
 
-async def test_truncating_overwrite_releases_old_attachments(sftp, fake_discord):
-    # Metadata used to be dropped without deleting the Discord messages,
-    # leaving attachments nothing referenced and nothing could reclaim.
+async def test_a_truncating_overwrite_keeps_the_old_copy_until_it_is_purged(
+        sftp, vfs, fake_discord):
+    """The old copy goes to the trash now, rather than straight to Discord's
+    delete endpoint.
+
+    This used to assert the attachments were released the moment the overwrite
+    landed, and it cannot any more -- for the same reason `remove` stopped
+    emptying Discord when the trash arrived. Overwriting writes the new bytes
+    into a node of their own and swaps it in at the end, so that an upload
+    which never finishes cannot destroy what it was replacing; the file it
+    replaced is then trashed rather than deleted, which is what `restore`
+    already does when a name collides.
+
+    The guarantee that mattered -- no attachment outlives the file that owned
+    it -- has not gone away. It has moved to `purge`, which is where this now
+    checks for it. What it costs is stated plainly: the old copy occupies
+    Discord for the retention period, so overwriting a large file repeatedly
+    holds every version until the sweeper catches up.
+    """
     await _write_blob(sftp, "/blob.bin", os.urandom(PAYLOAD_SIZE))
-    before = len(fake_discord.store)
+    old = set(fake_discord.store)
+    assert len(old) > 1, "the payload should span several attachments"
+
     await _write_blob(sftp, "/blob.bin", b"tiny")
-    assert len(fake_discord.store) < before
+
+    assert old <= set(fake_discord.store), "the trashed copy must survive"
+    assert "blob.bin" in await sftp.listdir("/"), "one live file, not two"
+
+    [item] = await vfs.list_trash()
+    await vfs.purge(item["node"]["id"])
+
+    assert not (old & set(fake_discord.store)), (
+        "purging the replaced copy must release every one of its attachments"
+    )
 
 
 async def test_overwritten_content_is_correct(sftp):

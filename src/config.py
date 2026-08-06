@@ -227,6 +227,21 @@ TRASH_RETENTION_DAYS = os.getenv("TRASH_RETENTION_DAYS", "30")
 TRASH_SWEEP_SECONDS = os.getenv("TRASH_SWEEP_SECONDS", "900")
 TRASH_SWEEP_BATCH = os.getenv("TRASH_SWEEP_BATCH", "25")
 
+# How long an unfinished overwrite may sit before the same sweep collects it.
+#
+# Overwriting a file writes the new bytes into a node of its own and swaps it
+# in at the end, so the old contents survive an upload that never finishes.
+# What that leaves behind, when the process dies before it can unwind, is a
+# node no directory points at, holding attachments nothing will reference
+# again.
+#
+# Measured against `modified_at`, which every committed chunk moves, so this
+# bounds the gap between two chunks rather than the length of a whole upload --
+# a slow transfer of something enormous is never collected while it is making
+# progress. Hours rather than minutes because being early destroys somebody's
+# live upload and being late costs some Discord space.
+INCOMING_MAX_AGE_HOURS = os.getenv("INCOMING_MAX_AGE_HOURS", "24")
+
 MAX_CHUNK_SIZE = 9 * 1024 * 1024  # 9MB, under Discord's 10MiB attachment cap
 
 # How many Discord requests may be in flight at once. Firing every chunk of a
@@ -279,6 +294,9 @@ _WEB_INTEGER_FLOORS = {
     "TRASH_RETENTION_DAYS": 0,
     "TRASH_SWEEP_SECONDS": 1,
     "TRASH_SWEEP_BATCH": 1,
+    # Zero would collect an overwrite that started this second, which is a
+    # live upload destroyed under its own client.
+    "INCOMING_MAX_AGE_HOURS": 1,
 }
 
 
@@ -520,6 +538,9 @@ def trash_settings():
         "retention": int(TRASH_RETENTION_DAYS) * 24 * 3600,
         "interval": int(TRASH_SWEEP_SECONDS),
         "batch": int(TRASH_SWEEP_BATCH),
+        # Carried here rather than in a settings function of its own because
+        # the same sweep pass does both jobs on the same timer.
+        "incoming_max_age": int(INCOMING_MAX_AGE_HOURS) * 3600,
     }
 
 

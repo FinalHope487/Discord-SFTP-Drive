@@ -32,6 +32,7 @@ import asyncio
 import pytest
 
 from src import web as web_mod
+from src.vfs import ROOT_ID, DiscordVFS
 from tests.conftest import TEST_CHUNK_SIZE
 from tests.test_web import _client_for, csrf, sign_in
 
@@ -164,6 +165,58 @@ async def test_the_drive_is_still_usable_after_a_cut_upload(
             f"the interrupted upload left something behind: {names}")
     finally:
         await fresh.close()
+
+
+async def test_a_cut_overwrite_leaves_the_original_file_intact(
+        client, fake_discord, finished, master_key):
+    """The scenario the copy-on-write overwrite exists for, driven end to end.
+
+    `PUT /api/file` always opened with `truncate=True`, and truncating
+    committed the file empty and deleted its attachments before a single byte
+    of the new body had been read. Dropping the connection part way through
+    replacing a large file therefore destroyed the file being replaced, with
+    nothing recoverable anywhere: the trash was never involved, and
+    `_rollback` restores nothing for a file this handle did not create --
+    correctly, since by then there was nothing left to restore.
+
+    Everything below the disconnect is identical to the tests above. The only
+    difference is that the path already holds a file, which is the difference
+    that used to lose data.
+    """
+    headers = csrf(await sign_in(client))
+    original = b"o" * (TEST_CHUNK_SIZE * 2 + 3)
+    seeded = await client.put("/api/file?path=/keep.bin", data=original,
+                              headers=headers)
+    assert seeded.status == 201, await seeded.text()
+
+    # The seeding PUT went through the same wrapped handler.
+    finished.clear()
+    before = fake_discord.uploads
+
+    await _cut_mid_upload(client, "/keep.bin", headers=headers,
+                          sent_bytes=TEST_CHUNK_SIZE * 2,
+                          declared=TEST_CHUNK_SIZE * 8)
+    assert fake_discord.uploads > before, (
+        "nothing of the replacement reached Discord, so this would pass "
+        "without exercising the overwrite at all")
+    await asyncio.wait_for(finished.wait(), timeout=30)
+
+    # Checked through a VFS that shares nothing with the request that died,
+    # rather than through a second HTTP client: the disconnect has already
+    # destroyed this client's connector, and standing another server up on the
+    # same application object starts a second pair of sweeper tasks over the
+    # first. What is under test here is what survived in the database, and
+    # opening a file re-reads it and re-verifies its tag.
+    survivor = DiscordVFS(master_key, ROOT_ID)
+    handle = await survivor.open("/keep.bin", read=True, write=False)
+    assert (handle.size, await handle.read_at(0, handle.size)) \
+        == (len(original), original), (
+        "the interrupted overwrite damaged the file it was replacing")
+    await handle.close()
+
+    assert [e["filename"] for e in await survivor.list_dir("/")] == ["keep.bin"]
+    assert await survivor.list_trash() == [], (
+        "an overwrite that never completed must not trash the original")
 
 
 async def test_a_complete_upload_is_unaffected(client, fake_discord):

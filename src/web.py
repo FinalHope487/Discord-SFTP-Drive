@@ -894,7 +894,8 @@ def create_app(*, sessions=None, guard=None, static_dir=None) -> web.Application
     return app
 
 
-async def trash_sweeper(store, *, retention: int, interval: int, batch: int):
+async def trash_sweeper(store, *, retention: int, interval: int, batch: int,
+                        incoming_max_age: int):
     """Destroy trash past its retention, borrowing a key from whoever is on.
 
     The awkward part, and the reason this is not a plain timer over the
@@ -911,6 +912,11 @@ async def trash_sweeper(store, *, retention: int, interval: int, batch: int):
     "exactly this long": something deleted forty days ago on an account nobody
     has opened since is still there, and goes on the first sweep after the
     next sign-in. For a drive its owner logs into, that is the honest trade.
+
+    The same pass collects abandoned overwrites. It rides this timer rather
+    than getting one of its own for the same reason: both need a borrowed key,
+    both are unattended cleanup, and a second loop would be a second thing to
+    reason about while nobody is signed in. See `DiscordVFS.sweep_incoming`.
     """
     while True:
         await asyncio.sleep(interval)
@@ -931,13 +937,27 @@ async def trash_sweeper(store, *, retention: int, interval: int, batch: int):
                     session.username, result["purged"], result["attachments"],
                     result["remaining"])
 
+            try:
+                stale = await session.vfs.sweep_incoming(
+                    max_age=incoming_max_age, limit=batch)
+            except Exception:
+                logger.exception("Incoming sweep failed for %r",
+                                 session.username)
+                continue
+            if stale["swept"]:
+                logger.info(
+                    "Incoming sweep for %r collected %d abandoned upload(s) "
+                    "and %d attachment(s)",
+                    session.username, stale["swept"], stale["attachments"])
+
 
 async def _start_sweeper(app):
     limits = trash_settings()
     app[STATE]["sweeper"] = asyncio.create_task(sweeper(app[SESSIONS]))
     app[STATE]["trash_sweeper"] = asyncio.create_task(trash_sweeper(
         app[SESSIONS], retention=limits["retention"],
-        interval=limits["interval"], batch=limits["batch"]))
+        interval=limits["interval"], batch=limits["batch"],
+        incoming_max_age=limits["incoming_max_age"]))
 
 
 async def _stop_sweeper(app):

@@ -59,6 +59,7 @@ of the data and take the ordinary buffered append path.
 
 import asyncio
 import bisect
+import contextlib
 import logging
 import time
 import uuid
@@ -120,6 +121,103 @@ TAG_VERSION = 3
 # reintroduced under memory pressure and impossible to reproduce on demand. The
 # cost of keeping every entry is about 100 bytes per node ever touched.
 _node_versions: dict = {}
+
+
+class _DirLock:
+    """One directory's structural-write lock, plus how many callers want it."""
+
+    __slots__ = ("lock", "users")
+
+    def __init__(self):
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+# dir id -> `_DirLock`, and task -> the dir ids that task is holding.
+#
+# Process-wide, for the same reason `_node_versions` is: the coroutines racing
+# each other are on different connections, and a connection gets its own
+# `DiscordVFS`. A lock living on the instance would serialise a single client
+# against itself and nothing else -- while two parallel FileZilla transfers,
+# which is the default configuration, would sail straight past it.
+#
+# Entries are dropped once nobody holds or waits for one. That is safe here in
+# a way LRU eviction is not safe for `_node_versions`: a missing lock means
+# "uncontended", which is true, whereas a missing version means "unchanged",
+# which is a lie.
+_dir_locks: dict = {}
+_dirs_held_by: dict = {}
+
+
+@contextlib.asynccontextmanager
+async def _locked_dirs(*dir_ids):
+    """Serialise structural changes to each of `dir_ids`.
+
+    A structural change is stage -> mutate -> commit, and `_stage_entries`
+    computes the next tag from the children it can see at staging time. There
+    is an `await` between that read and the mutation, so two coroutines working
+    in one directory used to interleave as:
+
+        T1 stage(add A) | T2 stage(add B) | T1 insert+commit | T2 insert+commit
+
+    leaving `children = {A, B}` under a tag that covers `{B}` alone -- a
+    directory describing a child set that never existed, which `list_dir`
+    refuses for ever. There is no API that puts it back, and in the root that
+    is the whole drive. Only one field, `entries_mac_pending`, holds the staged
+    value, so the second stager simply overwrites the first.
+
+    The alternative was optimistic locking at the node level, which would also
+    close "last writer wins" and the single-replica restriction. It is the
+    bigger fix and stays on the roadmap; this one is scoped to the failure that
+    has no recovery path.
+
+    Several ids are taken in sorted order so two callers moving nodes between
+    the same pair of directories cannot each hold what the other wants.
+
+    Re-entrant per task: a caller already holding a directory may take it
+    again, which is what lets `rename` reach `purge` while holding both ends.
+    Re-entrancy is per task rather than per connection because a task is what
+    runs to completion between awaits -- two tasks on one connection are as
+    concurrent as two on separate ones.
+    """
+    task = asyncio.current_task()
+    held = _dirs_held_by.setdefault(task, set())
+    wanted = sorted({d for d in dir_ids if d} - held)
+
+    taken = []
+    try:
+        for dir_id in wanted:
+            entry = _dir_locks.get(dir_id)
+            if entry is None:
+                entry = _dir_locks[dir_id] = _DirLock()
+            # Counted before the await, so a lock somebody is queued behind is
+            # never dropped from the registry out from under them.
+            entry.users += 1
+            try:
+                await entry.lock.acquire()
+            except BaseException:
+                _forget(dir_id, entry)
+                raise
+            taken.append((dir_id, entry))
+            held.add(dir_id)
+        yield
+    finally:
+        for dir_id, entry in reversed(taken):
+            held.discard(dir_id)
+            entry.lock.release()
+            _forget(dir_id, entry)
+        if not held:
+            _dirs_held_by.pop(task, None)
+
+
+def _forget(dir_id, entry):
+    entry.users -= 1
+    if entry.users == 0 and _dir_locks.get(dir_id) is entry:
+        del _dir_locks[dir_id]
+
+
+def _holds_dir(dir_id) -> bool:
+    return dir_id in _dirs_held_by.get(asyncio.current_task(), ())
 
 
 class VFSError(Exception):
@@ -232,13 +330,19 @@ class DiscordFile:
     """
 
     def __init__(self, vfs: "DiscordVFS", node: dict, *, readable: bool,
-                 writable: bool, append: bool = False):
+                 writable: bool, append: bool = False, replaces=None):
         self._vfs = vfs
         self._key = vfs.key
         self._node = node
         self._readable = readable
         self._writable = writable
         self._append_mode = append
+        # `{"parent_id": ..., "filename": ...}` when this handle is an
+        # overwrite writing into a detached node, and `None` otherwise. Where
+        # the finished file has to be put, not which node it replaces: see
+        # `DiscordVFS._finish_overwrite` for why the occupant is resolved at
+        # closing time rather than remembered from `open`.
+        self._replaces = replaces
 
         self._buffer = bytearray()
         self._chunk_cache: "OrderedDict[int, bytes]" = OrderedDict()
@@ -629,9 +733,16 @@ class DiscordFile:
         nothing to anybody.
 
         **A file that already existed is left exactly as its last successful
-        commit, and nothing is deleted.** That includes a file this handle
-        truncated -- its previous contents were already gone, and committed
-        gone, before the failure.
+        commit, and nothing is deleted.**
+
+        That used to carry an exception, and the exception was a data loss bug:
+        a handle opened with O_TRUNC had already destroyed the old contents at
+        `open` time, so there was nothing here to leave alone. Overwrites now
+        write into a detached node of their own (`_begin_overwrite`) and only
+        swap it in at `close`, which puts them back under the first rule --
+        the detached node *is* a file this handle created, so it is removed
+        outright, and the file being replaced is untouched because this handle
+        never touched it.
 
         There is nothing to reclaim here because both callers release their
         own attachment before unwinding: `_upload_chunk` either never got one
@@ -665,52 +776,64 @@ class DiscordFile:
         if not self._node.get("_created_by_handle"):
             return
 
-        # Staged before anything is destroyed, so a failure here still leaves a
-        # readable directory. It fails only if the parent's tag already did not
-        # match its children, which means the directory was broken before this
-        # rollback and deleting the node would just make it less recoverable.
-        commit = None
         parent_id = self._node.get("parent_id")
-        if parent_id:
+
+        # Under the parent's lock like every other structural change. An unwind
+        # is a `remove` from the directory's point of view, and one racing an
+        # upload into the same directory would corrupt the entry tag in exactly
+        # the way the successful path used to -- with the extra unpleasantness
+        # that this path runs precisely when something has already gone wrong.
+        async with _locked_dirs(parent_id):
+            # Staged before anything is destroyed, so a failure here still
+            # leaves a readable directory. It fails only if the parent's tag
+            # already did not match its children, which means the directory was
+            # broken before this rollback and deleting the node would just make
+            # it less recoverable.
+            commit = None
+            if parent_id:
+                try:
+                    commit = await self._vfs._stage_entries(
+                        parent_id,
+                        remove=[(self._node["id"],
+                                 self._node.get("filename") or "")])
+                except Exception:
+                    logger.exception(
+                        "Rollback could not restage the entries of %s; leaving "
+                        "the node in place rather than deleting it out of a "
+                        "directory whose tag still covers it", parent_id)
+
+            for chunk in self._node.get("chunks", []):
+                self._tally_delete(await _safe_delete_message(chunk["message_id"]))
+
+            self._node["chunks"] = []
+            self._node["size"] = 0
+
+            if commit is None and parent_id:
+                # Nothing better to do: the attachments are already gone, so
+                # this is the stale-node shape -- listed at its size,
+                # unreadable -- and reporting it is the whole reason
+                # `stale_node` exists.
+                self._node_removed = False
+                self._reindex()
+                return
+
             try:
-                commit = await self._vfs._stage_entries(
-                    parent_id,
-                    remove=[(self._node["id"], self._node.get("filename") or "")])
+                await db.get_db().nodes.delete_one({"id": self._node["id"]})
+                _node_versions.pop(self._node["id"], None)
+                if commit is not None:
+                    await commit()
+                self._node_removed = True
             except Exception:
-                logger.exception(
-                    "Rollback could not restage the entries of %s; leaving the "
-                    "node in place rather than deleting it out of a directory "
-                    "whose tag still covers it", parent_id)
-
-        for chunk in self._node.get("chunks", []):
-            self._tally_delete(await _safe_delete_message(chunk["message_id"]))
-
-        self._node["chunks"] = []
-        self._node["size"] = 0
-
-        if commit is None and parent_id:
-            # Nothing better to do: the attachments are already gone, so this
-            # is the stale-node shape -- listed at its size, unreadable -- and
-            # reporting it is the whole reason `stale_node` exists.
-            self._node_removed = False
-            self._reindex()
-            return
-
-        try:
-            await db.get_db().nodes.delete_one({"id": self._node["id"]})
-            _node_versions.pop(self._node["id"], None)
-            if commit is not None:
-                await commit()
-            self._node_removed = True
-        except Exception:
-            # Still not fatal -- there is nothing better for an unwinding write
-            # to do -- but no longer only a log line. The attachments above are
-            # already gone, so a surviving row is a file that lists at its full
-            # size and fails on the first read. Whoever is told the upload
-            # failed has to be told that too, or "just try again" is advice
-            # that leaves an unreadable file sitting in the directory.
-            self._node_removed = False
-            logger.exception("Rollback bookkeeping failed for node %s", self._node["id"])
+                # Still not fatal -- there is nothing better for an unwinding
+                # write to do -- but no longer only a log line. The attachments
+                # above are already gone, so a surviving row is a file that
+                # lists at its full size and fails on the first read. Whoever is
+                # told the upload failed has to be told that too, or "just try
+                # again" is advice that leaves an unreadable file sitting in the
+                # directory.
+                self._node_removed = False
+                logger.exception("Rollback bookkeeping failed for node %s",
+                                 self._node["id"])
 
         self._reindex()
 
@@ -846,6 +969,22 @@ class DiscordFile:
             # fsetstat just before closing, which is exactly what `put -p`
             # does.
             await self._flush_buffer()
+
+            if self._replaces is not None:
+                # The last thing, and the only thing that makes an overwrite
+                # visible. Everything above wrote into a node no directory
+                # points at, so a failure before this line leaves the file
+                # being replaced exactly as it was.
+                try:
+                    await self._vfs._finish_overwrite(self._node,
+                                                      **self._replaces)
+                except Exception:
+                    # The swap is what "committed" means here, so failing it
+                    # means nothing was committed -- and the detached node full
+                    # of uploaded chunks has to go, or it is a leak waiting for
+                    # `sweep_incoming` to notice it hours later.
+                    await self._rollback()
+                    raise
 
 
 async def _safe_delete_message(message_id: str) -> bool:
@@ -1354,7 +1493,18 @@ class DiscordVFS:
         The existing tag is verified first, against the children that are
         actually there. Skipping that would let the next ordinary `mkdir`
         launder an earlier deletion into a freshly signed tag.
+
+        The caller must be holding this directory under `_locked_dirs`, and
+        that is checked rather than assumed. Forgetting it does not fail here
+        or anywhere near here -- it fails as a directory that stops listing,
+        much later, for whoever happened to be uploading two files at once. A
+        `RuntimeError` at the call site is a far cheaper way to find out.
         """
+        if not _holds_dir(dir_id):
+            raise RuntimeError(
+                f"_stage_entries({dir_id}) without holding its lock; wrap the "
+                "whole stage/mutate/commit in `_locked_dirs`")
+
         node = await db.get_db().nodes.find_one({"id": dir_id, "is_dir": True})
         if node is None:
             raise NotFound(dir_id)
@@ -1401,10 +1551,11 @@ class DiscordVFS:
                          else int(permissions) & PERMISSION_MASK),
             now=_now())
 
-        commit = await self._stage_entries(
-            parent["id"], add=[(node["id"], name)])
-        await db.get_db().nodes.insert_one(node)
-        await commit()
+        async with _locked_dirs(parent["id"]):
+            commit = await self._stage_entries(
+                parent["id"], add=[(node["id"], name)])
+            await db.get_db().nodes.insert_one(node)
+            await commit()
         return node
 
     async def remove(self, path: str):
@@ -1601,53 +1752,61 @@ class DiscordVFS:
 
         original = node.get("filename") or ""
         name = original
-        occupant = await db.get_db().nodes.find_one({
-            "parent_id": node["parent_id"], "filename": original,
-            "trashed_at": None})
 
-        if occupant is not None:
-            if on_conflict == "skip":
-                return {"restored": False, "conflict": True, "path": None}
-            if on_conflict == "replace":
-                # The occupant goes to the trash rather than being destroyed.
-                # Windows overwrites outright here, but Windows is answering
-                # for a filesystem where the bin already caught the old copy;
-                # letting a restore be the one operation that loses data with
-                # no way back would be a strange thing for a trash bin to do.
-                await self._set_trashed(_verify_node(self._key, occupant), _now())
-            elif on_conflict == "keep_both":
-                name = await self._free_name(node["parent_id"], original)
-            else:
-                raise AlreadyExists(_join(parent_path, original))
+        # The name check and everything it decides happen under the directory's
+        # lock. `keep_both` in particular reads the directory to pick a free
+        # name, and a name that was free when it was chosen is not a name that
+        # is still free by the time it is written.
+        async with _locked_dirs(node["parent_id"]):
+            occupant = await db.get_db().nodes.find_one({
+                "parent_id": node["parent_id"], "filename": original,
+                "trashed_at": None})
 
-        # A new name changes the (id, name) pair the parent's entry tag
-        # covers, so that tag has to be restaged. Restoring under the original
-        # name changes no membership at all and needs none of this.
-        commit = None
-        if name != original:
-            commit = await self._stage_entries(
-                node["parent_id"], add=[(node["id"], name)],
-                remove=[(node["id"], original)])
+            if occupant is not None:
+                if on_conflict == "skip":
+                    return {"restored": False, "conflict": True, "path": None}
+                if on_conflict == "replace":
+                    # The occupant goes to the trash rather than being
+                    # destroyed. Windows overwrites outright here, but Windows
+                    # is answering for a filesystem where the bin already caught
+                    # the old copy; letting a restore be the one operation that
+                    # loses data with no way back would be a strange thing for a
+                    # trash bin to do.
+                    await self._set_trashed(_verify_node(self._key, occupant),
+                                            _now())
+                elif on_conflict == "keep_both":
+                    name = await self._free_name(node["parent_id"], original)
+                else:
+                    raise AlreadyExists(_join(parent_path, original))
 
-        restored = dict(node, filename=name, trashed_at=None)
-        update = {
-            "filename": name,
-            "mac": _dir_mac(self._key, restored) if node["is_dir"]
-            else _file_mac(self._key, restored),
-            "tag_version": TAG_VERSION,
-        }
-        # Unset rather than nulled -- see `_set_trashed` for why the partial
-        # unique index makes that the difference between a restore working and
-        # a duplicate key error.
-        await db.get_db().nodes.update_one(
-            {"id": node["id"]},
-            {"$set": update, "$unset": {"trashed_at": ""}})
-        node.update(update)
-        node.pop("trashed_at", None)
-        if not node["is_dir"]:
-            _node_versions[node["id"]] = update["mac"]
-        if commit is not None:
-            await commit()
+            # A new name changes the (id, name) pair the parent's entry tag
+            # covers, so that tag has to be restaged. Restoring under the
+            # original name changes no membership at all and needs none of this.
+            commit = None
+            if name != original:
+                commit = await self._stage_entries(
+                    node["parent_id"], add=[(node["id"], name)],
+                    remove=[(node["id"], original)])
+
+            restored = dict(node, filename=name, trashed_at=None)
+            update = {
+                "filename": name,
+                "mac": _dir_mac(self._key, restored) if node["is_dir"]
+                else _file_mac(self._key, restored),
+                "tag_version": TAG_VERSION,
+            }
+            # Unset rather than nulled -- see `_set_trashed` for why the partial
+            # unique index makes that the difference between a restore working
+            # and a duplicate key error.
+            await db.get_db().nodes.update_one(
+                {"id": node["id"]},
+                {"$set": update, "$unset": {"trashed_at": ""}})
+            node.update(update)
+            node.pop("trashed_at", None)
+            if not node["is_dir"]:
+                _node_versions[node["id"]] = update["mac"]
+            if commit is not None:
+                await commit()
 
         return {"restored": True, "conflict": occupant is not None,
                 "path": _join(parent_path, name)}
@@ -1719,6 +1878,17 @@ class DiscordVFS:
         the cancellation are gone, and a caller offering this button has to say
         so. Stopping anywhere later would mean deleted documents and surviving
         attachments, which is an orphan nobody can name.
+
+        The parent's lock is held across the Discord round trips, not just
+        around the two tag writes, and that is deliberate even though purging a
+        large tree can hold it for minutes. Dropping it in between is exactly
+        the interleaving `_locked_dirs` exists to stop. Everything else in that
+        directory waits, which is the cost; the alternative was a directory
+        that stops listing, which has no cost anyone can pay later. `jobs.py`
+        already serialises purges per tree for the same reason, and
+        `purge_expired` takes the trash 25 entries at a time rather than in one
+        pass, so the sweeper never holds a directory for a whole month of
+        deletions.
         """
         node = await self.get_node_by_id(node_id)
         if node is None:
@@ -1732,29 +1902,30 @@ class DiscordVFS:
         if parent_path is None:
             raise NotFound(node_id)
 
-        subtree = await self._subtree(node)
-        commit = await self._stage_entries(
-            node["parent_id"],
-            remove=[(node["id"], node.get("filename") or "")])
+        async with _locked_dirs(node["parent_id"]):
+            subtree = await self._subtree(node)
+            commit = await self._stage_entries(
+                node["parent_id"],
+                remove=[(node["id"], node.get("filename") or "")])
 
-        attachments = 0
-        for member in subtree:
-            if member.get("is_dir"):
-                continue
-            for chunk in member.get("chunks") or []:
-                if cancelled is not None and cancelled():
-                    return {"nodes": 0, "attachments": attachments,
-                            "cancelled": True}
-                await _safe_delete_message(chunk["message_id"])
-                attachments += 1
-                if on_attachment is not None:
-                    on_attachment()
+            attachments = 0
+            for member in subtree:
+                if member.get("is_dir"):
+                    continue
+                for chunk in member.get("chunks") or []:
+                    if cancelled is not None and cancelled():
+                        return {"nodes": 0, "attachments": attachments,
+                                "cancelled": True}
+                    await _safe_delete_message(chunk["message_id"])
+                    attachments += 1
+                    if on_attachment is not None:
+                        on_attachment()
 
-        for member in subtree:
-            await db.get_db().nodes.delete_one({"id": member["id"]})
-            _node_versions.pop(member["id"], None)
+            for member in subtree:
+                await db.get_db().nodes.delete_one({"id": member["id"]})
+                _node_versions.pop(member["id"], None)
 
-        await commit()
+            await commit()
         return {"nodes": len(subtree), "attachments": attachments,
                 "cancelled": False}
 
@@ -1804,63 +1975,88 @@ class DiscordVFS:
         parent_path, name = split_path(new)
         parent = await self.require_dir(parent_path)
 
-        existing = await self.get_node(new)
-        if existing:
-            if not overwrite:
-                raise AlreadyExists(new)
-            if existing["is_dir"] and await self.live_children(existing["id"]):
-                raise NotEmpty(existing["filename"])
-
         source_parent = node["parent_id"]
         target_parent = parent["id"]
 
-        # The node's identity is part of its tag now, so a move is a retag.
-        # `modified_at` is still deliberately absent: moving a file does not
-        # modify it. The directories on either end are what changed, and a
-        # client that compares mtimes to decide what to re-transfer would
-        # otherwise see every moved file as freshly written.
-        moved = dict(node, parent_id=target_parent, filename=name)
-        update = {
-            "parent_id": target_parent,
-            "filename": name,
-            "mac": _dir_mac(self._key, moved) if node["is_dir"]
-            else _file_mac(self._key, moved),
-            "tag_version": TAG_VERSION,
-        }
+        # Both ends are held for the whole operation, and the occupant lookup
+        # sits inside that rather than in front of it: this is a check followed
+        # by an act on two directories at once, and the window between them is
+        # where a concurrent write into either end would land.
+        async with _locked_dirs(source_parent, target_parent):
+            existing = await self.get_node(new)
+            if existing:
+                if not overwrite:
+                    raise AlreadyExists(new)
+                if existing["is_dir"] and \
+                        await self.live_children(existing["id"]):
+                    raise NotEmpty(existing["filename"])
 
-        gone = [(existing["id"], existing["filename"])] if existing else []
-        arriving = [(node["id"], name)]
+                # Destroyed through `purge`, not by deleting the one row.
+                #
+                # Emptiness is judged on *live* children, which is what makes
+                # `rm *` followed by `rmdir` work over SFTP -- but the deleted
+                # ones are still sitting in the directory waiting out their
+                # retention. Removing only the directory's own document left
+                # every one of them pointing at a parent that no longer
+                # existed: `_ancestors_of` could not reach the root, so
+                # `list_trash` would not list them, the sweeper would never
+                # come for them, and `purge` could not be asked for them by
+                # name. Their Discord attachments were then unreachable for
+                # good. `rm *` and then `posix_rename` another directory over
+                # the top is an ordinary thing to do.
+                #
+                # Trashed first because `purge` refuses a live node, and that
+                # refusal is worth keeping: destroying something that was never
+                # deleted should take two steps here as well. It also means a
+                # crash between the two leaves the target in the trash, which
+                # is recoverable, rather than half destroyed.
+                await self._set_trashed(existing, _now())
+                await self.purge(existing["id"])
 
-        # One staging call when both ends are the same directory: each call
-        # recomputes from the children on disk, so a second one would discard
-        # what the first staged.
-        if source_parent == target_parent:
-            commits = [await self._stage_entries(
-                target_parent,
-                add=arriving,
-                remove=gone + [(node["id"], node["filename"])])]
-        else:
-            commits = [
-                await self._stage_entries(
-                    source_parent, remove=[(node["id"], node["filename"])]),
-                await self._stage_entries(
-                    target_parent, add=arriving, remove=gone),
-            ]
+            # The node's identity is part of its tag now, so a move is a retag.
+            # `modified_at` is still deliberately absent: moving a file does not
+            # modify it. The directories on either end are what changed, and a
+            # client that compares mtimes to decide what to re-transfer would
+            # otherwise see every moved file as freshly written.
+            moved = dict(node, parent_id=target_parent, filename=name)
+            update = {
+                "parent_id": target_parent,
+                "filename": name,
+                "mac": _dir_mac(self._key, moved) if node["is_dir"]
+                else _file_mac(self._key, moved),
+                "tag_version": TAG_VERSION,
+            }
 
-        if existing:
-            if not existing["is_dir"]:
-                for chunk in existing.get("chunks", []):
-                    await _safe_delete_message(chunk["message_id"])
-            await db.get_db().nodes.delete_one({"id": existing["id"]})
-            _node_versions.pop(existing["id"], None)
+            arriving = [(node["id"], name)]
 
-        await db.get_db().nodes.update_one({"id": node["id"]}, {"$set": update})
-        node.update(update)
-        if not node["is_dir"]:
-            _node_versions[node["id"]] = update["mac"]
+            # Nothing to remove for the overwritten target: `purge` above has
+            # already staged and promoted its removal from this directory. A
+            # second `remove` for it here would be staging a tag against
+            # children that no longer include it, and staging the same
+            # directory twice in one operation discards the first attempt --
+            # each call recomputes from the children on disk. That is also why
+            # both ends share a single staging call when they are the same
+            # directory.
+            if source_parent == target_parent:
+                commits = [await self._stage_entries(
+                    target_parent,
+                    add=arriving,
+                    remove=[(node["id"], node["filename"])])]
+            else:
+                commits = [
+                    await self._stage_entries(
+                        source_parent, remove=[(node["id"], node["filename"])]),
+                    await self._stage_entries(target_parent, add=arriving),
+                ]
 
-        for commit in commits:
-            await commit()
+            await db.get_db().nodes.update_one({"id": node["id"]},
+                                               {"$set": update})
+            node.update(update)
+            if not node["is_dir"]:
+                _node_versions[node["id"]] = update["mac"]
+
+            for commit in commits:
+                await commit()
 
     async def open(self, path: str, *, read: bool, write: bool, create: bool = False,
                    truncate: bool = False, append: bool = False,
@@ -1874,19 +2070,179 @@ class DiscordVFS:
         if node and exclusive:
             raise AlreadyExists(normalized)
 
+        replaces = None
         if not node:
             if not (write and create):
                 raise NotFound(normalized)
             node = await self._create_file(normalized)
             node["_created_by_handle"] = True
         elif write and truncate:
-            await self._truncate(node)
+            # Not a truncate any more. See `_begin_overwrite`.
+            replaces = {"parent_id": node["parent_id"],
+                        "filename": node["filename"]}
+            node = await self._begin_overwrite(node)
+            node["_created_by_handle"] = True
 
         # Opening an existing file for writing without O_TRUNC used to be
         # refused outright. It now patches in place, which is slow but
         # correct -- see DiscordFile._write_random.
         return DiscordFile(self, node, readable=read, writable=write,
-                           append=bool(append))
+                           append=bool(append), replaces=replaces)
+
+    async def _begin_overwrite(self, old: dict) -> dict:
+        """Start an overwrite beside the file rather than on top of it.
+
+        This used to be a truncate: `_resize_node(node, 0)`, which drops the
+        chunks, deletes the attachments and commits, all before the first new
+        byte arrives. An upload that then stopped -- a browser tab closed, a
+        dropped connection, a Discord outage -- left the old contents gone for
+        good, and `_rollback` deliberately restores nothing for a file it did
+        not create, because by then there is nothing left to restore. The trash
+        could not help either: nothing was ever trashed.
+
+        So the incoming bytes go to a node of their own and the old file is not
+        touched until there is something whole to put in its place. Readers on
+        the old path keep seeing the old contents throughout, and a failure at
+        any point leaves them exactly as they were.
+
+        The incoming node is *detached*: `parent_id` and `filename` are both
+        None, so it is in no directory. That is what keeps it out of listings,
+        search and the trash without any of them having to learn to hide it --
+        the alternative, a reserved filename filtered out on the way to the
+        client, is the "visible here, missing there" side channel this codebase
+        has already been bitten by twice. Its tag covers the empty parent and
+        the empty name like any other node's, so nothing about the integrity
+        model changes.
+
+        Permissions and `created_at` come from the file being replaced: this is
+        the same file from the client's point of view, and O_TRUNC does not
+        reset a mode.
+
+        What it costs is real and worth stating: both copies are on Discord
+        until the old one is purged out of the trash, and an upload that dies
+        without unwinding leaves a detached node behind. `sweep_incoming` is
+        what collects those.
+        """
+        now = _now()
+        node = {
+            "id": str(uuid.uuid4()),
+            "parent_id": None,
+            "filename": None,
+            "is_dir": False,
+            "size": 0,
+            "permissions": old.get("permissions", DEFAULT_FILE_MODE),
+            "created_at": old.get("created_at", now),
+            "modified_at": now,
+            "chunks": [],
+            "tag_version": TAG_VERSION,
+        }
+        node["mac"] = _file_mac(self._key, node)
+
+        await db.get_db().nodes.insert_one(node)
+        _node_versions[node["id"]] = node["mac"]
+        return node
+
+    async def _finish_overwrite(self, incoming: dict, *, parent_id: str,
+                                filename: str):
+        """Swap a finished incoming node into place. Called only from `close`.
+
+        The occupant is looked up by name rather than remembered from `open`,
+        because between the two somebody may have renamed it away, deleted it,
+        or finished their own overwrite of the same path. Whatever is living
+        under that name at this moment is what gets replaced -- last writer
+        wins, which is the semantics this service already has and says so.
+
+        The occupant goes to the trash rather than being destroyed, matching
+        what `restore` does when a name collides. It keeps its `(parent_id,
+        filename)` on the way in; the unique index over that pair is partial
+        and covers live nodes only, which is exactly what lets the incoming
+        node take the name in the same breath.
+
+        Order: trash the occupant, then stage, then rename, then promote. The
+        trashing has to come first or the index refuses two live nodes under
+        one name, and the staging has to see the membership it is signing for.
+        """
+        async with _locked_dirs(parent_id):
+            occupant = await db.get_db().nodes.find_one({
+                "parent_id": parent_id, "filename": filename,
+                "trashed_at": None})
+
+            if occupant is not None and occupant["id"] != incoming["id"]:
+                if occupant.get("is_dir"):
+                    # A directory took the name while the upload was in
+                    # flight. Trashing it would take its whole subtree out of
+                    # view to land a file nobody asked to put there.
+                    raise IsADirectory(filename)
+                await self._set_trashed(_verify_node(self._key, occupant),
+                                        _now())
+
+            commit = await self._stage_entries(
+                parent_id, add=[(incoming["id"], filename)])
+
+            attached = dict(incoming, parent_id=parent_id, filename=filename)
+            update = {
+                "parent_id": parent_id,
+                "filename": filename,
+                "mac": _file_mac(self._key, attached),
+                "tag_version": TAG_VERSION,
+            }
+            await db.get_db().nodes.update_one({"id": incoming["id"]},
+                                               {"$set": update})
+            incoming.update(update)
+            _node_versions[incoming["id"]] = update["mac"]
+            await commit()
+
+    async def sweep_incoming(self, *, max_age: int, limit: int = 25) -> dict:
+        """Collect incoming nodes whose upload never finished.
+
+        An overwrite that unwinds cleans up after itself. One that does not get
+        the chance -- the process is killed, the machine loses power -- leaves a
+        detached node holding attachments that nothing will ever reference
+        again. `scripts/find_orphans.py` cannot see them either: from Discord's
+        side those attachments still have a node pointing at them, so they are
+        not orphans, just unreachable.
+
+        Age is measured on `modified_at`, which every committed chunk moves, so
+        an upload that is still making progress is never old however long it
+        takes overall. `max_age` only has to exceed the time between two chunks,
+        and its default is hours rather than minutes because the cost of
+        waiting is some Discord space and the cost of being wrong is a live
+        upload destroyed under its own client.
+
+        The tag is verified before anything is deleted, and a node that fails
+        is left alone with a warning rather than swept. A detached node is
+        deleted by its `chunks` field, so acting on an unverified one would let
+        anybody with database access nominate another file's attachments for
+        destruction.
+        """
+        cutoff = _now() - max_age
+        detached = await db.get_db().nodes.find(
+            {"parent_id": None, "is_dir": False}).to_list(None)
+
+        swept = attachments = 0
+        for node in detached:
+            if swept >= limit:
+                break
+            if int(node.get("modified_at") or 0) > cutoff:
+                continue
+            try:
+                _verify_node(self._key, node)
+            except IntegrityError:
+                # Not ours, or tampered with. Both are reasons to stop, and
+                # neither is a reason to delete anything.
+                logger.warning(
+                    "Incoming node %s failed verification; leaving it alone",
+                    node.get("id"))
+                continue
+
+            for chunk in node.get("chunks") or []:
+                await _safe_delete_message(chunk["message_id"])
+                attachments += 1
+            await db.get_db().nodes.delete_one({"id": node["id"]})
+            _node_versions.pop(node["id"], None)
+            swept += 1
+
+        return {"swept": swept, "attachments": attachments}
 
     async def _create_file(self, normalized: str) -> dict:
         parent_path, name = split_path(normalized)
@@ -1909,10 +2265,12 @@ class DiscordVFS:
         # that every other file passes.
         node["mac"] = _file_mac(self._key, node)
 
-        commit = await self._stage_entries(parent["id"], add=[(node["id"], name)])
-        await db.get_db().nodes.insert_one(node)
-        _node_versions[node["id"]] = node["mac"]
-        await commit()
+        async with _locked_dirs(parent["id"]):
+            commit = await self._stage_entries(parent["id"],
+                                               add=[(node["id"], name)])
+            await db.get_db().nodes.insert_one(node)
+            _node_versions[node["id"]] = node["mac"]
+            await commit()
         return node
 
     async def set_metadata(self, path: str, **fields):
@@ -1931,10 +2289,9 @@ class DiscordVFS:
             raise IsADirectory(normalize_path(path))
         await _resize_node(self._key, node, size)
 
-    async def _truncate(self, node: dict):
-        """Drop the file's contents, releasing the Discord messages too.
-
-        The old code cleared `chunks` in MongoDB only, leaving every previous
-        attachment referenced by nothing.
-        """
-        await _resize_node(self._key, node, 0)
+    # `_truncate` used to live here, and `open(truncate=True)` was its only
+    # caller. Emptying the node in place is what made an interrupted overwrite
+    # destroy the old contents, so that path now goes through
+    # `_begin_overwrite` instead. Truncating by path -- SFTP `setstat` with a
+    # size -- is a different operation with different expectations and still
+    # resizes in place, through `truncate` above.

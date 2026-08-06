@@ -152,3 +152,81 @@ async def test_posix_rename_releases_the_replaced_attachments(sftp, fake_discord
     await sftp.posix_rename("/a/orig.bin", "/b/target.bin")
 
     assert len(fake_discord.store) < before
+
+
+# ------------------------------------------- overwriting a directory's remains
+
+
+async def _names(sftp, path):
+    """`listdir` without the two entries every directory has."""
+    return sorted(name for name in await sftp.listdir(path)
+                  if name not in (".", ".."))
+
+
+async def test_overwriting_a_directory_destroys_its_trashed_children(
+        sftp, vfs, fake_discord, tree):
+    """`rm *` then `posix_rename` over the top, which is an ordinary sequence.
+
+    Emptiness is judged on live children only -- deliberately, since that is
+    what lets a client clear a directory over SFTP and then `rmdir` it. What
+    the overwrite branch then did was delete the directory's own document and
+    nothing else, so every child still sitting in the trash was left pointing
+    at a parent that no longer existed.
+
+    Nothing could reach them after that. `_ancestors_of` could not walk to the
+    root, so `list_trash` did not list them, the sweeper never came for them,
+    and `purge` could not be asked for them by name. Their Discord attachments
+    were unreachable for good -- a leak with no tool that could even report it.
+    """
+    await sftp.mkdir("/victim")
+    untouched = set(fake_discord.store)
+    async with sftp.open("/victim/doomed.bin", "wb") as f:
+        await f.write(os.urandom(PAYLOAD_SIZE))
+    doomed = set(fake_discord.store) - untouched
+    assert len(doomed) > 1, "the payload should span several attachments"
+
+    # Into the trash, not destroyed: this is what `rm` does now.
+    await sftp.remove("/victim/doomed.bin")
+    assert len(await vfs.list_trash()) == 1
+    assert doomed <= set(fake_discord.store), "the trash must keep the chunks"
+
+    await sftp.posix_rename("/a", "/victim")
+
+    assert await vfs.list_trash() == [], (
+        "a trashed child survived the overwrite of its parent, and nothing "
+        "can reach it any more")
+    assert not (doomed & set(fake_discord.store)), (
+        "the trashed child's attachments were left on Discord with no node "
+        "anywhere pointing at them")
+    assert untouched <= set(fake_discord.store), (
+        "the purge reached past the directory it was overwriting")
+
+
+async def test_overwriting_a_directory_with_live_children_is_still_refused(
+        sftp, vfs, tree):
+    """The purge is for what the emptiness check ignores, not a way around it."""
+    await sftp.mkdir("/victim")
+    async with sftp.open("/victim/alive.bin", "wb") as f:
+        await f.write(b"still here")
+
+    with pytest.raises(asyncssh.SFTPError):
+        await sftp.posix_rename("/a", "/victim")
+
+    assert await _names(sftp, "/victim") == ["alive.bin"]
+    assert "a" in await _names(sftp, "/")
+
+
+async def test_the_directory_the_overwrite_happened_in_still_lists(sftp, vfs, tree):
+    """Two staged tags on one directory in one operation is how this breaks.
+
+    The purge stages and promotes the target's removal, and the rename then
+    stages the same directory again. Staging recomputes from the children on
+    disk, so an extra `remove` for something already gone would sign for a set
+    that is not there -- and the directory would stop listing, which is the
+    failure mode with no recovery path.
+    """
+    await sftp.mkdir("/victim")
+    await sftp.posix_rename("/a", "/victim")
+
+    assert await _names(sftp, "/") == ["b", "victim"]
+    assert await _names(sftp, "/victim") == ["orig.bin"]

@@ -157,24 +157,60 @@ async def test_a_metadata_failure_releases_only_the_attachment_it_just_made(
     assert await _read_back(master_key, "/blob.bin") == (len(PAYLOAD), PAYLOAD)
 
 
-async def test_a_truncated_file_that_then_fails_stays_empty(
+async def test_an_overwrite_that_fails_leaves_the_old_contents_alone(
     vfs, fake_discord, master_key
 ):
-    """The case `_rollback`'s docstring always claimed to cover.
+    """The case `_rollback`'s docstring used to claim it covered.
 
-    `O_TRUNC` commits the file empty at open time, so its old contents are
-    gone -- and committed gone -- before any upload is attempted. Leaving the
-    node alone is what keeps it empty; there is nothing to restore.
+    It did not cover it; it described it. `O_TRUNC` committed the file empty at
+    open time, so by the time a write failed the old contents were already gone
+    -- and the docstring's "there is nothing to restore" was true precisely
+    because the damage had already been done, unrecoverably, before the upload
+    that failed was even attempted. Closing the browser tab half way through
+    replacing a file destroyed the file.
+
+    Overwrites now go into a detached node and only take the name at `close`,
+    so a failure anywhere before that leaves the original untouched. This
+    asserts the whole of it: the bytes still read back, and the file is still
+    the same file rather than a restored copy.
     """
     await _seed(vfs, "/blob.bin", PAYLOAD)
+    original = (await vfs.get_node("/blob.bin"))["id"]
     fake_discord.fail_uploads_from = fake_discord.uploads + 1
 
     handle = await vfs.open("/blob.bin", read=False, write=True, truncate=True)
     with pytest.raises(DiscordFailure):
         await handle.write_at(0, EXTRA)
 
-    assert fake_discord.store == {}, "truncation should have released them all"
-    assert await _read_back(master_key, "/blob.bin") == (0, b"")
+    assert await _read_back(master_key, "/blob.bin") == (len(PAYLOAD), PAYLOAD)
+    assert (await vfs.get_node("/blob.bin"))["id"] == original
+
+
+async def test_a_failed_overwrite_leaves_nothing_behind_on_discord(
+    vfs, fake_discord, master_key
+):
+    """The other half: the abandoned attempt does not leak.
+
+    The failing write is two chunks, the first of which lands. Without an
+    unwind that chunk would sit on Discord for ever, referenced by a detached
+    node no directory can reach -- invisible to `list_trash`, and invisible to
+    `find_orphans` too, since from Discord's side something *does* still point
+    at it.
+    """
+    await _seed(vfs, "/blob.bin", PAYLOAD)
+    kept = set(fake_discord.store)
+    fake_discord.fail_uploads_from = fake_discord.uploads + 2
+
+    handle = await vfs.open("/blob.bin", read=False, write=True, truncate=True)
+    with pytest.raises(DiscordFailure):
+        await handle.write_at(0, EXTRA + EXTRA)
+
+    assert set(fake_discord.store) == kept, (
+        "the abandoned overwrite left an attachment behind"
+    )
+    assert await vfs.get_node_by_id(handle.node["id"]) is None, (
+        "the detached node outlived the write it was staging"
+    )
 
 
 # ------------------------------------------------------- the failed handle
