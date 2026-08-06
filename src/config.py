@@ -123,8 +123,26 @@ DISCORD_BOT_TOKEN = _setting("DISCORD_BOT_TOKEN")
 DISCORD_USER_ID = os.getenv("DISCORD_USER_ID")
 DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 
+# Which metadata store to use. `mongo` is the compose deployment and stays the
+# default, so an existing `.env` keeps behaving exactly as it did.
+#
+# `sqlite` is the standalone build: one file, no server, no container. The two
+# are not interchangeable for a given deployment -- there is no migration
+# either way and the file formats have nothing in common -- so this chooses
+# which drive you are opening, not merely how it is stored.
+DB_BACKEND = os.getenv("DB_BACKEND", "mongo")
+
 MONGO_URI = _setting("MONGO_URI") or "mongodb://127.0.0.1:27017"
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "discord_sftp_vfs")
+
+# Where the standalone build keeps its metadata. Ignored under `mongo`.
+#
+# Losing this file loses the drive: the chunks on Discord are still there, but
+# what says which chunks belong to which file, in what order, under what name
+# -- and every integrity tag proving none of that was tampered with -- is only
+# here. `SFTP_PASSWORD` and this file are both required, and neither one
+# substitutes for the other.
+SQLITE_PATH = os.getenv("SQLITE_PATH", "drive.sqlite3")
 
 SFTP_USER = os.getenv("SFTP_USER")
 SFTP_PASSWORD = _setting("SFTP_PASSWORD")
@@ -268,6 +286,10 @@ MIN_PASSWORD_BYTES = 12
 
 _SUPPORTED_KDFS = {crypto.KDF_ARGON2ID, crypto.KDF_PBKDF2_SHA256}
 
+BACKEND_MONGO = "mongo"
+BACKEND_SQLITE = "sqlite"
+_SUPPORTED_BACKENDS = {BACKEND_MONGO, BACKEND_SQLITE}
+
 # Cost variables and the smallest value that is not simply nonsense. These are
 # hard floors, not the recommended settings -- `keystore` warns separately when
 # a valid-but-weak cost is configured, because "weaker than recommended" is the
@@ -341,6 +363,17 @@ def check(env=None):
                 'Generate one with: python -c "import secrets; '
                 'print(secrets.token_urlsafe(24))"'
             )
+
+    backend = env.get("DB_BACKEND")
+    if backend and backend not in _SUPPORTED_BACKENDS:
+        # Refused rather than defaulted. Falling back to `mongo` on a typo
+        # would start the standalone build against a MongoDB that is not
+        # running, and the error it eventually gave would name the connection,
+        # not the misspelling that caused it.
+        problems.append(
+            f"DB_BACKEND is not a supported metadata store: {backend!r}. "
+            f"Supported: {', '.join(sorted(_SUPPORTED_BACKENDS))}"
+        )
 
     # DM mode and channel mode are alternatives, but with neither there is
     # nowhere to put a chunk.

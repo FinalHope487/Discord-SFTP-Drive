@@ -63,8 +63,19 @@ services:
       # since which one you use is a choice, not an omission.
       - DISCORD_USER_ID=${DISCORD_USER_ID:-}
       - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID:-}
+      # Pinned, not taken from .env. This file *is* the MongoDB deployment --
+      # it defines the mongodb service, the volume and the healthcheck the app
+      # waits on -- so letting .env set this to `sqlite` would produce a stack
+      # that starts a database nothing connects to and stores its metadata in
+      # a file inside an ephemeral container layer. The standalone build is
+      # where `sqlite` belongs, and it does not come through here.
+      - DB_BACKEND=mongo
       - MONGO_URI=mongodb://${MONGO_ROOT_USERNAME:-discorddrive}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=${MONGO_DB_NAME:-discord_sftp_vfs}
+      # Unused under `mongo` and named here only so this block stays a
+      # complete answer to "what does config.py read", which is what
+      # tests/test_compose_coverage.py checks.
+      - SQLITE_PATH=/data/drive.sqlite3
       - SFTP_USER=${SFTP_USER:?set SFTP_USER in .env}
       # The password itself is NOT here; it arrives as a file, mounted from
       # the `sftp_password` secret defined at the bottom of this file. See the

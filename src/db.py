@@ -3,7 +3,13 @@ import logging
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import OperationFailure
 
-from src.config import MONGO_DB_NAME, MONGO_URI
+from src.config import (
+    BACKEND_SQLITE,
+    DB_BACKEND,
+    MONGO_DB_NAME,
+    MONGO_URI,
+    SQLITE_PATH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,11 +20,16 @@ _DUPLICATE_KEY = 11000
 
 
 class Database:
-    """Motor client bound to the process-wide event loop.
+    """The metadata store, bound to the process-wide event loop.
 
     `connect()` is a coroutine so the client is created and first used on the
     same loop — Motor attaches its futures to whichever loop is running, and
     mixing loops produces "attached to a different loop" errors at query time.
+
+    Which store it opens is `DB_BACKEND`'s to decide. Everything above this
+    class is written against the collection interface and never learns the
+    answer: `src/sqlitedb.py` implements the same one, which is what lets the
+    standalone build drop MongoDB without touching `vfs.py`.
     """
 
     client: AsyncIOMotorClient = None
@@ -26,14 +37,32 @@ class Database:
 
     @classmethod
     async def connect(cls):
-        cls.client = AsyncIOMotorClient(MONGO_URI)
-        cls.db = cls.client[MONGO_DB_NAME]
-        # Surface an unreachable MongoDB at startup rather than on first upload.
+        if DB_BACKEND == BACKEND_SQLITE:
+            from src.sqlitedb import SqliteDB
+
+            cls.client = SqliteDB(SQLITE_PATH)
+            cls.db = cls.client
+            logger.info("Metadata store: SQLite at %s", SQLITE_PATH)
+        else:
+            cls.client = AsyncIOMotorClient(MONGO_URI)
+            cls.db = cls.client[MONGO_DB_NAME]
+            logger.info("Metadata store: MongoDB")
+
+        # Surface a store that cannot be reached at startup rather than on the
+        # first upload.
         await cls.db.command("ping")
         await cls._ensure_indexes()
 
     @classmethod
     async def _ensure_indexes(cls):
+        # The single declaration of which indexes this project needs, for
+        # either backend. The commentary below is written in MongoDB's terms
+        # because that is where every one of these constraints was learned;
+        # `sqlitedb.py` translates the same requests into DDL rather than
+        # keeping a second list, so the two cannot drift into disagreeing
+        # about what the drive requires. `test_db_indexes.py` pins this
+        # declaration, and therefore pins both.
+        #
         # Path resolution walks one segment at a time; without these every
         # segment is a collection scan.
         #

@@ -128,8 +128,10 @@ async def check_discord_reachable():
 async def start_server():
     # Everything below runs on this one loop for the process's lifetime.
     # Motor and aiohttp both bind to the running loop, so there is exactly one.
+    #
+    # `connect()` reports which store it opened. It used to be logged here as
+    # "Connected to MongoDB", which the standalone build made into a lie.
     await db.connect()
-    logger.info("Connected to MongoDB")
 
     # The `finally` starts here rather than around the serve loop: the
     # reachability check can abort startup, and an aiohttp session left open
