@@ -103,6 +103,36 @@ async def test_no_index_asks_for_an_operator_a_partial_filter_rejects(index_call
         walk(call.get("partialFilterExpression") or {})
 
 
+def _trashed_at_index(calls):
+    for call in calls:
+        if call["collection"] == "nodes" and call["keys"] == "trashed_at":
+            return call
+    raise AssertionError(f"no trashed_at index was requested: {calls}")
+
+
+async def test_the_trash_sweep_index_is_partial_and_not_unique(index_calls):
+    # Partial so it holds only the trashed nodes: a live node has no
+    # `trashed_at` at all, and indexing every node in every tree to find the
+    # deleted few is the cost this index exists to remove. Not unique --
+    # any number of things may be deleted in the same second.
+    index = _trashed_at_index(index_calls)
+    assert not index.get("unique")
+    assert index["partialFilterExpression"] == {"trashed_at": {"$gt": 0}}
+
+
+async def test_the_trash_queries_match_the_partial_filter(index_calls):
+    # A partial index only serves a query the planner can prove is a subset of
+    # the index's own filter, so these two have to agree. They live in
+    # different files, and the failure when they drift is silent: the queries
+    # keep returning the right documents by scanning the collection, which is
+    # exactly the state this index was added to leave.
+    from src.vfs import _TRASHED
+
+    assert _trashed_at_index(index_calls)["partialFilterExpression"] == {
+        "trashed_at": _TRASHED
+    }
+
+
 async def test_the_accounts_and_id_indexes_are_unique(index_calls):
     # Two rows sharing a username would make which account a password opens
     # depend on insertion order -- with a master key each, that is one user

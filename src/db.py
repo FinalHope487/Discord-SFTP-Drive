@@ -81,6 +81,26 @@ class Database:
         await cls._unique_index(cls.db.users, "username")
         await cls._unique_index(cls.db.users, "id")
 
+        # The trash sweep. `purge_expired` runs every 15 minutes for each live
+        # session, and without this it read every node in every tree to find
+        # the handful that were due.
+        #
+        # Partial on `{"$gt": 0}` rather than plain, so the index holds only
+        # the trashed nodes -- a live node carries no `trashed_at` at all, and
+        # indexing the whole collection to find the small part of it that is
+        # deleted is the cost this is meant to avoid. `$gt` is inside the
+        # partial-filter grammar; `$ne` is not, which is the other reason the
+        # queries had to change.
+        #
+        # Both queries must carry `{"$gt": 0}` themselves or the planner will
+        # not use this index -- it can only use a partial index for a query it
+        # can prove is a subset of the filter. Measured against MongoDB 6.0 on
+        # four documents: `{"$ne": None}` is a COLLSCAN examining all four even
+        # with this index present, while `{"$gt": 0, "$lte": cutoff}` is an
+        # IXSCAN examining exactly the one that matched.
+        await cls._plain_index(cls.db.nodes, "trashed_at",
+                               partial={"trashed_at": {"$gt": 0}})
+
     @classmethod
     async def _index_named_by_key(cls, collection, keys):
         """The name of the existing index with this key spec, if there is one."""
@@ -146,6 +166,41 @@ class Database:
                     "restored in the meantime."
                 ) from exc
             raise
+
+    @classmethod
+    async def _plain_index(cls, collection, keys, partial=None):
+        """Create a non-unique index, replacing one of the same shape but other options.
+
+        Same rule as `_unique_index`: MongoDB will not change an index in
+        place, so a deployment carrying an earlier version of this index --
+        plain where this one is partial, say -- would make the server refuse to
+        start rather than upgrade.
+
+        There is no restore path here, unlike the unique case. A plain index
+        cannot be rejected by the data it is being built over: there are no
+        duplicates for it to refuse, so the second create only fails for
+        reasons the first one would have failed for too.
+        """
+        options = {}
+        if partial is not None:
+            options["partialFilterExpression"] = partial
+
+        try:
+            await collection.create_index(keys, **options)
+            return
+        except OperationFailure as exc:
+            if exc.code not in _INDEX_CONFLICT_CODES:
+                raise
+            conflict = exc
+
+        name = await cls._index_named_by_key(collection, keys)
+        if name is None:
+            raise conflict
+
+        logger.info("Replacing index %s on %s; its options no longer match "
+                    "what this version requires", name, collection.name)
+        await collection.drop_index(name)
+        await collection.create_index(keys, **options)
 
     @classmethod
     def get_db(cls):

@@ -108,6 +108,17 @@ ROOT_ID = "root"
 # old record outright is the same fail-closed rule the chunk tags follow.
 TAG_VERSION = 3
 
+# How a query says "this node is in the trash".
+#
+# A trashed node carries a positive `trashed_at`; a live one carries no such
+# field at all, which is what lets the partial unique index on
+# (parent_id, filename) cover only live nodes. `{"$ne": None}` describes the
+# same set of documents and was what these queries used, but it cannot appear
+# in a partialFilterExpression and MongoDB will not serve it from an index --
+# it stays a collection scan even when a usable index exists. `$gt: 0` is
+# inside the grammar and is a range the planner can seek.
+_TRASHED = {"$gt": 0}
+
 # node id -> the mac last committed for it, kept for the lifetime of the
 # process. Lets an open handle tell whether another handle changed the node
 # without a database round trip: a matching mac means nothing to do, and only
@@ -1688,16 +1699,20 @@ class DiscordVFS:
             current_id = parent.get("parent_id")
         return None, None
 
-    async def list_trash(self) -> list:
-        """The things somebody actually deleted, newest first.
+    async def _trashed_items(self, query: dict) -> list:
+        """Trashed nodes matching `query`, verified and placed, newest first.
 
         A node sitting under an already-trashed directory is left out: it went
         in when its parent did, and restoring the parent is what brings it
         back. Once that parent is restored the child shows up here on its own
         if it was separately trashed earlier, so nothing can end up deleted,
         invisible and unreachable at the same time.
+
+        Every candidate has its tag verified here rather than at the caller.
+        These nodes are never reached by path resolution again, so this is the
+        only place their tags will ever be checked.
         """
-        cursor = db.get_db().nodes.find({"trashed_at": {"$ne": None}})
+        cursor = db.get_db().nodes.find(query)
         cache: dict = {}
         items = []
         for candidate in await cursor.to_list(length=None):
@@ -1713,6 +1728,10 @@ class DiscordVFS:
         items.sort(key=lambda item: (-int(item["node"].get("trashed_at") or 0),
                                      (item["node"].get("filename") or "").lower()))
         return items
+
+    async def list_trash(self) -> list:
+        """The things somebody actually deleted, newest first."""
+        return await self._trashed_items({"trashed_at": _TRASHED})
 
     async def _free_name(self, parent_id: str, name: str) -> str:
         """`report.pdf` -> `report (2).pdf`, skipping names already taken."""
@@ -1939,8 +1958,20 @@ class DiscordVFS:
         the next sweep takes the next batch.
         """
         cutoff = _now() - retention
-        due = [item for item in await self.list_trash()
-               if int(item["node"].get("trashed_at") or 0) <= cutoff]
+        # Asked of the database rather than filtered out of the whole trash.
+        # This runs on a timer for every live session, and the collection it
+        # reads holds every node in every tree; since overwriting became
+        # copy-on-write, what feeds it grew from "files the user deleted" to
+        # "times the user overwrote something".
+        #
+        # `$gt: 0` is not redundant with `$lte: cutoff`. It is what lets the
+        # partial index in db.py serve this query -- and it says out loud that
+        # a live node must never appear here. It cannot: MongoDB's comparison
+        # operators are bracketed by type, so a missing field does not match
+        # `$lte` against a number even though null sorts below every number.
+        # Checked against 6.0, because getting that backwards would hand live
+        # nodes to `purge()`.
+        due = await self._trashed_items({"trashed_at": {**_TRASHED, "$lte": cutoff}})
 
         purged = attachments = 0
         for item in due[:limit]:

@@ -327,6 +327,79 @@ async def test_purge_expired_only_takes_what_is_due(vfs, fake_db):
         == ["recent.txt"]
 
 
+async def test_purge_expired_never_reaches_a_live_node(vfs, fake_db):
+    """The outcome that would be catastrophic rather than slow.
+
+    `purge_expired` asks for a range and hands what comes back to `purge()`,
+    so anything the query is willing to return is something the sweep will
+    destroy. A live node carries no `trashed_at` at all.
+
+    Two independent things keep it out, and this asserts the outcome rather
+    than either mechanism: `$gt: 0`, which no missing field satisfies, and
+    MongoDB's comparison operators being bracketed by type, so `$lte` against
+    a number does not match null even though BSON sorts null below every
+    number. The second is a property of the database rather than of this code,
+    which is why the fake's version of it is pinned separately -- removing the
+    type bracketing leaves this test green, and that is the honest reason to
+    have both.
+    """
+    await _write(vfs, "/kept.txt")
+    await _write(vfs, "/also-kept.txt")
+
+    # retention=0 makes the cutoff "now", so anything the query is willing to
+    # return, it returns.
+    result = await vfs.purge_expired(retention=0)
+
+    assert result["purged"] == 0
+    assert sorted(_names(await vfs.list_dir("/"))) == ["also-kept.txt", "kept.txt"]
+
+
+async def test_purge_expired_narrows_in_the_query_not_afterwards(vfs, fake_db):
+    """What the index is for, and the only part of it a fake can see.
+
+    Reading the whole trash and filtering in Python returns exactly the same
+    items, so no assertion about the result can tell the two apart. The
+    difference is the collection scan, and this runs on a timer for every live
+    session.
+    """
+    await _write(vfs, "/gone.txt")
+    await vfs.remove("/gone.txt")
+    fake_db.nodes.find_filters.clear()
+
+    await vfs.purge_expired(retention=5_000)
+
+    ranges = [f.get("trashed_at") or {} for f in fake_db.nodes.find_filters
+              if "$lte" in (f.get("trashed_at") or {})]
+    assert ranges, (
+        "purge_expired fetched the trash without a cutoff: "
+        f"{fake_db.nodes.find_filters}")
+
+    # `$gt: 0` has to be in the query too, and not because the cutoff needs it.
+    # It is the half that makes the query provably a subset of the partial
+    # index's filter; without it the index is still built, still correct, and
+    # never used -- a regression with no visible symptom.
+    assert all("$gt" in r for r in ranges), (
+        f"the cutoff query cannot use the partial index: {ranges}")
+
+
+async def test_the_fake_brackets_comparisons_by_type_like_mongodb():
+    """Pins the fake, because everything above depends on it being honest.
+
+    A fake that read `None <= cutoff` the way Python does would make the test
+    above pass while the real database destroyed live files -- the same shape
+    as the URL that never expired and the database call that never yielded.
+    """
+    from tests.fakes import _matches_field
+
+    assert _matches_field(100, {"$lte": 500}) is True
+    assert _matches_field(900, {"$lte": 500}) is False
+    # A missing field arrives here as None, and an explicitly null one too.
+    assert _matches_field(None, {"$lte": 500}) is False
+    assert _matches_field(None, {"$gt": 0}) is False
+    # Still a number, still bracketed: booleans are not numbers to MongoDB.
+    assert _matches_field(True, {"$gt": 0}) is False
+
+
 async def test_purge_expired_stops_at_the_batch_limit(vfs):
     for name in ("a.txt", "b.txt", "c.txt"):
         await _write(vfs, f"/{name}")

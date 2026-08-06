@@ -35,15 +35,52 @@ def _matches_field(actual, expected):
     if isinstance(expected, dict) and expected and \
             all(k.startswith("$") for k in expected):
         for operator, operand in expected.items():
-            if operator != "$ne":
+            if operator == "$ne":
+                # Mongo treats a missing field as null here, and so does `.get`.
+                if actual == operand:
+                    return False
+            elif operator in _COMPARISONS:
+                if not _compares(operator, actual, operand):
+                    return False
+            else:
                 raise AssertionError(
                     f"the fake collection does not model {operator}; add it "
                     "rather than letting the query silently match nothing")
-            # Mongo treats a missing field as null here, and so does `.get`.
-            if actual == operand:
-                return False
         return True
     return actual == expected
+
+
+_COMPARISONS = {
+    "$gt": lambda a, b: a > b,
+    "$gte": lambda a, b: a >= b,
+    "$lt": lambda a, b: a < b,
+    "$lte": lambda a, b: a <= b,
+}
+
+
+def _compares(operator, actual, operand):
+    """MongoDB's range operators, including the part Python would get wrong.
+
+    These are bracketed by type: a comparison against a number matches only
+    values that are themselves numbers. A missing field -- `None` here -- does
+    *not* match `{"$lte": 1000}`, even though null sorts below every number in
+    BSON's ordering and `None <= 1000` is how a naive implementation would read
+    it. Verified against MongoDB 6.0 with four documents (field missing, field
+    explicitly null, and two numbers): `$lte` returned only the number below
+    the bound.
+
+    This matters more than a fake detail. `purge_expired` asks for
+    `{"$gt": 0, "$lte": cutoff}` and hands what comes back to `purge()`. A fake
+    that let a live node through that filter would be modelling a database that
+    destroys files nobody deleted.
+    """
+    if isinstance(operand, bool) or not isinstance(operand, (int, float)):
+        raise AssertionError(
+            f"the fake collection only models {operator} against numbers; "
+            "add the type bracketing for this type rather than guessing")
+    if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+        return False
+    return _COMPARISONS[operator](actual, operand)
 
 
 class FakeCursor:
@@ -71,6 +108,11 @@ class FakeCollection:
         # handle's cross-handle sync check skips the round trip when nothing
         # actually changed underneath it.
         self.find_one_calls = 0
+        # Every filter passed to `find`. Lets a test assert that narrowing
+        # happened in the query rather than in Python afterwards -- the
+        # difference is invisible in the result and is the whole point of an
+        # index.
+        self.find_filters = []
 
     @staticmethod
     def _index_name(keys):
@@ -159,6 +201,7 @@ class FakeCollection:
                 return
 
     def find(self, flt):
+        self.find_filters.append(copy.deepcopy(flt))
         return FakeCursor([d for d in self.docs if _matches(d, flt)])
 
 
