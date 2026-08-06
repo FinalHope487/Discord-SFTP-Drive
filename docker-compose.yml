@@ -124,6 +124,20 @@ services:
       - SFTP_HOST_KEY_PATH=/app/keys/host_key
       # Where the built client is mounted, below.
       - WEB_STATIC_DIR=/app/web
+      # The trash, and the sweep that empties it. Missing from this list from
+      # 2026-08-03 until 2026-08-06, which made all three of them settings you
+      # could change in `.env` to no effect and no complaint -- the second time
+      # that has happened, the first being DISCORD_MAX_CONCURRENCY above, whose
+      # five-line note was still sitting here while it happened again. What
+      # stops a third is not this block: it is
+      # `tests/test_compose_coverage.py`, which fails if `config.py` learns to
+      # read a variable that never reaches the container.
+      - TRASH_RETENTION_DAYS=${TRASH_RETENTION_DAYS:-30}
+      - TRASH_SWEEP_SECONDS=${TRASH_SWEEP_SECONDS:-900}
+      - TRASH_SWEEP_BATCH=${TRASH_SWEEP_BATCH:-25}
+      # How long an overwrite that never finished may sit before the same
+      # sweep collects it. Measured between chunks, not over a whole upload.
+      - INCOMING_MAX_AGE_HOURS=${INCOMING_MAX_AGE_HOURS:-24}
     volumes:
       - host_key_data:/app/keys
       # The built SPA, mounted read-only rather than baked into the image.
