@@ -51,12 +51,30 @@
   **`detail.verified` 那一對是死得有道理的**——列目錄不畫綠勾，所以「已通過檢查」永遠沒機會出現；
   其餘幾個看起來是做到一半或後來換了做法。**要刪之前得先確認是「文字多餘」而不是「元件漏用」。**
 
-- [next] **全包版 .exe：把後端也塞進去**（2026-08-05 列入方案二，2026-08-07 前提拍板，
-  見上方「已拍板的長期決策」）。這一輪之前選的是方案一：exe 只是視窗，後端仍是
-  `docker compose`。方案二是 PyInstaller 打包 Python、換掉 MongoDB 改用內嵌資料庫，
-  雙擊即用、不需要 Docker——**卡住的前提（一台裝置一份資料的語意）已經問過並拍板接受**，
-  可以開分支動工。開工前仍需要一份技術方案（SQLite schema、與現有 MongoDB 文件結構的對應、
-  殼＋後端合併後的生命週期管理），照 `CLAUDE.md` 中風險分級，方案要先過一輪確認才寫代碼。
+- [now] **獨立單機版：packaged app 的密碼從哪來**（2026-08-07 開出，**擋住 Electron 整合**）。
+  後端本身已經好了（見下方變更紀錄），現在的 `discord-drive.exe` 是 console 程式：
+  沒有 `SFTP_PASSWORD` 就在終端機問，密碼不落地。**但 Electron 外殼沒有終端機**，
+  所以「雙擊打開」這條路還缺一個決定：
+  (a) 外殼跳一個密碼視窗，用 stdin 餵給後端子行程——不落地，但要寫 IPC；
+  (b) 寫進 `drive.env`——最省事，**但那個檔案跟資料庫同一個目錄，等於鎖跟鑰匙放一起**；
+  (c) 用 OS 的憑證保管庫（Windows Credential Manager / libsecret）——最正確，新相依套件。
+  **這一條動到金鑰處理，`CLAUDE.md` 列為必須先問，所以停在這裡沒做。**
+
+- [next] **獨立單機版：Electron 外殼啟動後端**。`client/shell/main.js` 現在只會開視窗連遠端，
+  單機版要多一段生命週期管理（起子行程、等 `/api/health`、關閉時收掉、崩潰時回報）。
+  **卡在上面那條密碼決定**——餵密碼的方式決定了子行程怎麼起。
+
+- [later] **`children()` 在兩個後端都是全表掃描**（2026-08-07 量到）。
+  `{"parent_id": x}`（含垃圾桶項，`list_dir` 每次都會呼叫）在 MongoDB 是 COLLSCAN、
+  在 SQLite 是 `SCAN nodes`，因為 `(parent_id, filename)` 是部分索引而這個查詢沒帶
+  `trashed_at` 條件，兩邊的 planner 都無法證明它是子集。`live_children()` 有帶，兩邊都走索引。
+  **不是這一輪引入的退化，兩個後端一致**。修法是加一個 `parent_id` 單欄索引，
+  **但那是改 schema，要先問**；而且只加在單機版會製造「兩邊索引集合不一致」，
+  那正是這次刻意用同一份宣告去避免的事。
+
+- [later] **標準版 exe 仍需要 Docker**。方案一（exe 只是視窗、後端是 compose）與
+  方案二（單機版）現在並存，`BUILD.md` 兩邊都寫了。兩者是不同產品線不是替代關係，
+  維護成本是雙份，日後若要收斂成一個要重新拍板。
 
 - [later] **多使用者的第 4 步：真正開放第二個帳號**——管理 CLI、建帳號流程、per-user 配額。
   第 1～3 步已隨 Client UI 落地。方案見 `design-multi-user.md`，三個決策點已於 2026-08-02
@@ -448,6 +466,33 @@ pyflakes 乾淨，四個突變全被抓到，production 重啟後乾淨啟動。
   ——aiohttp 不會把 Secure cookie 送到 http，而瀏覽器對 localhost 的例外不適用於它。
 - **dev stack 與 production 共用同一個 Discord DM 頻道。** 這次無所謂（追的是特定 message id），
   但**拿 `find_orphans.py` 對 dev 資料庫跑會把 production 的附件全部報成孤兒**。
+
+**2026-08-07 · 獨立單機版的後端落地** — 702 項測試（+38），**外加整套測試在真 SQLite 上再跑一次**
+（699 過、3 skip），pyflakes 乾淨，`dist-standalone/discord-drive.exe`（17 MB）建得出來也跑得起來。
+`vfs.py` **一行都沒改**。
+
+- **做法是「寫一個長得跟 Motor 一樣的 SQLite 後端」，不是把 `vfs.py` 改寫成 SQL。**
+  整個專案對資料庫的呼叫只有三個 collection、六個方法、四個查詢運算子、兩個更新運算子——
+  那已經是一個介面，只是沒被命名。方案與被否決的替代方案寫在 `design-standalone.md`。
+- **驗證方式才是這一輪的重點**：既有測試套件本身就是一致性測試。`pytest --db=sqlite`
+  把 `fake_db` fixture 換成真的 SQLite，其餘一律不動。**這比另外寫一份 SQLite 專用測試強得多**，
+  因為它涵蓋的是真正會跑的路徑，用的是為 MongoDB 語意寫的斷言。
+- **抓到兩個只有這樣才會現形的 bug：**
+  1. **SQLite 的索引名是 per-database 而不是 per-collection**，所以 `nodes` / `keystore` /
+     `users` 各自要的 `id_1` 互相覆蓋，啟動後**只有最後一個真的存在**，另外兩個唯一索引
+     無聲消失。已改成在 SQL 層加表名前綴。**在那之前 664 項測試全綠**——因為沒有任何一項
+     測試曾經證明過重複鍵會被拒（`fakes.py` 明講它不強制唯一性）。教訓進 `SOP.md`。
+  2. **`test_swapping_two_filenames_is_caught_on_both` 描述的竄改真實資料庫會拒絕。**
+     直接對調兩個檔名，中間會有一瞬間兩個活節點同名，唯一索引不允許——MongoDB 也不允許。
+     那條測試從來沒有在真環境重現過的可能。已改走一個暫用名，**斷言與結果完全不變，
+     只有路徑換成攻擊者真的走得通的那條**。
+- **`PRAGMA table_info` 不列 generated column**，要用 `table_xinfo`；用錯的症狀是
+  「第一次啟動正常，之後每一次都失敗」。有測試釘住。
+- **密碼刻意不寫進設定檔**：`drive.env` 與資料庫同一個目錄，寫進去等於鎖跟鑰匙放一起。
+  沒有 `SFTP_PASSWORD` 時在終端機問，不落地；`SFTP_PASSWORD_FILE` 與環境變數照舊可用。
+  **Electron 外殼沒有終端機，所以 packaged app 的密碼來源是上方那條 `[now]`，我停在那裡沒做。**
+- 索引宣告仍然只有 `db.py` 那一份，兩個後端共用；`sqlitedb.py` 把同樣的請求翻譯成 DDL，
+  所以不可能漂移。`test_db_indexes.py` 釘住那一份宣告，因此同時釘住兩邊。
 
 **2026-08-06 · 用真密碼在 UI 上手動驗收，掛了四輪的 `[next]` 關閉** — 覆寫中途關掉分頁，
 舊檔仍活在原本的路徑上、內容完好，垃圾桶是空的。**這個結果是通過，不是失敗**：

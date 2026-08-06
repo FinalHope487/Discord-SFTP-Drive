@@ -6,6 +6,23 @@
 
 ---
 
+## 先選一種：兩種打包是兩個產品
+
+| | **標準版**（本文件主體） | **獨立單機版**（見最後一節） |
+|---|---|---|
+| 打出來的 | Electron 視窗，~86 MB | 一支後端執行檔，~17 MB |
+| 需要 Docker | **要**（後端是 `docker compose`） | **不要** |
+| metadata 存哪 | MongoDB | 一個 SQLite 檔 |
+| 資料能不能多裝置共用 | **能**——都連同一台後端 | **不能**，一台裝置一份 |
+| 需要網路與 Discord | 要 | 要（檔案還是存 Discord） |
+| 成熟度 | 已實地驗收過 | 後端已驗證；**外殼整合還沒做** |
+
+**兩者不能互通**：沒有遷移工具，兩邊的 metadata 格式毫無共通之處。把單機版指向
+現有部署在用的 Discord 頻道**不會匯入那個 drive**，只會在旁邊開一個空的。
+理由與取捨寫在 `design-standalone.md`。
+
+---
+
 ## 這包出來的是什麼
 
 **`.exe` 裡面沒有你的檔案，也沒有後端。** 它是一個視窗，加上第一次開啟時問你
@@ -264,11 +281,66 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 
 ---
 
+## 獨立單機版：不需要 Docker 的那一種
+
+**狀態：後端可用並已驗證，桌面外殼還沒接上。** 現在打出來的是一支 console 執行檔——
+它就是完整的 drive（SFTP + 網頁 UI），只是要從終端機啟動。雙擊打開的視窗版
+卡在一個還沒拍板的決定，見 `ROADMAP.md` 最上面那條 `[now]`。
+
+### 建置
+
+前端先建好（跟標準版同一步），然後：
+
+```bash
+./venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+./venv/Scripts/python.exe -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone
+```
+
+產出 `dist-standalone/discord-drive.exe`，約 17 MB，裡面有 Python、伺服器、
+以及那份前端。**不需要 Docker、不需要 MongoDB。**
+
+`PyInstaller` 跟 `electron-builder` 一樣**只能打自己平台的包**：Linux 版要在 Linux 上建。
+
+### 第一次啟動
+
+```bash
+./dist-standalone/discord-drive.exe
+```
+
+第一次會在你的使用者目錄寫一份設定檔然後停下來，並印出路徑：
+
+| 平台 | 位置 |
+|---|---|
+| Windows | `%APPDATA%\Discord Drive\` |
+| macOS | `~/Library/Application Support/Discord Drive/` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/discord-drive/` |
+
+裡面是 `drive.env`（設定）與之後的 `drive.sqlite3`（metadata）。
+填完 `drive.env` 裡標 REQUIRED 的幾項再跑一次。
+
+`DISCORD_DRIVE_HOME` 可以指定別的目錄——同一台機器上跑兩個各自獨立的 drive 就用它。
+
+### 密碼刻意不在設定檔裡
+
+`drive.env` **沒有 `SFTP_PASSWORD=` 這一行，是故意的**。那個密碼包著所有檔案的加密金鑰，
+而它會跟 `drive.sqlite3` 放在同一個目錄——寫進去等於把鎖跟鑰匙放在一起，
+複製那個資料夾就等於複製整個 drive。
+
+所以預設是**啟動時在終端機問**，密碼不落地。要無人值守啟動就用環境變數
+`SFTP_PASSWORD`，或把 `SFTP_PASSWORD_FILE` 指向一個你自己設好權限的檔案。
+
+> **兩樣東西都要備份，而且要分開放**：`SFTP_PASSWORD`（弄丟＝檔案永遠打不開）
+> 與 `drive.sqlite3`（弄丟＝不知道哪些 chunk 組成哪個檔案）。**兩者互相不能替代。**
+
+---
+
 ## 相關文件
 
 | 檔案 | 內容 |
 |---|---|
+| [`GUIDE.md`](GUIDE.md) | 從零到會用：Discord 那一側怎麼設、兩個版本各自怎麼跑、備份與疑難排解 |
 | [`README.md`](README.md) | 這個服務是什麼、怎麼跑、已知限制 |
+| [`design-standalone.md`](design-standalone.md) | 單機版怎麼換掉 MongoDB 而不動 `vfs.py`，以及為什麼不走另一條路 |
 | [`.env.example`](.env.example) | 每一個設定與填錯的代價 |
 | [`client/README.md`](client/README.md) | 前端與外殼兩個套件的結構 |
 | [`ROADMAP.md`](ROADMAP.md) | 已拍板的長期決策與待辦 |

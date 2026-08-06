@@ -78,6 +78,35 @@ empty machine to a `.exe` that runs on any Windows device:
 cd client/shell && npm install && npm run dist
 ```
 
+## Running it without Docker
+
+There is a second build that carries its own metadata store instead of talking
+to MongoDB, so it needs neither a database server nor a container:
+
+```bash
+./venv/Scripts/python.exe -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone
+```
+
+The result is one ~17 MB executable holding Python, the server and the file
+manager. It keeps its settings and its SQLite database in a per-user
+directory, tells you where on first run, and asks for the password on the
+console rather than storing it next to the data it protects.
+
+**It is a different drive, not a different way of reaching the same one.**
+There is no migration in either direction and the two metadata formats have
+nothing in common, so pointing it at a channel an existing deployment uses
+starts an empty drive alongside that one rather than importing it. The chunks
+on Discord are encrypted either way; what says which chunks make up which
+file, in what order, under what name, lives only in the metadata store.
+
+Which store is used is `DB_BACKEND`, and `mongo` stays the default, so an
+existing `.env` behaves exactly as it did. `db.py` declares the indexes once
+for both backends and `sqlitedb.py` translates that same declaration into DDL,
+so the two cannot drift apart about what the drive requires.
+[`BUILD.md`](BUILD.md) covers the build, and
+[`design-standalone.md`](design-standalone.md) covers why it is shaped this
+way. The desktop shell does not yet launch this build; see `ROADMAP.md`.
+
 One account can be signed in from several places at once, which is what sharing
 this drive looks like today. The status bar shows how many, and there is a
 control to end the others without ending your own. Separate accounts are not
@@ -120,8 +149,19 @@ larger cache. It is on the roadmap and is not done.
 ./venv/Scripts/python.exe -m pytest
 ```
 
-515 tests, about 25 seconds, no credentials or network required — MongoDB and
-the Discord API are faked. The fakes model neither rate limits nor attachment
+702 tests, about a minute, no credentials or network required — MongoDB and
+the Discord API are faked. The suite also runs against the real SQLite backend,
+which is how that backend is checked: rather than a second set of tests written
+against my reading of it, the same assertions that were written for MongoDB's
+behaviour are pointed at it.
+
+```bash
+./venv/Scripts/python.exe -m pytest --db=sqlite
+```
+
+Three tests skip there, and say why: they drive MongoDB's refusal to change an
+index in place, which has no counterpart. That run is what found the two bugs
+in the changelog's most recent entry, both invisible to the default one. The fakes model neither rate limits nor attachment
 URL expiry, they do not enforce uniqueness, and they do not validate index
 specifications — the trash shipped with a partial unique index MongoDB rejects
 outright, and the suite stayed green for three days because nothing had
@@ -139,6 +179,7 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 
 | File | What it holds |
 | --- | --- |
+| [`GUIDE.md`](GUIDE.md) | Zero to a working drive: the Discord side, both builds, backup, troubleshooting. Start here to *use* it. |
 | [`BUILD.md`](BUILD.md) | From an empty machine to a packaged `.exe`, and what is and is not inside it. |
 | [`client/README.md`](client/README.md) | The two npm packages: the file manager and the desktop shell. |
 | [`ROADMAP.md`](ROADMAP.md) | Plans, every settled decision with its reasoning, the original open questions and how each resolved, and a changelog. Start here for "why is it like that". |
@@ -147,6 +188,7 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 | [`session-handoff.md`](session-handoff.md) | Where the last session stopped. Rewritten each session. |
 | [`design-multi-user.md`](design-multi-user.md) | The structural steps have landed; opening a second account has not. Its banner says which is which. |
 | [`design-node-identity-integrity.md`](design-node-identity-integrity.md) | Built; its banner lists the four places plan and result diverged. |
+| [`design-standalone.md`](design-standalone.md) | The no-Docker build: how the metadata store was replaced without touching `vfs.py`, and the route that was rejected. |
 | [`CLAUDE.md`](CLAUDE.md) | Collaboration rules for AI-assisted work on this repo. |
 
 Source lives in `src/`: `sftp.py` is the protocol surface, `web.py` the HTTP one
