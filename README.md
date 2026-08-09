@@ -105,7 +105,9 @@ for both backends and `sqlitedb.py` translates that same declaration into DDL,
 so the two cannot drift apart about what the drive requires.
 [`BUILD.md`](BUILD.md) covers the build, and
 [`design-standalone.md`](design-standalone.md) covers why it is shaped this
-way. The desktop shell does not yet launch this build; see `ROADMAP.md`.
+way. The desktop shell can launch this build directly -- pick "run on this
+device" in its setup screen -- rather than only connecting to a server
+elsewhere.
 
 One account can be signed in from several places at once, which is what sharing
 this drive looks like today. The status bar shows how many, and there is a

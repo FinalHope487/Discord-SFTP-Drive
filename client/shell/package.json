@@ -30,7 +30,9 @@
     "files": [
       "main.js",
       "server-url.js",
+      "backend.js",
       "setup.html",
+      "local.html",
       "setup-preload.js",
       "icon.png",
       "package.json"
@@ -40,6 +42,9 @@
       "target": [
         { "target": "portable", "arch": ["x64"] },
         { "target": "nsis", "arch": ["x64"] }
+      ],
+      "extraResources": [
+        { "from": "../../dist-standalone/discord-drive.exe", "to": "backend/discord-drive.exe" }
       ]
     },
     "portable": {
@@ -57,12 +62,18 @@
     "linux": {
       "icon": "icon.png",
       "category": "Utility",
-      "target": ["AppImage"]
+      "target": ["AppImage"],
+      "extraResources": [
+        { "from": "../../dist-standalone/discord-drive", "to": "backend/discord-drive" }
+      ]
     },
     "mac": {
       "icon": "icon.png",
       "category": "public.app-category.utilities",
-      "target": ["dmg"]
+      "target": ["dmg"],
+      "extraResources": [
+        { "from": "../../dist-standalone/discord-drive", "to": "backend/discord-drive" }
+      ]
     }
   }
 }

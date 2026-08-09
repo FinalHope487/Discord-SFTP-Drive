@@ -283,25 +283,44 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 
 ## 獨立單機版：不需要 Docker 的那一種
 
-**狀態：後端可用並已驗證，桌面外殼還沒接上。** 現在打出來的是一支 console 執行檔——
-它就是完整的 drive（SFTP + 網頁 UI），只是要從終端機啟動。雙擊打開的視窗版
-卡在一個還沒拍板的決定，見 `ROADMAP.md` 最上面那條 `[now]`。
+**狀態：後端與桌面外殼都已接上並驗證過。** 兩種開法都行：從終端機直接跑
+`discord-drive.exe`（console 程式，密碼用打字的），或是雙擊 Electron 外殼、
+選「在這台電腦上執行」（密碼用視窗輸入）。兩者背後是同一支後端，差別只在
+密碼怎麼進去、關閉時怎麼收尾——細節見 `design-standalone.md` 與 `ROADMAP.md`
+2026-08-07 的變更紀錄。
 
-### 建置
-
-前端先建好（跟標準版同一步），然後：
+### 建置：後端要先建，外殼才找得到它
 
 ```bash
+cd client/app && npm install && npm run build && cd ../..
 ./venv/Scripts/python.exe -m pip install -r requirements-dev.txt
 ./venv/Scripts/python.exe -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone
+cd client/shell && npm install && npm run dist
 ```
 
-產出 `dist-standalone/discord-drive.exe`，約 17 MB，裡面有 Python、伺服器、
-以及那份前端。**不需要 Docker、不需要 MongoDB。**
+**順序不能反。** `client/shell/package.json` 的 `extraResources` 會把
+`dist-standalone/discord-drive.exe` 複製進封包（`resources/backend/discord-drive.exe`，
+跟 `app.asar` 平行放，不能封進封存檔——它要能被當成真正的檔案執行）。
+那個檔案不存在時 `electron-builder` 會直接建置失敗，而不是靜靜打出一個沒有後端的殼。
 
-`PyInstaller` 跟 `electron-builder` 一樣**只能打自己平台的包**：Linux 版要在 Linux 上建。
+只想跑後端、不想打包外殼：跑到第三步就好，見下方「單獨跑後端」。
 
-### 第一次啟動
+`PyInstaller` 跟 `electron-builder` 一樣**只能打自己平台的包**：Linux 版兩邊都要在
+Linux 機器上重建。
+
+### 用外殼開（推薦，雙擊即用）
+
+打開 `DiscordDrive-0.1.0-portable.exe`（或裝好的版本），選「在這台電腦上執行」。
+
+- 第一次會告訴你設定檔寫在哪，開資料夾把 `DISCORD_BOT_TOKEN` 這類 REQUIRED 項填好，
+  按「重新檢查」。
+- 填好之後每次開啟都會跳密碼輸入視窗——密碼一樣不落地，只是用視窗代替終端機輸入。
+- 關閉視窗會把後端一起收掉，不會留著背景行程。**這一段測過**：Windows 上
+  `child.kill()` 不管傳哪個訊號都是強制終止，唯一測出來有效的優雅關閉方式是
+  外殼主動關掉子行程自己的 stdin，讓它照 `main.py` 既有的 drain 邏輯跑完。
+- 資料放在跟外殼本身設定同一個資料夾（`%APPDATA%\Discord Drive\`），不是另外開一個。
+
+### 單獨跑後端（不透過外殼）
 
 ```bash
 ./dist-standalone/discord-drive.exe
@@ -326,8 +345,9 @@ docker run --rm --user root -v "$PWD:/repo" -w /repo discord-drive-sftp-discord-
 而它會跟 `drive.sqlite3` 放在同一個目錄——寫進去等於把鎖跟鑰匙放在一起，
 複製那個資料夾就等於複製整個 drive。
 
-所以預設是**啟動時在終端機問**，密碼不落地。要無人值守啟動就用環境變數
-`SFTP_PASSWORD`，或把 `SFTP_PASSWORD_FILE` 指向一個你自己設好權限的檔案。
+所以預設是**啟動時問**（終端機打字，或外殼跳視窗），密碼不落地。要無人值守啟動
+就用環境變數 `SFTP_PASSWORD`，或把 `SFTP_PASSWORD_FILE` 指向一個你自己設好權限的檔案——
+這兩條路都繞過外殼，只適用於直接跑後端執行檔的情況。
 
 > **兩樣東西都要備份，而且要分開放**：`SFTP_PASSWORD`（弄丟＝檔案永遠打不開）
 > 與 `drive.sqlite3`（弄丟＝不知道哪些 chunk 組成哪個檔案）。**兩者互相不能替代。**

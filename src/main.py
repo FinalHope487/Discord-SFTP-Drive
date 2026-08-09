@@ -125,7 +125,12 @@ async def check_discord_reachable():
     logger.info("Discord reachability check passed")
 
 
-async def start_server():
+async def start_server(extra_stop=None):
+    """`extra_stop`, if given, is an additional way to ask this to stop.
+
+    Raced against the signal wait in `_wait_for_shutdown`; see there for why
+    the standalone build needs one and the container does not.
+    """
     # Everything below runs on this one loop for the process's lifetime.
     # Motor and aiohttp both bind to the running loop, so there is exactly one.
     #
@@ -204,7 +209,7 @@ async def start_server():
         # README.md forbids.
         web_runner = await _start_web()
 
-        await _wait_for_shutdown()
+        await _wait_for_shutdown(extra_stop)
     finally:
         if web_runner is not None:
             # Before the SFTP drain: cleanup drops every session, and a
@@ -251,12 +256,26 @@ async def _start_web():
     return runner
 
 
-async def _wait_for_shutdown():
+async def _wait_for_shutdown(extra_stop=None):
     """Block until the process is asked to stop.
 
     Without this the container's SIGTERM killed the process outright: whatever
     a client had written but not yet filled a chunk with was still sitting in
     a buffer, and nothing flushed it.
+
+    `extra_stop`, if given, is raced against the signal wait -- either one
+    ends it. Every caller but the standalone build leaves it unset, which
+    keeps this function doing exactly what it always did for the container.
+
+    The standalone build needs it because Windows gives a GUI parent no
+    reliable way to deliver an actual signal to a console child it spawned:
+    `child.kill()` there is an unconditional TerminateProcess regardless of
+    the signal named, and `taskkill` without `/f` refuses outright on a
+    process with no window to close -- both measured, not assumed. What does
+    work on every platform, needs no signal, and costs nothing when unused is
+    the child's own stdin: `standalone.py` passes a coroutine that resolves
+    when it reaches EOF, and the shell simply closes its end when the user
+    quits.
     """
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -271,7 +290,16 @@ async def _wait_for_shutdown():
             # arrives there as KeyboardInterrupt, which __main__ handles.
             logger.debug("No signal handler for %s on this platform", sig)
 
-    await stop.wait()
+    waiters = [asyncio.create_task(stop.wait())]
+    if extra_stop is not None:
+        waiters.append(asyncio.create_task(extra_stop))
+    try:
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in waiters:
+            if not task.done():
+                task.cancel()
+
     logger.info("Shutdown requested; no longer accepting connections")
 
 

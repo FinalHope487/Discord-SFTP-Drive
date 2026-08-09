@@ -24,6 +24,10 @@ venv/
 .venv/
 .pytest_cache/
 settings.json
+# The bare pattern above also caught this one, so both hooks shipped their code
+# and not the registration that mounts them -- a clone got no enforcement and no
+# error message either.
+!.claude/settings.json
 
 # Personal-eyes-only project notes, not meant for the tracked history.
 BLUEPRINT.md

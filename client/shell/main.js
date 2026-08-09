@@ -21,6 +21,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { normaliseServerUrl } = require("./server-url.js");
+const { LocalDrive, backendPath } = require("./backend.js");
 
 const CONFIG_PATH = path.join(app.getPath("userData"), "config.json");
 
@@ -30,6 +31,23 @@ const PROBE_TIMEOUT_MS = 6000;
 
 let mainWindow = null;
 let setupWindow = null;
+
+// The standalone backend, when this app is running the no-Docker path rather
+// than connecting to a server elsewhere. One instance for the app's whole
+// lifetime -- `dd:localStatus` reuses its live child across calls rather than
+// spawning a fresh one for every check; see backend.js for why.
+const localDrive = new LocalDrive();
+
+// True once a local connection is actually serving the main window, which is
+// the one piece of state that decides whether quitting has a child process to
+// wait on. Set on success in `dd:localStart`, cleared once it is stopped.
+let localModeActive = false;
+
+async function stopLocalBackendIfRunning() {
+  if (!localModeActive && !localDrive.running) return;
+  localModeActive = false;
+  await localDrive.stop();
+}
 
 /* --------------------------------------------------------------- settings */
 
@@ -118,8 +136,26 @@ function probe(origin) {
 
 /* ----------------------------------------------------------------- windows */
 
-function createSetupWindow(problem) {
+// setup.html (connect to a server) and local.html (run on this device) are
+// both plain pages inside this one window, reached from each other by an
+// ordinary link -- Electron re-injects the preload on every navigation
+// within a window, so `window.dd` and `window.ddLocal` both stay available
+// across that. `page` picks which one to open with; a caller that wants a
+// specific screen on a window already open still gets it, since switching
+// modes while setup is already on screen has to work too.
+function createSetupWindow(problem, page = "setup.html") {
   if (setupWindow && !setupWindow.isDestroyed()) {
+    // `loadFile` here is programmatic (this function was called from code --
+    // the menu, or did-fail-load's fallback -- not from a link the page's own
+    // script handled), and Electron's `will-navigate` only fires for
+    // navigations the page itself initiates. So the same leaving-local.html
+    // cleanup the listener below covers for a clicked link has to be done by
+    // hand on this path too.
+    const current = setupWindow.webContents.getURL();
+    if (current.endsWith("local.html") && page !== "local.html") {
+      stopLocalBackendIfRunning();
+    }
+    setupWindow.loadFile(path.join(__dirname, page));
     setupWindow.focus();
     if (problem) setupWindow.webContents.send("dd:problem", problem);
     return setupWindow;
@@ -145,13 +181,27 @@ function createSetupWindow(problem) {
     },
   });
 
-  setupWindow.loadFile(path.join(__dirname, "setup.html"));
+  setupWindow.loadFile(path.join(__dirname, page));
   setupWindow.once("ready-to-show", () => {
     setupWindow.show();
     if (problem) setupWindow.webContents.send("dd:problem", problem);
   });
+
+  // Leaving local.html for anywhere else means whatever `status()` spawned
+  // there -- a child sitting in "awaiting-password", say -- is no longer
+  // wanted. Not awaited: there is nothing in flight for a child that never
+  // got a password to protect, so nothing is gained by making the click wait
+  // on it.
+  setupWindow.webContents.on("will-navigate", (_event, url) => {
+    const current = setupWindow.webContents.getURL();
+    if (current.endsWith("local.html") && !url.endsWith("local.html")) {
+      stopLocalBackendIfRunning();
+    }
+  });
+
   setupWindow.on("closed", () => {
     setupWindow = null;
+    stopLocalBackendIfRunning();
     // Closing setup with nothing configured and no main window open means the
     // app has nothing to show. Quitting beats leaving a process with no window
     // running in the background.
@@ -214,7 +264,19 @@ function createMainWindow(origin) {
     if (code === -3) return; // ERR_ABORTED — a navigation we cancelled ourselves
     const window = mainWindow;
     mainWindow = null;
-    createSetupWindow({ code, description, url: failedUrl || origin });
+    if (localModeActive) {
+      // The local backend answering /api/health once is not a promise it
+      // still is -- it can still exit later (a crash, or the drive's own
+      // idle/absolute session ceiling). Reopening on setup.html would ask
+      // for a server address that was never the point; local.html is where
+      // this actually needs to go, and its own status check will find
+      // whatever state the backend is actually in.
+      localModeActive = false;
+      stopLocalBackendIfRunning();
+      createSetupWindow(null, "local.html");
+    } else {
+      createSetupWindow({ code, description, url: failedUrl || origin });
+    }
     if (window && !window.isDestroyed()) window.destroy();
   });
 
@@ -225,8 +287,21 @@ function createMainWindow(origin) {
   return mainWindow;
 }
 
-function connectTo(origin) {
-  writeConfig({ ...readConfig(), serverUrl: origin });
+function openDrive(origin, { local }) {
+  const config = { ...readConfig() };
+  if (local) {
+    // No serverUrl to remember: the origin is re-derived from the settings
+    // file on every launch (readWebPort in backend.js), and the password is
+    // never remembered at all, so there is nothing stable about this run's
+    // origin worth writing down beyond "this is the mode to come back to".
+    config.mode = "local";
+    delete config.serverUrl;
+  } else {
+    config.mode = "remote";
+    config.serverUrl = origin;
+  }
+  writeConfig(config);
+
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.destroy();
     mainWindow = null;
@@ -237,6 +312,10 @@ function connectTo(origin) {
     setupWindow = null;
     window.destroy();
   }
+}
+
+function connectTo(origin) {
+  openDrive(origin, { local: false });
 }
 
 /* -------------------------------------------------------------------- menu */
@@ -321,16 +400,41 @@ if (!app.requestSingleInstanceLock()) {
       return { ok: true, origin };
     });
 
+    // The local (no-Docker) path. Data lives in this app's own userData
+    // directory -- the same folder this file's own config.json is in -- so
+    // one app data location holds both halves rather than inventing a second
+    // one next to it.
+    const localDataHome = app.getPath("userData");
+
+    ipcMain.handle("dd:localStatus", async (_event, force) => {
+      const result = await localDrive.status(backendPath(app.isPackaged, process.resourcesPath), localDataHome, { force });
+      return result;
+    });
+    ipcMain.handle("dd:localStart", async (_event, password) => {
+      const result = await localDrive.start(String(password));
+      if (result.ok) {
+        localModeActive = true;
+        openDrive(result.origin, { local: true });
+      }
+      return { ok: result.ok, reason: result.reason, output: result.output };
+    });
+    ipcMain.handle("dd:localOpenDataFolder", () => {
+      fs.mkdirSync(localDataHome, { recursive: true });
+      shell.openPath(localDataHome);
+    });
+
     buildMenu();
 
-    const saved = readConfig().serverUrl;
-    if (saved) createMainWindow(saved);
+    const saved = readConfig();
+    if (saved.mode === "local") createSetupWindow(null, "local.html");
+    else if (saved.serverUrl) createMainWindow(saved.serverUrl);
     else createSetupWindow(null);
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        const current = readConfig().serverUrl;
-        if (current) createMainWindow(current);
+        const current = readConfig();
+        if (current.mode === "local") createSetupWindow(null, "local.html");
+        else if (current.serverUrl) createMainWindow(current.serverUrl);
         else createSetupWindow(null);
       }
     });
@@ -338,5 +442,19 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
+  });
+
+  // Async cleanup on the way out: intercept the first quit request, stop the
+  // local backend if one is running (which is what makes it exit through its
+  // own drain rather than being killed alongside this process), then quit for
+  // real. `quitting` is what tells the second, self-triggered request apart
+  // from the first so this does not loop.
+  let quitting = false;
+  app.on("before-quit", (event) => {
+    if (quitting) return;
+    if (!localModeActive && !localDrive.running) return;
+    quitting = true;
+    event.preventDefault();
+    stopLocalBackendIfRunning().finally(() => app.quit());
   });
 }

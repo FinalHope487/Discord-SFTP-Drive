@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>Discord Drive — 在這台電腦上執行</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #161826;
+        --surface: #232532;
+        --text: #e9e9ed;
+        --muted: #9397ab;
+        --dim: #75798c;
+        --accent: #9184d9;
+        --ok: #6fbf8b;
+        --warn: #e0a93b;
+        --bad: #e5484d;
+        --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 26px 28px 30px;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.6 system-ui, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      }
+      h1 { font-size: 17px; font-weight: 500; margin: 0 0 4px; letter-spacing: -0.01em; }
+      p { margin: 0 0 10px; color: var(--muted); }
+      code { font-family: var(--mono); color: var(--accent); word-break: break-all; }
+      label { display: block; font-size: 12px; color: var(--muted); margin: 18px 0 5px; }
+      input {
+        width: 100%;
+        height: 34px;
+        padding: 0 10px;
+        background: var(--bg);
+        border: 1px solid #3f424d;
+        border-radius: 8px;
+        color: var(--text);
+        font: inherit;
+        font-family: var(--mono);
+      }
+      input:focus { border-color: var(--accent); outline: none; }
+      .row { display: flex; gap: 8px; margin-top: 12px; }
+      button {
+        height: 32px;
+        padding: 0 14px;
+        border-radius: 8px;
+        border: 1px solid #3f424d;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { background: #ffffff10; }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #14121f;
+        font-weight: 500;
+      }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .status {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #3f424d;
+        background: var(--surface);
+        font-size: 12px;
+        display: none;
+      }
+      .status.on { display: block; }
+      .status.ok { border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+      .status.bad { border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
+      .status.warn { border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+      .status b { display: block; font-weight: 500; margin-bottom: 3px; }
+      .status.ok b { color: var(--ok); }
+      .status.bad b { color: var(--bad); }
+      .status.warn b { color: var(--warn); }
+      .status pre {
+        margin: 6px 0 0;
+        padding: 8px;
+        background: var(--bg);
+        border-radius: 6px;
+        font-family: var(--mono);
+        font-size: 11px;
+        white-space: pre-wrap;
+        color: var(--muted);
+        max-height: 140px;
+        overflow: auto;
+      }
+      .note {
+        margin-top: 22px;
+        padding: 13px 14px;
+        border-radius: 8px;
+        background: var(--surface);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .note h2 { font-size: 12px; font-weight: 500; color: var(--text); margin: 0 0 6px; }
+      .en { color: var(--dim); font-size: 11.5px; }
+      .back {
+        display: inline-block;
+        margin-top: 22px;
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 12px;
+      }
+      .back:hover { color: var(--text); }
+      .center { text-align: center; padding: 30px 0; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <div id="loading" class="center">檢查中…</div>
+
+    <div id="missing" style="display:none">
+      <h1>找不到後端執行檔</h1>
+      <p>
+        這個 app 內建的後端不見了，這通常代表你是從原始碼直接跑外殼、還沒建過
+        <code>discord-drive.exe</code>。
+        <span class="en">The bundled backend is missing — likely a dev checkout that has not built it yet.</span>
+      </p>
+      <div class="note">
+        在 repo 根目錄跑：
+        <pre style="margin-top:8px">./venv/Scripts/python.exe -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone</pre>
+      </div>
+    </div>
+
+    <div id="first-run" style="display:none">
+      <h1>第一次執行：先填設定</h1>
+      <p>
+        已經幫你寫了一份設定範本，還沒有 Discord 憑證這類必要資訊。
+        <span class="en">A settings template was written; it still needs your Discord credentials.</span>
+      </p>
+      <div class="note">
+        <h2>設定檔位置</h2>
+        <code id="config-path"></code>
+      </div>
+      <div class="note">
+        <h2>要填什麼</h2>
+        打開上面那個檔案，填入標示 <code>REQUIRED</code> 的幾項——Discord bot token、
+        要存到哪（DM 或頻道其中一項）、還有你想用的帳號名。<code>GUIDE.md</code> 的第 2 節
+        有完整步驟。填完存檔，回來按「重新檢查」。
+      </div>
+      <div class="row">
+        <button id="open-folder" type="button">開啟資料夾</button>
+        <button id="recheck-firstrun" class="primary" type="button">重新檢查</button>
+      </div>
+    </div>
+
+    <div id="password-screen" style="display:none">
+      <h1>輸入密碼</h1>
+      <p>
+        這組密碼包著所有檔案的加密金鑰，不會被存在硬碟上——每次啟動都要輸入一次。
+        <span class="en">This wraps every file's encryption key and is never written to disk.</span>
+      </p>
+
+      <label for="password">密碼 · Password</label>
+      <input id="password" type="password" autocomplete="off" spellcheck="false" />
+
+      <div class="row">
+        <button id="submit" class="primary" type="button">啟動</button>
+      </div>
+
+      <div id="pw-status" class="status"></div>
+    </div>
+
+    <a id="back-link" class="back" href="setup.html">← 改連遠端伺服器 / Connect to a server instead</a>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const screens = ["loading", "missing", "first-run", "password-screen"];
+
+      function show(id) {
+        for (const s of screens) $(s).style.display = s === id ? "block" : "none";
+      }
+
+      function reportStatus(kind, title, body, output) {
+        const el = $("pw-status");
+        el.className = `status on ${kind}`;
+        el.innerHTML = "";
+        const b = document.createElement("b");
+        b.textContent = title;
+        const span = document.createElement("span");
+        span.textContent = body || "";
+        el.append(b, span);
+        if (output) {
+          const pre = document.createElement("pre");
+          pre.textContent = output;
+          el.append(pre);
+        }
+      }
+
+      async function withBusy(button, label, work) {
+        const original = button.textContent;
+        button.disabled = true;
+        button.textContent = label;
+        try {
+          return await work();
+        } finally {
+          button.disabled = false;
+          button.textContent = original;
+        }
+      }
+
+      async function refresh(force) {
+        show("loading");
+        const result = await window.ddLocal.status(force);
+
+        if (result.state === "missing") {
+          show("missing");
+          return;
+        }
+        if (result.state === "first-run") {
+          $("config-path").textContent = result.configPath;
+          show("first-run");
+          return;
+        }
+        if (result.state === "awaiting-password") {
+          show("password-screen");
+          $("password").focus();
+          return;
+        }
+        // "error": the backend exited before settling into either state above
+        // (a crash, or a config problem check() alone would not catch). Show
+        // it the same way a failed start does, with a way back to first-run.
+        show("password-screen");
+        reportStatus(
+          "bad",
+          "後端無法啟動",
+          "以下是它結束前的輸出：",
+          result.output || "(no output)",
+        );
+      }
+
+      $("open-folder").addEventListener("click", () => window.ddLocal.openDataFolder());
+      $("recheck-firstrun").addEventListener("click", () => refresh(true));
+
+      $("submit").addEventListener("click", () =>
+        withBusy($("submit"), "啟動中…", async () => {
+          const password = $("password").value;
+          if (!password) return;
+          reportStatus("warn", "正在啟動…", "第一次啟動要驗證 Discord 憑證，可能要幾秒鐘。");
+          const result = await window.ddLocal.start(password);
+          if (result.ok) {
+            // The main process swaps this window's content for the drive
+            // itself; nothing further to do here.
+            return;
+          }
+          const title = result.reason === "timeout"
+            ? "啟動逾時"
+            : "啟動失敗";
+          const body = result.reason === "timeout"
+            ? "後端還在跑，但沒有在時限內回應。可能是防毒軟體正在掃描，或是網路很慢。"
+            : "密碼錯誤、或是設定檔裡的 Discord 憑證有問題，看下面的訊息。";
+          reportStatus("bad", title, body, result.output);
+          $("password").value = "";
+          $("password").focus();
+          // The child that failed is gone; a fresh one has to be spawned
+          // before another password can be sent to it.
+          await window.ddLocal.status(true);
+        }),
+      );
+
+      $("password").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") $("submit").click();
+      });
+
+      refresh(false);
+    </script>
+  </body>
+</html>

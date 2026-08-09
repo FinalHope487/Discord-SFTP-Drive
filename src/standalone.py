@@ -23,6 +23,7 @@ channel an existing deployment uses does not import that drive -- it starts an
 empty one alongside it.
 """
 
+import asyncio
 import getpass
 import logging
 import os
@@ -40,6 +41,13 @@ HOST_KEY_FILENAME = "host_key"
 # not two views of one), and letting a test drive this module without writing
 # into the real profile directory.
 HOME_VARIABLE = "DISCORD_DRIVE_HOME"
+
+# Set by a parent process (the desktop shell) that is managing this one over
+# stdin rather than a console: the password arrives as one piped line instead
+# of a console prompt, and closing that pipe is how the parent asks this
+# process to stop. See `resolve_password` and `_watch_stdin_for_shutdown` for
+# why each half is shaped the way it is.
+STDIN_LIFECYCLE_VARIABLE = "DISCORD_DRIVE_STDIN_LIFECYCLE"
 
 
 def data_directory():
@@ -175,6 +183,24 @@ def resolve_password():
     if os.environ.get("SFTP_PASSWORD") or os.environ.get("SFTP_PASSWORD_FILE"):
         return True
 
+    if os.environ.get(STDIN_LIFECYCLE_VARIABLE):
+        # The packaged shell: it has its own password dialog and no console
+        # to hand this process, so it pipes the password down as one line
+        # instead. No local echo to suppress -- there is no terminal here for
+        # anything to echo to -- so this is a plain read, not getpass. This
+        # process blocks here until that line arrives, which is exactly what
+        # should happen while the shell is waiting on the human.
+        try:
+            password = sys.stdin.readline()
+        except OSError:
+            password = ""
+        password = password.rstrip("\r\n")
+        if not password:
+            logger.error("No password received from the parent process.")
+            return False
+        os.environ["SFTP_PASSWORD"] = password
+        return True
+
     if not sys.stdin or not sys.stdin.isatty():
         logger.error(
             "No password available and no console to ask on. Supply it as the "
@@ -196,6 +222,28 @@ def resolve_password():
     return True
 
 
+async def _watch_stdin_for_shutdown():
+    """Resolves when stdin reaches EOF. See `main._wait_for_shutdown`.
+
+    The packaged shell's way of asking this process to stop: it simply closes
+    its end of the pipe. That works on every platform and needs no signal --
+    which matters on Windows, where a GUI parent has no reliable way to
+    deliver an actual one to a console child it spawned (measured: `kill()`
+    there is an unconditional TerminateProcess regardless of which signal was
+    named, and `taskkill` without `/f` refuses outright on a process with no
+    window to close).
+
+    The password line was already consumed by `resolve_password` before this
+    starts, so what this waits for is *the next* read hitting EOF -- which
+    does not happen until the parent actually closes its end.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if line == "":
+            return
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -214,6 +262,15 @@ def main():
               "Fill in the REQUIRED values and start the drive again.")
         return 1
 
+    if os.environ.get(STDIN_LIFECYCLE_VARIABLE):
+        # A machine-readable line the shell waits for instead of racing a
+        # timeout against this process's own startup. A fixed delay would
+        # have to be long enough to survive Windows Defender scanning a
+        # freshly-written exe on its first launch, which can itself take
+        # several seconds -- long enough to make a short timeout wrongly read
+        # as "this is the first run" while it was actually still starting.
+        print("AWAITING_PASSWORD", flush=True)
+
     if not resolve_password():
         return 1
 
@@ -226,15 +283,16 @@ def main():
         print(f"\nThese are set in:\n  {config_path}")
         return 1
 
-    import asyncio
-
     import asyncssh
 
     from src.main import start_server
 
+    extra_stop = _watch_stdin_for_shutdown() \
+        if os.environ.get(STDIN_LIFECYCLE_VARIABLE) else None
+
     logger.info("Drive directory: %s", directory)
     try:
-        asyncio.run(start_server())
+        asyncio.run(start_server(extra_stop=extra_stop))
     except KeyboardInterrupt:
         logger.info("Shutting down")
     except ConfigError as exc:
