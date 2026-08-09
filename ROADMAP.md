@@ -51,18 +51,13 @@
   **`detail.verified` 那一對是死得有道理的**——列目錄不畫綠勾，所以「已通過檢查」永遠沒機會出現；
   其餘幾個看起來是做到一半或後來換了做法。**要刪之前得先確認是「文字多餘」而不是「元件漏用」。**
 
-- [now] **獨立單機版：packaged app 的密碼從哪來**（2026-08-07 開出，**擋住 Electron 整合**）。
-  後端本身已經好了（見下方變更紀錄），現在的 `discord-drive.exe` 是 console 程式：
-  沒有 `SFTP_PASSWORD` 就在終端機問，密碼不落地。**但 Electron 外殼沒有終端機**，
-  所以「雙擊打開」這條路還缺一個決定：
-  (a) 外殼跳一個密碼視窗，用 stdin 餵給後端子行程——不落地，但要寫 IPC；
-  (b) 寫進 `drive.env`——最省事，**但那個檔案跟資料庫同一個目錄，等於鎖跟鑰匙放一起**；
-  (c) 用 OS 的憑證保管庫（Windows Credential Manager / libsecret）——最正確，新相依套件。
-  **這一條動到金鑰處理，`CLAUDE.md` 列為必須先問，所以停在這裡沒做。**
+- [done] ~~**獨立單機版：packaged app 的密碼從哪來**~~（2026-08-07 開出同日拍板並落地，
+  見下方變更紀錄）。拍板結果是 (a)：外殼跳密碼視窗，用 stdin 餵給後端子行程。
 
-- [next] **獨立單機版：Electron 外殼啟動後端**。`client/shell/main.js` 現在只會開視窗連遠端，
-  單機版要多一段生命週期管理（起子行程、等 `/api/health`、關閉時收掉、崩潰時回報）。
-  **卡在上面那條密碼決定**——餵密碼的方式決定了子行程怎麼起。
+- [later] **Electron 外殼那兩頁 UI 沒有自動化驗收**（2026-08-09 開出）。`client/app` 的 SPA 已經有
+  Playwright 蓋住，但 `setup.html` / `local.html` 還是只有目測。Python Playwright 不支援
+  Electron，要做就得另外引進 JS 端 Playwright（`_electron` API）。`setup.html` 只有一個表單，
+  等它開始長東西再說。
 
 - [later] **`children()` 在兩個後端都是全表掃描**（2026-08-07 量到）。
   `{"parent_id": x}`（含垃圾桶項，`list_dir` 每次都會呼叫）在 MongoDB 是 COLLSCAN、
@@ -113,6 +108,31 @@
 ## 已拍板的長期決策
 
 <!-- 這些是問過使用者、往後都適用的決定，不要下一輪又拿出來重問 -->
+
+- **使用者層的驗收用 Playwright，測試檔放 `tests/`**（2026-08-09）。真瀏覽器 → 真 aiohttp
+  程序 → 真 VFS / 真資料庫 → `fake_discord`，只有最外層的外部服務是假的。
+  否決 vitest + jsdom：jsdom 是第二套假件，而這個專案已經被「假件不模擬的那一半」咬過三次
+  （見 `SOP.md`），不需要第四次。放 `tests/` 而不是 `client/app/` 的理由是它因此直接繼承
+  `fake_db` / `fake_discord` / `account` 三個既有 fixture 與 `--db=sqlite`，
+  測試總數維持單一數字。
+  **Electron 外殼的兩頁 UI 不做**——Python Playwright 不支援 Electron，要另外引進 JS 端
+  Playwright，而 `setup.html` 只有一個表單，投報率遠低於 SPA。列在下方 `[later]`。
+
+- **`push main` 由 PreToolUse hook 實際攔阻，不再只是 `CLAUDE.md` 的行為引導**（2026-08-09）。
+  `.claude/hooks/block-push-main.py` 檢查兩條路徑：refspec 指名的目標，以及沒有 refspec 時的
+  當前分支。`.claude/settings.json` 的 `Bash(git push:*)` allow **保留**——功能分支不該每次
+  跳確認，該擋的只有 main。`deny` 字串比對做不到這件事，涵蓋不了 `git push -u origin HEAD`
+  與在 main 上不帶參數的 `git push`。
+
+- **獨立單機版：packaged app 的密碼走 (a)——外殼跳密碼視窗、用 stdin 餵給後端子行程**
+  （2026-08-07）。另外兩個選項——寫進 `drive.env`（鎖跟鑰匙放一起）、OS 憑證保管庫
+  （新相依套件）——都否決。**同一條 stdin 管線也拿來當關機訊號**：外殼想關閉時直接
+  `child.stdin.end()`，不需要另外設計一套協定。理由是 Windows 上量到的事實，不是猜的——
+  `child.kill()` 在 Windows 一律是強制 TerminateProcess，不管傳哪個訊號名稱都一樣；
+  `taskkill` 不加 `/f` 對一個沒有視窗的 console 行程會直接拒絕（「這個處理程序只能強制終止」）。
+  關閉 stdin 兩邊都測過會動：`main.py` 的 `_wait_for_shutdown` 現在接受 `extra_stop`，
+  跟原本的訊號等待賽跑；`standalone.py` 在被外殼餵密碼的模式下（`DISCORD_DRIVE_STDIN_LIFECYCLE=1`）
+  把「stdin 讀到 EOF」接上那個 `extra_stop`。
 
 - **獨立單機版：接受「一台裝置一份資料」語意、換掉 MongoDB 改用內嵌資料庫、仍以 Discord 作為
   儲存後端**（2026-08-07）。這是下方 `全包版 .exe` 那條 `[later]` 卡住的前提——方案二
@@ -446,6 +466,22 @@
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
 
+**2026-08-09 · 協作規則長出強制層與使用者層** — 737 項測試（+23），`--db=sqlite` 734 過 3 skip，
+`node --test` 16 過。新增的 23 項是 `test_push_guard.py`（18）與 `test_ui_login.py`（5）。
+
+- **`client/app` 從此有瀏覽器層驗收。** 架構見上方決策。值得記的是它被證明有效的方式：
+  把建好的 bundle 裡 20 處 `/api/` 全部改壞、伺服器一行不動，**`test_ui_login.py` 5 條紅了 3 條，
+  `test_web.py` 60 條全綠**。紅的正好是依賴 API 接線的那三條（登入、reload 後仍在線、
+  建資料夾），綠的那兩條本來就不該紅（表單有沒有 render、錯密碼留在原地）。
+  這個數字是「內層測試對沒接上外層完全免疫」第一次有可複現的證據，不再只是 `SOP.md` 的論述。
+- **`built_client` fixture 會擋住過期的 bundle**：`client/app/dist` 比 `src` 舊就直接 fail 並印出
+  `npm run build`，不自動幫忙建。自動建會把「建置壞了」藏成十秒後的測試失敗。
+- **push 攔阻的 hook 自己壞了一次，而且是掛上去之後才壞的**——單元測試 18 項全綠，
+  真的接進 `PreToolUse` 之後擋掉了下一個無關的指令。根因與修法進 `SOP.md`。
+  教訓歸納成一句：**跑在別人程序裡、吃別人餵的 stdin 的東西，測試餵什麼就只驗到什麼。**
+- **`.claude/settings.json` 在 `.gitignore` 裡**，所以 hook 腳本進版控、啟用它的設定不會。
+  換一台機器要自己補 `hooks.PreToolUse` 那段，`.claude/hooks/block-push-main.py` 的檔頭有說明。
+
 **2026-08-06 · 垃圾桶索引，以及 `sweep_incoming` 對真依賴的驗收** — 662 項測試（+5），
 pyflakes 乾淨，四個突變全被抓到，production 重啟後乾淨啟動。
 - **索引那半見上方決策，不複述。** 值得記的是驗證順序：先對真 mongod 問語意（`$lte` 到底匹不匹配
@@ -493,6 +529,52 @@ pyflakes 乾淨，四個突變全被抓到，production 重啟後乾淨啟動。
   **Electron 外殼沒有終端機，所以 packaged app 的密碼來源是上方那條 `[now]`，我停在那裡沒做。**
 - 索引宣告仍然只有 `db.py` 那一份，兩個後端共用；`sqlitedb.py` 把同樣的請求翻譯成 DDL，
   所以不可能漂移。`test_db_indexes.py` 釘住那一份宣告，因此同時釘住兩邊。
+
+**2026-08-07 · 獨立單機版：Electron 外殼接上後端，雙擊開啟這條路打通** — 714 項測試（+12），
+`--db=sqlite` 711 過 3 skip，`node --test`（含拿真的 `discord-drive.exe` 跑的整合測試）16 過，
+pyflakes 乾淨。三個產物都重建過並各自驗證：`discord-drive.exe`、`DiscordDrive-*-portable.exe`、
+打包後的 `win-unpacked/`。
+
+- **`src/main.py` 的 `_wait_for_shutdown` 加了 `extra_stop` 參數**，預設 `None`——對容器那條路
+  完全沒改變行為，只有單機版會傳東西進來。**這是把 Windows 上「GUI 母行程殺不掉自己開的
+  console 子行程」這件事量出來之後，才寫的**：`child.kill()` 不管傳哪個訊號名稱，在 Windows
+  一律是強制終止；`taskkill` 不加 `/f` 對沒有視窗的 console 行程直接拒絕（「這個處理程序只能
+  強制終止」）。**唯一測出來有效的是關閉子行程自己的 stdin**——`main.py` 的 drain 邏輯就會照
+  正常路徑跑完，這是拿一支小的 asyncio 探針腳本，在 Node 這邊分別試過四種 kill 方式量出來的。
+- **`src/standalone.py` 因此多了 `DISCORD_DRIVE_STDIN_LIFECYCLE` 這個環境變數**：設了它，密碼
+  改成從 stdin 讀一行（外殼在密碼視窗按下確認後餵進去），而不是 `getpass`；且會在阻塞讀密碼
+  之前先印一行 `AWAITING_PASSWORD`。**這一行是特地為了避免用「猜多久算逾時」去分辨「還沒設定」
+  跟「正在等密碼」**——新解壓的 exe 第一次執行常被防毒軟體掃描拖慢，固定的短逾時會把「還在
+  啟動」誤判成「這是第一次執行」。
+- **`client/shell/backend.js`（新）**：擁有子行程整個生命週期——`status()` 判斷首次執行／等密碼／
+  執行檔不存在／出錯，`start()` 送密碼並輪詢 `/api/health`，`stop()` 關閉 stdin、給寬限時間、
+  逾時才強制終止。`readWebPort()` 直接讀 `drive.env` 裡的 `WEB_PORT`，不去解析 log 行——
+  這樣 `main.py` 改 log 格式不會弄壞這裡。
+- **`client/shell/local.html`（新）**：在這台電腦上執行的畫面，跟 `setup.html`
+  共用同一個視窗與同一份 preload（`window.dd` 管遠端、`window.ddLocal` 管本機，
+  因為 Electron 的 preload 是視窗建立時就定了、換頁不能換）。
+- **驗證分三層，一層比一層真**：(1) 純邏輯的 Node 單元測試；(2) 對著真的
+  `dist-standalone/discord-drive.exe` 跑的整合測試，包含刻意填一個看起來像真的、其實無效的
+  Discord token，確認密碼真的透過管線送達、真的解開了 keystore、真的一路跑到 Discord 那一步
+  才失敗——這比「跑起來沒有 crash」強得多；(3) 真的透過 Chrome DevTools Protocol 連進**正在跑的
+  Electron app**（先開發模式、後來是完整打包出來的 `win-unpacked/`），點擊真正的連結、呼叫真正
+  的 `window.ddLocal.status()`，來回走過完整的 renderer → preload → IPC → 子行程這條路。
+  第 (3) 層驗到一個真的 bug：**沒有它就不會發現**——見下方。
+- **驗證途中連到使用者自己先前留下的真實 `drive.env`**（真 bot token、真使用者 ID、
+  真 `SFTP_USER`，是使用者自己那輪「測好 1~7」驗收留下的）。發現後立刻停手、
+  換成 `--user-data-dir` 隔離出乾淨目錄重測，**沒有送出密碼、沒有動到 `drive.sqlite3`**——
+  它只會在密碼真的解開 keystore 之後才被讀寫，而這一步從沒發生。時間戳可查證。
+- **打包設定加了 `extraResources`**：`discord-drive.exe` 現在會被複製進
+  `resources/backend/discord-drive.exe`，跟 `app.asar` 平行放，因為它要能被當成真正的檔案
+  執行、不能被封進封存檔。**這件事有先後順序**：`discord-drive.spec` 要先建過，
+  `npm run dist` 才找得到東西可以複製；`BUILD.md` 已經補上這個順序。
+
+**2026-08-07 · 獨立單機版用真 bot token 實地驗收，通過** — 建 bot、上傳、讀回比對、覆寫、
+**關閉行程再重開後資料仍在**、SFTP 連線、網頁登入操作，全部過。這是唯一我這邊驗證不到的一段
+（我手上只有假 token，卡在 401）。**「關閉再重開」這一項特別重要**：SQLite 用 WAL 模式，
+`-wal` 檔沒 flush 乾淨的話症狀是「這次跑起來正常、重開後資料不完整」，只有真的走過一次
+process 生命週期才驗得到，單元測試不會告訴你答案。**單機版的後端到這裡算是完整可用**，
+剩下唯一的缺口是 packaged GUI 的密碼決定（見上面 `[now]`），不影響現在這個終端機版本能不能用。
 
 **2026-08-06 · 用真密碼在 UI 上手動驗收，掛了四輪的 `[next]` 關閉** — 覆寫中途關掉分頁，
 舊檔仍活在原本的路徑上、內容完好，垃圾桶是空的。**這個結果是通過，不是失敗**：
