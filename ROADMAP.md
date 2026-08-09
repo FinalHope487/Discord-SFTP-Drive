@@ -118,6 +118,10 @@
   **Electron 外殼的兩頁 UI 不做**——Python Playwright 不支援 Electron，要另外引進 JS 端
   Playwright，而 `setup.html` 只有一個表單，投報率遠低於 SPA。列在下方 `[later]`。
 
+- **commit 作者一律用倉庫既有的 git config，不另外標記哪些是 agent 寫的**（2026-08-09）。
+  原本 collab-kit 規定填 `AllenOuO <swordmaster123.123@gmail.com>`，但這個 GitHub 帳號開了
+  email privacy 保護，帶那個 email 的 commit 一 push 就被拒。已把該規則從 skill 移除。
+
 - **`push main` 由 PreToolUse hook 實際攔阻，不再只是 `CLAUDE.md` 的行為引導**（2026-08-09）。
   `.claude/hooks/block-push-main.py` 檢查兩條路徑：refspec 指名的目標，以及沒有 refspec 時的
   當前分支。`.claude/settings.json` 的 `Bash(git push:*)` allow **保留**——功能分支不該每次
