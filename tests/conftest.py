@@ -44,6 +44,8 @@ os.environ["ARGON2_PARALLELISM"] = "1"
 # settings, which is the part that could actually regress.
 os.environ["WEB_COOKIE_SECURE"] = "0"
 
+from pathlib import Path  # noqa: E402
+
 import asyncssh  # noqa: E402
 import pytest  # noqa: E402
 
@@ -267,3 +269,84 @@ async def sftp(sftp_port):
     async with connect(sftp_port) as conn:
         async with conn.start_sftp_client() as client:
             yield client
+
+
+# ------------------------------------------------------------------ the browser
+#
+# The layer the user actually touches. Everything above this line drives the
+# VFS or the HTTP API directly, which is exactly the shape of test `SOP.md`
+# keeps recording as proving less than it looks like: it cannot see a button
+# that was never wired to the endpoint it names.
+#
+# Only the outermost dependency is a stand-in. Real browser, real aiohttp
+# process, real VFS, real (or SQLite) database, `fake_discord` at the edge.
+
+
+def _client_dist():
+    return Path(__file__).resolve().parent.parent / "client" / "app" / "dist"
+
+
+@pytest.fixture
+def built_client():
+    """The built SPA, refusing to run against a stale bundle.
+
+    Deliberately not building it here. A fixture that ran `npm run build`
+    would hide a broken build inside a test failure ten seconds later, and
+    would do it once per session on a machine that may not have npm on PATH.
+    """
+    dist = _client_dist()
+    index = dist / "index.html"
+    if not index.is_file():
+        pytest.fail("client/app/dist 不存在。先跑：cd client/app && npm run build")
+
+    newest_source = max(
+        (p.stat().st_mtime for p in (dist.parent / "src").rglob("*") if p.is_file()),
+        default=0,
+    )
+    newest_build = max(
+        (p.stat().st_mtime for p in dist.rglob("*") if p.is_file()), default=0
+    )
+    if newest_source > newest_build:
+        pytest.fail(
+            "client/app/dist 比 client/app/src 舊，這些測試會打到過期的介面。"
+            "先跑：cd client/app && npm run build"
+        )
+    return dist
+
+
+@pytest.fixture
+async def live_server(fake_db, fake_discord, account, built_client):
+    """The whole application on a real port, serving the real bundle."""
+    from aiohttp.test_utils import TestServer
+
+    from src import web as web_mod
+
+    server = TestServer(web_mod.create_app(static_dir=str(built_client)))
+    await server.start_server()
+    try:
+        yield str(server.make_url("/")).rstrip("/")
+    finally:
+        await server.close()
+
+
+@pytest.fixture
+async def page(live_server):
+    """A Chromium page pointed at that server, already on the sign-in screen.
+
+    Function-scoped on purpose. A session-scoped browser would have to own a
+    session-scoped event loop, and this suite pins every loop to one test
+    (`asyncio_default_fixture_loop_scope = function`) because module-level
+    asyncio state leaking across loops is the exact failure `SOP.md` has an
+    entry for.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as driver:
+        browser = await driver.chromium.launch()
+        try:
+            context = await browser.new_context(base_url=live_server)
+            tab = await context.new_page()
+            await tab.goto(live_server)
+            yield tab
+        finally:
+            await browser.close()
