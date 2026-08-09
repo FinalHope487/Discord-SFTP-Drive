@@ -189,8 +189,8 @@
 
 ## 本專案的驗證指令
 
-- **內層**：`./venv/Scripts/python.exe -m pytest`（752 項；不要用裸 `python`，見 `SOP.md` 第一條）、
-  `cd client/shell && node --test`（6 項）
+- **內層**：`./venv/Scripts/python.exe -m pytest`（764 項；不要用裸 `python`，見 `SOP.md` 第一條）、
+  `cd client/shell && node --test`（16 項）
 - 這兩個數字對應**已提交樹**。工作目錄裡未提交的測試不算數——寫進文件的數字必須是
   `git clone` 之後跑得出來的那個，否則下一輪會拿工作目錄的數字去對已提交的樹，對不起來
 - **使用者層**：尚未建立 → `QUESTIONS.md` Q1

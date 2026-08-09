@@ -19,25 +19,6 @@
 **等答案期間我做了**：<>
 -->
 
-## Q1 · `.claude/settings.json` 要不要進 git
-
-**背景**：`.gitignore:26` 有一條裸的 `settings.json`，順帶蓋掉了 `.claude/settings.json`。
-兩個 hook 的程式碼（`block-push-main.py`、`extract-decisions.py`）都在 git 裡，
-把它們掛上去的那份設定不在。clone 下來的 repo 兩個 hook 都不會生效，而且不會有任何錯誤訊息。
-檔案內容目前只有權限白名單與兩個 hook 註冊，沒有機密，但路徑是寫死的 `D:/my-projects/...`。
-
-**選項**
-- **A（推薦）**：`.gitignore` 加 `!.claude/settings.json` 例外，把它提交進去。
-  → hook 隨 repo 走。代價是絕對路徑進了版本控制，換機器要改一行。
-- **B**：提交一份 `.claude/settings.json.example`，README 加一句「複製過去」。
-  → 路徑不進 git，但要靠人記得複製；忘了就是靜默失效，跟現在一樣。
-- **C**：維持現狀。→ hook 只在這台機器上有效，其他機器等於沒有強制層。
-
-**代價**：照 A 做最壞是換機器時 hook 指到不存在的路徑（Claude Code 會報錯，不會靜默）；
-改成 B 只要刪一行 `.gitignore` 例外。照 C 就是這兩個 hook 的保護只存在於你這台電腦。
-
-**擋住了**：沒擋住任何事，本機兩個 hook 都已生效。
-**等答案期間我做了**：hook 本身與 27 項測試都已提交，只差註冊那一步。
 
 ## 待你執行／待你批准的動作
 

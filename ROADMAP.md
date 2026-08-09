@@ -483,7 +483,17 @@
   node 那個數字算進了一個從未被 commit 的測試檔（`backend.test.js`），
   任何人 clone 下來跑只會拿到 6，然後以為自己弄壞了。數字現在一律對已提交樹。
 - `.gitignore:26` 的 `settings.json` 順帶蓋掉 `.claude/settings.json`：兩個 hook 的程式碼都進了
-  git，掛載設定沒有。未處理，見 `QUESTIONS.md`。
+  git，掛載設定沒有，clone 下來不生效且沒有錯誤訊息。已加 `!.claude/settings.json` 例外提交。
+
+**2026-08-09 · 外殼自己開後端，關得掉** — 764 項（+12），`node --test` 16 過。
+數字現在工作目錄與已提交樹一致。
+
+- **Windows 上 GUI 母行程關不掉 console 子行程**：`child.kill()`、`SIGINT`、detached + 訊號、
+  `taskkill` 不加 `/f` 全部量過，全不優雅（`taskkill` 直接拒絕）。**唯一有效的是關掉子行程自己的
+  stdin**，設計照量到的結果走，不是照猜的。
+- 密碼改走 stdin 並先印 `AWAITING_PASSWORD` 標記，**不用逾時去猜「還沒設定」與「正在等密碼」**——
+  新解壓的 exe 第一次執行常被防毒掃描拖慢。
+- 容器那條路沒改變行為：`_wait_for_shutdown` 的 `extra_stop` 預設 `None`。
 
 **2026-08-09 · 協作規則長出強制層與使用者層** — 737 項測試（+23），`--db=sqlite` 734 過 3 skip，
 `node --test` 16 過。新增的 23 項是 `test_push_guard.py`（18）與 `test_ui_login.py`（5）。
