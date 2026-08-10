@@ -1,6 +1,7 @@
 # client/ — 前端與桌面外殼
 
-兩個各自獨立的 npm 套件。打包步驟在 [`../BUILD.md`](../BUILD.md)，這裡只講結構。
+兩個各自獨立的 npm 套件。打包步驟在 [`../README.md`](../README.md) 的
+「Building from source」，這裡只講結構。
 
 ```
 client/

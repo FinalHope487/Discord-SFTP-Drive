@@ -34,6 +34,16 @@ BLUEPRINT.md
 BLUEPRINT.md.bak
 AGY_GEMINI_EVAL.md
 
+# Internal working documents. `README.md` is the one public document and carries
+# whatever of these an outside reader needs; keeping a second copy in the
+# history means two things to keep correct and one of them silently rotting.
+# `session-handoff.md` and `QUESTIONS.md` are addressed to whoever works on this
+# next and mean nothing to anyone else.
+GUIDE.md
+BUILD.md
+session-handoff.md
+QUESTIONS.md
+
 # The client. `dist/` is a build product -- it is mounted into the container
 # rather than baked into the image, so it has to exist on disk, but rebuilding
 # it is one command and committing it would put a minified copy of the whole
