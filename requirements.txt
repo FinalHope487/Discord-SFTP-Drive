@@ -1,6 +1,6 @@
-asyncssh==2.14.2
-cryptography==42.0.5
-motor==3.4.0
+asyncssh==2.24.0
+cryptography==50.0.0
+motor==3.7.1
 # Pinned because motor 3.4.0 only declares pymongo>=4.5,<5, and pip resolves
 # that to the latest 4.x, which no longer imports. pymongo 4.9 removed the
 # private names motor reaches for (pymongo.cursor._QUERY_OPTIONS), so every
@@ -14,8 +14,8 @@ motor==3.4.0
 # non-ASCII character makes the install fail outright on non-UTF-8 consoles
 # (cp950, cp1252, ...) before any package is resolved.
 pymongo==4.8.0
-aiohttp==3.9.5
-python-dotenv==1.0.1
+aiohttp==3.14.3
+python-dotenv==1.2.2
 # Argon2id for turning the SFTP password into the key that wraps the master
 # key. PBKDF2-HMAC-SHA256 is still supported and still opens every record that
 # was written with it -- the stored record names its own KDF -- but Argon2id is

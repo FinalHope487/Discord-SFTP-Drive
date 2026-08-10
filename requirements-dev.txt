@@ -6,8 +6,8 @@
 # cp950 / cp1252 consoles before anything is resolved.
 -r requirements.txt
 
-pytest==8.3.3
-pytest-asyncio==0.24.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
 pyflakes==3.4.0
 
 # Builds the standalone drive -- the one that runs without Docker, on SQLite.
@@ -26,4 +26,4 @@ pyinstaller==6.21.0
 #
 # Needs a browser download that pip does not do:
 #   ./venv/Scripts/python.exe -m playwright install chromium
-pytest-playwright==0.7.0
+pytest-playwright==0.8.0
