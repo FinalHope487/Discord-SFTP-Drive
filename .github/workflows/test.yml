@@ -1,0 +1,83 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    # Python 3.12 exactly. `pytest.ini` turns DeprecationWarning from `src.*`
+    # into an error, and that is the thing that drifts between minor versions.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: client/app/package-lock.json
+
+      # The browser tests refuse to run against a stale bundle rather than
+      # building one themselves, so the build happens here, before pytest.
+      - name: Build the file manager
+        working-directory: client/app
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: pyflakes
+        run: python -m pyflakes src tests
+
+      # No credentials and no network: MongoDB and the Discord API are faked.
+      - name: pytest
+        run: python -m pytest -q
+
+      # The same suite against a real SQLite backend. Not a second set of
+      # tests -- the assertions written for MongoDB's behaviour, pointed at
+      # the other backend, which is how two bugs were found that the default
+      # run could not see.
+      - name: pytest --db=sqlite
+        run: python -m pytest -q --db=sqlite
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: client/shell/package-lock.json
+
+      - name: Install dependencies
+        working-directory: client/shell
+        run: npm ci
+
+      # The block that drives the real `discord-drive.exe` skips itself when
+      # the executable is absent, which it is here -- PyInstaller only builds
+      # for the platform it runs on, and that check belongs on Windows.
+      - name: node --test
+        working-directory: client/shell
+        run: node --test

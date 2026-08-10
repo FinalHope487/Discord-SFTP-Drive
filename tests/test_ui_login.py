@@ -10,7 +10,6 @@ across two machines with different fonts fails for reasons that have nothing
 to do with this application.
 """
 
-import pytest
 from playwright.async_api import expect
 
 from tests.conftest import TEST_PASSWORD, TEST_USER
