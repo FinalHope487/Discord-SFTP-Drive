@@ -1,0 +1,51 @@
+# Four ecosystems, because the repo genuinely has four lockstep-independent
+# dependency sets: the Python service, the two npm packages under `client/`,
+# and the actions used by `test.yml` itself.
+#
+# Everything is grouped and weekly on purpose. Ungrouped, this configuration
+# opens a PR per package per week, and a review queue nobody reads is the same
+# as no updates at all.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      python:
+        patterns: ["*"]
+    ignore:
+      # Pinned deliberately, with the reasoning in `requirements.txt`: motor
+      # 3.4.0 reaches for private pymongo names that 4.9 removed, so the real
+      # ceiling is <4.9 rather than the <5 the metadata declares. An automated
+      # bump to 4.9+ produces a green PR that fails at import.
+      - dependency-name: pymongo
+        versions: [">=4.9"]
+
+  - package-ecosystem: npm
+    directory: /client/app
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      file-manager:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /client/shell
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      desktop-shell:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
