@@ -23,8 +23,8 @@
 ## 臨時例外：重啟 docker 服務不必先問（2026-07-31 起）
 
 **可以隨時重啟 docker 服務**（`docker compose up -d`、`up -d --build`、`restart`），
-不需要事先徵求同意。理由：專案尚未正式上線使用，沒有人在用這個服務，
-重啟的代價只有幾秒鐘的不可用。
+不需要事先徵求同意。理由：目前只有你自己在用，還沒開放給其他使用者
+（多使用者第 4 步未做，見 `ROADMAP.md`），重啟的代價只有幾秒鐘的不可用、且只影響你自己。
 
 這條**只涵蓋重啟與重建**。以下仍然是高風險、仍然要先問：
 `docker compose down -v`（會刪 volume）、改 production env、刪除或覆蓋既有資料。
@@ -166,8 +166,10 @@
 | 函式庫 | 從安裝後的套件 import 公開 API |
 | 服務 | 走真網路層，含中介層與標頭 |
 
-本專案是瀏覽器（`client/app`）與桌面視窗（`client/shell`）。**這一層尚未建立**（`QUESTIONS.md` Q1）；
-在那之前，碰 `client/` 的改動不得宣告完成。
+本專案是瀏覽器（`client/app`）與桌面視窗（`client/shell`）。`client/app` 的 SPA 已有 Playwright
+驗收，測試檔放 `tests/`（真瀏覽器 → 真 aiohttp → 真 VFS/真資料庫 → `fake_discord`）。
+`client/shell` 的 `setup.html` / `local.html` 兩頁**仍未建立**，只能目測；在那之前，
+碰這兩頁的改動不得宣告完成。
 
 ## 規則
 
@@ -178,7 +180,7 @@
 - 實際跑過下列指令、附上數字，才算完成
 - 還沒實際跑過的數字一律標明是預期值
 
-## 使用者層還沒建立時怎麼推進
+## `client/shell` 剩餘兩頁 UI 驗收層還沒建立時怎麼推進
 
 不要因為驗收層缺席就整個任務停擺。
 
@@ -193,7 +195,8 @@
   `cd client/shell && node --test`（16 項）
 - 這兩個數字對應**已提交樹**。工作目錄裡未提交的測試不算數——寫進文件的數字必須是
   `git clone` 之後跑得出來的那個，否則下一輪會拿工作目錄的數字去對已提交的樹，對不起來
-- **使用者層**：尚未建立 → `QUESTIONS.md` Q1
+- **使用者層**：`client/app` 已建立，Playwright 測試放 `tests/`；`client/shell` 的
+  `setup.html` / `local.html` 兩頁仍未建立，只能目測
 - **真依賴**：`pytest --db=sqlite`（假件換成真 SQLite 跑同一套）、`docker compose up -d` 看啟動 log、
   `node --test` 的整合部分對真的 `dist-standalone/discord-drive.exe` 跑
 
