@@ -6,6 +6,7 @@ timestamps — while the bytes live as encrypted attachments on Discord messages
 and the structure lives in a metadata store you control. A web file manager and
 a desktop app come with it.
 
+[Download](https://github.com/FinalHope487/Discord-SFTP-Drive/releases/latest) ·
 [Read this first](#read-this-before-you-set-it-up) ·
 [Which build](#which-build-to-pick) ·
 [Encryption](#how-the-encryption-works) ·
@@ -53,7 +54,7 @@ They are two products, not two ways to reach one drive.
 | Metadata store | One SQLite file | MongoDB (Compose starts it) |
 | Runs as | A terminal window, or the desktop app's "run on this device" | Docker on one machine, reached by a browser or the desktop app |
 | Same data from several devices | No — one device, one drive | Yes — all clients reach one backend |
-| Download size | ~17 MB executable, or ~102 MB desktop app, which bundles it | ~102 MB desktop app + the Docker images |
+| Download size | ~18 MB executable, or ~104 MB desktop app, which bundles it | ~104 MB desktop app + the Docker images |
 
 Pick **standalone** for one computer with no Docker. Pick **standard** to reach
 the same files from a phone, laptop and desktop.
@@ -147,6 +148,21 @@ python -c "import secrets; print(secrets.token_urlsafe(24))"
 
 ## Step 2a — standalone (no Docker)
 
+Take one of these from
+[the latest release](https://github.com/FinalHope487/Discord-SFTP-Drive/releases/latest).
+**Windows x64 only** — PyInstaller and electron-builder each build for the
+platform they run on, so macOS and Linux need a build from source
+([`CONTRIBUTING.md`](CONTRIBUTING.md)).
+
+| Asset | What it is |
+|---|---|
+| `DiscordDrive-0.1.0-setup.exe` | The desktop app, as an installer. Start here if you are not sure. |
+| `DiscordDrive-0.1.0-portable.exe` | The same app, nothing installed. |
+| `discord-drive.exe` | The backend on its own: a console program. The desktop app already bundles a copy. |
+
+None of them is signed, so SmartScreen will warn; the release notes carry the
+SHA-256 of all three.
+
 Run the executable once. It writes a settings file, stops on purpose, and prints
 the path:
 
@@ -208,6 +224,8 @@ first-run screen and it asks for the password in a window instead of a terminal.
 ---
 
 ## Step 2b — standard (Docker)
+
+There is nothing to download for this one: clone the repository and build it.
 
 ```bash
 cp .env.example .env
@@ -312,6 +330,8 @@ Source lives in `src/`:
 ## Status
 
 Working and in real use against a real bot token: single user, single replica.
+[v0.1.0](https://github.com/FinalHope487/Discord-SFTP-Drive/releases/tag/v0.1.0)
+is the first tagged build; only the standalone side ships as a binary.
 The known gaps are written down rather than glossed over — see
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md#known-limits) and the `[later]` and
 `[parked]` items in [`ROADMAP.md`](ROADMAP.md).

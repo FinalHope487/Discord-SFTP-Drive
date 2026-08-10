@@ -12,13 +12,15 @@
 
 ## 必須先問我，逐項確認（高風險，未經同意不可執行）
 - 改 schema / 建 migration / db push
-- push main / deploy / 改 production env
+- deploy / 改 production env
 - 刪除或覆蓋既有資料
 - 改權限模型 / 批次改用戶資料
 - 新增或移除相依套件
 
 > 不確定屬於哪一層，一律視為高風險。
-> 這份規則是行為引導，不是強制層；高風險項目的實際攔阻待補 PreToolUse hook。
+> 這份規則是行為引導。唯一有強制層的是 push：`.claude/hooks/block-push-main.py`
+> 會擋掉目標為 `main` 或 `master` 的 push，不論寫成 refspec 還是靠當前分支。
+> 其餘高風險項仍然只有這份文件擋著。
 
 ---
 
@@ -129,7 +131,10 @@
 1. `ROADMAP.md`：變更紀錄補一筆（日期／做了什麼／測試數），更新 `[now]` / `[next]` 標記
 2. `QUESTIONS.md`：清掉已答的題，長期決策搬進 `ROADMAP.md` 或 `SOP.md`
 3. `SOP.md`：補這輪踩到的重複性問題，沒踩到就不寫
-4. push 當前分支一次，不開 PR。**絕不 push main**
+4. 開功能分支、push 它、開 PR 進 `main`，然後停手等我合併。**絕不 push `main` 或 `master`**
+   ——那是 `block-push-main.py` 會擋下來的事，不是靠自律。
+   工作已經 commit 在 `main` 上才想起這條時：`git checkout -b <分支>` 再
+   `git branch -f main origin/main`，不要用 `git reset --hard`
 
 **怎麼 commit**
 
