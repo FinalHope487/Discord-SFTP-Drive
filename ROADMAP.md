@@ -592,6 +592,28 @@
   在這裡全綠、在 Linux 上每個下載都失敗。**「本機全綠」對跨平台的分支根本沒有意見**
   ——這是本輪最貴的一課，而它花的成本只是一次 CI。
 
+**2026-08-11 · `client/shell` 兩頁的 UI 驗收層建立** — 775 項（+11）、`--db=sqlite` 772 過
+3 skip、`node --test` 16 過。**7/7 突變全被抓到**（見下）。
+
+- **怎麼驅動真視窗而不新增相依**：Electron 開 `--remote-debugging-port`，Playwright 的
+  `connect_over_cdp` 接上去。Playwright 早就在 `requirements-dev.txt`（`test_ui_login.py` 在用），
+  Electron 早就是 `client/shell` 的 devDependency。**這條路早就通，只是沒人試過**——
+  `CLAUDE.md` 之前寫「只能目測」並不是因為做不到。
+- **隔離靠 `--user-data-dir`**：`main.js` 把 `config.json` 與單機版整個資料目錄都放在
+  `app.getPath("userData")`，指到 tmpdir 就同時拿到乾淨的 first-run 狀態、又不會碰到
+  真的 `%APPDATA%\Discord Drive\`。
+- **11 條測試，7 條突變驗證**：每條都把被測行為改壞一次確認變紅（拔掉 `dd.current()` 的接線、
+  刪 `REASONS.scheme`、拿掉 `withBusy` 的 `finally`、改名 `ddLocal` bridge、寫死 config path、
+  recheck 後不換頁、失敗後不清空密碼欄）。7/7 全紅。
+- **第一版有一條假通過**：斷言欄位等於預設值 `http://127.0.0.1:8080`，而把整段 IPC 拔掉硬寫
+  預設值照樣綠。改成存一個非預設位址再 reload 才真的證明往返。**斷言的值等於程式碼裡的
+  常數時，那條斷言什麼都沒證明。**
+- **缺件是 skip 不是 fail，數字實測過**：缺 `discord-drive.exe` → 8 過 3 skip；
+  缺 Electron → 11 skip。乾淨 clone 跑出來是 764 過 11 skip。
+- **CI 現在也跑這一層**：python job 加裝 `client/shell` 相依、`xvfb`，並用 PyInstaller 建
+  Linux 版後端——順帶讓 CI 第一次真的驗證 `discord-drive.spec` 還能打包。兩個 pytest 步驟
+  用 `xvfb-run -a` 包住，並拿掉命令列的 `-q`（`pytest.ini` 已有，疊成 `-qq` 會吞掉總結行）。
+
 **2026-08-11 · 對外門面：主分支改名、v0.1.0 發布** — 764 項（±0）、`--db=sqlite` 761 過
 3 skip、`node --test` 16 過（含驅動真 exe 那組）。
 

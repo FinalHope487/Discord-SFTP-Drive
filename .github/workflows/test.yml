@@ -25,7 +25,9 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: client/app/package-lock.json
+          cache-dependency-path: |
+            client/app/package-lock.json
+            client/shell/package-lock.json
 
       # The browser tests refuse to run against a stale bundle rather than
       # building one themselves, so the build happens here, before pytest.
@@ -34,6 +36,13 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      # Electron, for `test_ui_shell.py`. It drives the shell's own two pages
+      # in a real window over CDP, so the runner needs the binary itself --
+      # not a package this suite imports.
+      - name: Install the desktop shell's dependencies
+        working-directory: client/shell
+        run: npm ci
 
       - uses: actions/setup-python@v7
         with:
@@ -46,10 +55,24 @@ jobs:
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
 
+      # Electron needs a display, and `local.html` needs the backend it
+      # spawns. Without the executable those three tests skip themselves and
+      # say so; building it here is also the only place CI checks that
+      # `discord-drive.spec` still packages at all.
+      - name: Install xvfb
+        run: sudo apt-get install -y --no-install-recommends xvfb
+
+      - name: Build the standalone backend
+        run: |
+          python -m PyInstaller discord-drive.spec --noconfirm \
+            --distpath dist-standalone --workpath build-standalone
+
       - name: pyflakes
         run: python -m pyflakes src tests
 
       # No credentials and no network: MongoDB and the Discord API are faked.
+      # `xvfb-run -a` picks its own display number so two jobs on one runner
+      # cannot collide.
       #
       # No `-q` here. `pytest.ini` already sets it, and a second one makes
       # `-qq`, which drops the "N passed" line -- so every green run in this
@@ -57,14 +80,14 @@ jobs:
       # ran. Skipped tests and collection that quietly stopped finding files
       # both look exactly like success without that number.
       - name: pytest
-        run: python -m pytest
+        run: xvfb-run -a python -m pytest
 
       # The same suite against a real SQLite backend. Not a second set of
       # tests -- the assertions written for MongoDB's behaviour, pointed at
       # the other backend, which is how two bugs were found that the default
       # run could not see.
       - name: pytest --db=sqlite
-        run: python -m pytest --db=sqlite
+        run: xvfb-run -a python -m pytest --db=sqlite
 
   node:
     runs-on: ubuntu-latest

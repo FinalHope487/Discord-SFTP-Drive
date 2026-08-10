@@ -81,6 +81,9 @@
 `本機（Windows）整套綠、Linux CI 紅，而且錯誤指向一個從沒改過的地方 → 1. 先假設是平台分支而不是環境壞掉：去被測套件裡 grep hasattr(os, ...) / sys.platform / os.name，模組匯入時就綁定的那種分支，在 Windows 上根本不會執行到 2. 本專案已知的一處：asyncssh 依 os.SEEK_DATA 是否存在，在匯入時綁不同的 _request_ranges，所以 SFTP 稀疏檔案那條路 Windows 永遠走不到 3. 這類分支要驗只能靠 Linux——推一次 CI 比在本機猜便宜，也是唯一有牙齒的地方 4. 補測試時直接對自己那一側的方法斷言，不要繞路走真的用戶端：繞路的測試在唯一能執行它的平台以外沒有牙齒，會以全綠的形式活很久 → 相依套件的平台條件分支，非環境或測試框架問題`
 （2026-08-11 寫入，第一次出現就寫：平台決定、必然重現。→ 已升格為 `CLAUDE.md` 的〈驗證：不接受目測〉。）
 
+`跑完會改寫原始碼的腳本（突變測試之類）並還原後，git status 說整批檔案 modified，但 git diff 是空的 → 1. 先跑 git diff -w --stat 確認實質差異真的是零，不要去找自己改壞了哪一行 2. 根因是行尾：.gitattributes 對整棵樹指定 eol=lf，而 Python 的 write_text() 在 Windows 上把 \n 譯成 \r\n 寫回去，於是工作目錄的位元組與 index 不同、但 git diff 正規化之後看不出來 3. 還原用 git checkout -- <path>，不要用腳本再寫一次 4. 這類腳本一律用 write_text(..., newline="") 或直接寫 bytes → 跨平台行尾翻譯，非腳本邏輯錯`
+（2026-08-11 寫入，第一次出現就寫：環境決定、必然重現。`.gitattributes` 的註解本身就在警告 `write_text()`，我照樣踩了——**檔案裡寫給未來的警告，不會在你出手前跳出來**。順帶：這一輪也再次踩到上面「Bash 工具工作目錄跨呼叫保存」那條，`cd client/shell` 之後 `grep requirements-dev.txt` 說找不到檔案。）
+
 ---
 
 ## 已退役
