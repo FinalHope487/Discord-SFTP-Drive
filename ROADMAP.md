@@ -519,6 +519,21 @@
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
 
+**2026-08-11 · 對外門面：主分支改名、v0.1.0 發布** — 764 項（±0）、`--db=sqlite` 761 過
+3 skip、`node --test` 16 過（含驅動真 exe 那組）。
+
+- **`feat/standalone-app` → `main`**，仍是預設分支。`master` 留著但落後 20 個 commit，
+  不再是任何東西的目標。
+- **CI 觸發條件跟著改**：`.github/workflows/test.yml` 的 `push.branches` 寫死 `master`，
+  改名後推 `main` 不會跑測試——分支改名會**靜默**廢掉 CI，改名的同一輪就要檢查這一行。
+- **repo description 與 topics 填上**（QUESTIONS.md 那題的實際採用值與建議值不同：
+  description 改寫成點出 chunk/加密/metadata store 三件事，topics 18 個含技術棧）。
+- **v0.1.0 release**，三個 Windows x64 檔：`DiscordDrive-0.1.0-setup.exe`、
+  `-portable.exe`、`discord-drive.exe`。附 SHA-256，因為沒有簽章憑證。
+- **打包產物會悄悄過期**：`dist-*/` 裡的 exe 是 08-07 建的，08-09 的 `c83ca3c` 改過
+  `src/main.py`、`src/standalone.py` 與整個 `client/shell/`。檔案還在、看起來能跑，
+  但少了兩天的改動。**發布前一律重建，不要相信 `dist-*/` 裡現成的東西。**
+
 **2026-08-11 · 公開文件拆分與去腐化** — 764 項（±0）、`--db=sqlite` 761 過 3 skip、
 `node --test` 16 過。**純文件輪，`src/` 與 `tests/` 一行都沒動。**
 
