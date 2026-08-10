@@ -25,7 +25,24 @@ const path = require("node:path");
 
 const { LocalDrive, readWebPort } = require("./backend.js");
 
-const EXE = path.join(__dirname, "..", "..", "dist-standalone", "discord-drive.exe");
+// Named the way `backendPath()` in backend.js names it. Hard-coding the `.exe`
+// here made this whole block skip on every Linux run, including CI, while the
+// module under test had handled both spellings all along.
+const EXE = path.join(
+  __dirname, "..", "..", "dist-standalone",
+  process.platform === "win32" ? "discord-drive.exe" : "discord-drive",
+);
+
+// A skip is the right answer on a machine that has not built the backend. On
+// CI it means the job reported success having asserted nothing about the one
+// thing this file exists to check, and a skip does not turn a run red -- so
+// there is nothing to notice. `tests/shell_support.py` refuses the same way.
+if (process.env.CI && !fs.existsSync(EXE)) {
+  throw new Error(
+    `CI must run the LocalDrive integration block, but ${EXE} is missing, so `
+    + "it would have skipped silently. Build it before `node --test`.",
+  );
+}
 
 test("readWebPort", async (t) => {
   await t.test("falls back to 8080 when the file is missing", () => {

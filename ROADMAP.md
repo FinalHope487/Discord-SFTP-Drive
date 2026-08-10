@@ -620,6 +620,15 @@
   **`refuse_to_skip_in_ci`——`CI` 環境變數存在時缺件改成 raise**。
   前兩項是這次的 bug，第三項是讓同一類 bug 下次不可能再靜默通過。
   **綠勾不是證據，log 裡的數字才是。**
+- **讀 log 又抓到第二個同型的洞，這個是既有的**：`node --test` 在 CI 上是
+  `11 tests, 10 pass, 1 skipped`，跳掉的正是 `LocalDrive against the real binary`
+  那一整組（本機 16 項裡的 5 個 subtest）。原因是 `backend.test.js` 把檔名寫死成
+  `discord-drive.exe`，而 `backend.js:80` 的 `backendPath()` 一直都依平台選名字——
+  **測試比它測的模組更不會跨平台**。workflow 裡那段註解還把這個 skip 解釋成刻意的
+  （「PyInstaller 只能打自己平台的包，這個檢查屬於 Windows」），這句話是錯的：
+  Linux 上 PyInstaller 建的是 Linux 版後端。修法是檔名依平台選、node job 也建一次後端、
+  以及 `process.env.CI` 存在時缺件改成 throw。後端在 node job 自己建而不是從 python job
+  傳 artifact：那樣兩個 job 會變成串聯，重複建一次 35 秒比多出來的 wall clock 便宜。
 
 **2026-08-11 · 對外門面：主分支改名、v0.1.0 發布** — 764 項（±0）、`--db=sqlite` 761 過
 3 skip、`node --test` 16 過（含驅動真 exe 那組）。

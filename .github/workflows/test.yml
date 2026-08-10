@@ -119,9 +119,25 @@ jobs:
         working-directory: client/shell
         run: npm ci
 
-      # The block that drives the real `discord-drive.exe` skips itself when
-      # the executable is absent, which it is here -- PyInstaller only builds
-      # for the platform it runs on, and that check belongs on Windows.
+      # The block that drives the real backend is the reason this file exists,
+      # and it skipped on every CI run until now -- the test hard-coded
+      # `discord-drive.exe` while `backendPath()` had always chosen the name by
+      # platform. PyInstaller does build here; it builds the Linux one.
+      #
+      # Built in this job rather than shared from `python` as an artifact: the
+      # two jobs would then run in series, and a duplicated 35-second build is
+      # cheaper than the wall clock that costs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Build the standalone backend
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m PyInstaller discord-drive.spec --noconfirm \
+            --distpath dist-standalone --workpath build-standalone
+
       - name: node --test
         working-directory: client/shell
         run: node --test
