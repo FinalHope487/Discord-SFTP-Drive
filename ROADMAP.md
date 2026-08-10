@@ -50,6 +50,12 @@
   `act.copyPath`、`act.copied`、`toast.uploaded`）。改文案時逐一比對才發現。
   **`detail.verified` 那一對是死得有道理的**——列目錄不畫綠勾，所以「已通過檢查」永遠沒機會出現；
   其餘幾個看起來是做到一半或後來換了做法。**要刪之前得先確認是「文字多餘」而不是「元件漏用」。**
+  **2026-08-11 補**：`BUILD.md` 已在 4ec83d3 刪除，四處還指著它——
+  `docker-compose.yml:163`（且寫成 `client/BUILD.md`，它從來不在那）、
+  `requirements-dev.txt:18`、`discord-drive.spec:16`、`tests/test_db_indexes.py:16`。
+  另外 `client/README.md:95-99` 整節指著 186beb3 刪掉的 `design/` 原型檔，
+  同檔的 shell 清單漏了 `backend.js` / `backend.test.js` / `local.html`，
+  且還寫著 `setup.html` 是「唯一隨 app 出貨的頁面」（`package.json` 的 `files` 已含 `local.html`）。
 
 - [done] ~~**獨立單機版：packaged app 的密碼從哪來**~~（2026-08-07 開出同日拍板並落地，
   見下方變更紀錄）。拍板結果是 (a)：外殼跳密碼視窗，用 stdin 餵給後端子行程。
@@ -111,6 +117,15 @@
 
 <!-- 這些是問過使用者、往後都適用的決定，不要下一輪又拿出來重問 -->
 
+- **公開文件的規則從「只有一份」改成「每個事實只有一個家」**（2026-08-11，修訂 2026-08-10
+  那條）。`README.md` 是入口，**其他公開文件一律要能從它連到**；查表型內容拆出去：
+  `docs/OPERATIONS.md`（遠端連線、備份救援、換密碼、疑難排解、已知限制）、
+  `CONTRIBUTING.md`（從原始碼建置、測試、「什麼算完成」）。
+  **理由是 2026-08-10 那條要防的是重複、不是多檔**，而重複當時已經存在——
+  `README.md` 與 `CONTRIBUTING.md` 各有一份測試數，正好是那條自己說錯過兩次的那個數字。
+  現在**所有測試數字只住在 `CONTRIBUTING.md`**。分工表寫在 `CONTRIBUTING.md`
+  的〈Documentation〉，新增公開文件要同時補那張表與 `README.md` 的〈Where things are〉。
+
 - **專案定位是「開源自架」，不是「我營運一個公開服務」**（2026-08-10）。
   每個人 clone 下來跑自己那一份，各自一個帳號、各自的 bot token。
   **因此現有的單一帳號模型就是完成品，不是半成品**——多使用者第 4 步
@@ -133,7 +148,8 @@
   而他們多半不會去讀 Developer ToS。`README.md` 開頭因此有一節專講這件事，
   包含「不要當唯一備份」與「用你賠得起的帳號」。代價只有 star 數，不寫的代價是別人的帳號。
 
-- **`README.md` 是唯一的公開文件，`GUIDE.md` 與 `BUILD.md` 轉為內部**（2026-08-10）。
+- **`README.md` 是唯一的公開文件，`GUIDE.md` 與 `BUILD.md` 轉為內部**（2026-08-10，
+  **2026-08-11 修訂為「每個事實只有一個家」，見本節第一條**）。
   重要內容（Discord 端設定、兩個版本怎麼選、備份與救援、疑難排解、從原始碼建置）
   已吸收進 `README.md` 並改寫成英文。**理由是一份文件才守得住正確性**——
   兩份重疊的教學裡，沒被 README 連到的那一份會無聲爛掉，而
@@ -502,6 +518,29 @@
 只記「日期 / 做了什麼 / 測試數」，加上不在別處的教訓。
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
+
+**2026-08-11 · 公開文件拆分與去腐化** — 764 項（±0）、`--db=sqlite` 761 過 3 skip、
+`node --test` 16 過。**純文件輪，`src/` 與 `tests/` 一行都沒動。**
+
+- **拆分見上方拍板，不複述。** `README.md` 473 行／3172 字 → 320 行／1932 字（字數 −39%）；
+  搬出去的是 `docs/OPERATIONS.md`（新檔）與 `CONTRIBUTING.md`（吸收「從原始碼建置」與「測試」）。
+- **抓到五處過時**：`README.md` 的桌面版體積寫 `~89 MB`（實測 `DiscordDrive-0.1.0-portable.exe`
+  106,569,422 B ≈ 102 MiB，且自 local 模式起外殼已把後端打包進去，「+ backend」的寫法也不對）；
+  「Looks like: Terminal window + browser」與同一份文件講 local 模式的那段自相矛盾；
+  `src/` 清單漏 `standalone.py` 與 `jobs.py`；Tests 區塊沒寫前置條件；
+  在 production image 裡跑 pytest 的那條 `docker run` 缺瀏覽器必失敗。
+- **裸 clone 跑 `pytest` 會 fail 不是 skip**，兩個前置條件缺一不可（`npm run build`、
+  `playwright install chromium`）。實測把 `PLAYWRIGHT_BROWSERS_PATH` 指到空目錄：`1 error`。
+  無瀏覽器環境的正解是 `--ignore=tests/test_ui_login.py`，**實測 759 過**——
+  也就是 764 裡只有 5 條需要瀏覽器，而 `test_web.py` 自己有一份 tmp_path 的 `built_client`，
+  不吃真的 `dist`。
+- **文件裡的模組職責也會腐化，而且比數字更難發現**：這一輪原本把 `jobs.py` 寫成
+  「背景 sweep：垃圾桶、游離節點」，讀了 `src/jobs.py:1-28` 才發現它是**可輪詢的清空工作**
+  （真進度、可取消、隨 session 死），sweep 在 `web.py:922`。**寫任何「這個檔案是做什麼的」
+  之前先打開它**，這種錯不會被任何測試抓到。
+- **`docker run` 那條沒有實測**：Docker Desktop 沒在跑，而 2026-08-10 已經取消
+  「不必問就能重啟 docker」的例外，所以沒有自行啟動。改動只有加一個 `--ignore` 旗標，
+  該旗標本身在宿主上驗過。
 
 **2026-08-10 · 開源上線的前置：授權、揭露、去識別化、CI** — 764 項（±0），`node --test` 16 過，
 pyflakes 乾淨。**沒有動任何 `src/` 的行為**，唯一的程式碼改動是刪掉一行沒用到的 import。
