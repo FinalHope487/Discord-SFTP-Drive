@@ -182,6 +182,11 @@ Electron 已是 `client/shell` 的 devDependency。
   Windows 上那條分支根本不執行，於是測試對它對錯一律綠。升級相依、或改動被這種
   分支包住的程式碼時，**驗收的那一次是 Linux CI，不是這台機器**；
   補測試要直接打自己那一側的方法，繞路走真的用戶端在唯一能執行它的平台以外沒有牙齒
+- **條件式 skip 在「一定要跑」的環境裡要改成 fail。** 缺件在開發機上 skip 是對的，
+  在 CI 上代表 workflow 壞了——而 skip 不會讓 job 變紅，於是「這一層有覆蓋」會以全綠的
+  形式活很久。作法見 `tests/shell_support.py` 的 `refuse_to_skip_in_ci`
+- **看到綠不算數，要看數字。** CI job 通過但測試全 skip 跟沒跑一樣；每次改完 CI 都去 log
+  裡確認那個數字真的變了
 
 ## 本專案的驗證指令
 

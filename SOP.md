@@ -84,6 +84,10 @@
 `跑完會改寫原始碼的腳本（突變測試之類）並還原後，git status 說整批檔案 modified，但 git diff 是空的 → 1. 先跑 git diff -w --stat 確認實質差異真的是零，不要去找自己改壞了哪一行 2. 根因是行尾：.gitattributes 對整棵樹指定 eol=lf，而 Python 的 write_text() 在 Windows 上把 \n 譯成 \r\n 寫回去，於是工作目錄的位元組與 index 不同、但 git diff 正規化之後看不出來 3. 還原用 git checkout -- <path>，不要用腳本再寫一次 4. 這類腳本一律用 write_text(..., newline="") 或直接寫 bytes → 跨平台行尾翻譯，非腳本邏輯錯`
 （2026-08-11 寫入，第一次出現就寫：環境決定、必然重現。`.gitattributes` 的註解本身就在警告 `write_text()`，我照樣踩了——**檔案裡寫給未來的警告，不會在你出手前跳出來**。順帶：這一輪也再次踩到上面「Bash 工具工作目錄跨呼叫保存」那條，`cd client/shell` 之後 `grep requirements-dev.txt` 說找不到檔案。）
 
+`剛加進 CI 的那一層測試，job 是綠的，但它其實一條都沒跑 → 1. 不要看 job 的綠勾，去 log 裡撈 "N passed, M skipped" 那一行對照本機的數字，差多少就是沒跑多少 2. 判準：pytest 的 skip 不會讓 job 變紅，所以「前置條件沒裝好」與「測試全過」在 CI 首頁上長得一模一樣 3. 本專案踩到的具體成因：electron 43 拿掉了 postinstall，改成要自己呼叫的 install-electron bin，於是 npm ci 四秒跑完、一個位元組的二進位檔都沒下載 4. 修法有兩層，缺一不可——補上真正下載的那一步，以及讓測試在 CI 環境下「缺件就 raise」而不是 skip（tests/shell_support.py 的 refuse_to_skip_in_ci）→ 靜默 skip 冒充覆蓋率，非測試邏輯錯`
+（2026-08-11 寫入，第一次出現就寫：工具行為決定、必然重現。**npm ci 的耗時就是證據**——裝一個帶 100MB 二進位檔的套件只花 4 秒，那就是沒下載。順帶：這條的教訓不只是「怎麼查」，已升格為 `CLAUDE.md` 〈驗證：不接受目測〉的兩條規則。）
+→ 已升格為 CLAUDE.md 的〈驗證：不接受目測 · 規則〉
+
 ---
 
 ## 已退役

@@ -25,11 +25,17 @@ from tests.shell_support import (
     backend_missing,
     electron_missing,
     health_server,
+    refuse_to_skip_in_ci,
     shell_window,
 )
 
 _NO_ELECTRON = electron_missing()
 _NO_BACKEND = backend_missing()
+
+# A skip is correct on a machine that has not installed Electron or built the
+# backend. It is not correct on CI, where it turns "this layer is covered"
+# into a green run that exercised none of it.
+refuse_to_skip_in_ci(_NO_ELECTRON, _NO_BACKEND)
 
 pytestmark = pytest.mark.skipif(
     _NO_ELECTRON is not None, reason=_NO_ELECTRON or ""

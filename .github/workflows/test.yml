@@ -23,7 +23,10 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          # electron 43 declares `engines: node >= 22.12.0`, and its installer
+          # is the thing that has to run here. 20 produced EBADENGINE warnings
+          # on every electron package in the tree.
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             client/app/package-lock.json
@@ -40,9 +43,18 @@ jobs:
       # Electron, for `test_ui_shell.py`. It drives the shell's own two pages
       # in a real window over CDP, so the runner needs the binary itself --
       # not a package this suite imports.
+      #
+      # `npm ci` alone does not produce it. Electron 43 dropped the
+      # `postinstall` that used to fetch the binary and exposes the fetcher as
+      # an `install-electron` bin instead, so the install completes in four
+      # seconds having downloaded nothing. `test_ui_shell.py` refuses to skip
+      # when `CI` is set, which is what turns a repeat of this into a failure
+      # rather than a green run that asserted nothing.
       - name: Install the desktop shell's dependencies
         working-directory: client/shell
-        run: npm ci
+        run: |
+          npm ci
+          node node_modules/electron/install.js
 
       - uses: actions/setup-python@v7
         with:
@@ -96,7 +108,10 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          # electron 43 declares `engines: node >= 22.12.0`, and its installer
+          # is the thing that has to run here. 20 produced EBADENGINE warnings
+          # on every electron package in the tree.
+          node-version: '22'
           cache: npm
           cache-dependency-path: client/shell/package-lock.json
 

@@ -79,6 +79,27 @@ def backend_missing():
     return None
 
 
+def refuse_to_skip_in_ci(*reasons):
+    """On CI a missing prerequisite is a broken workflow, not a skip.
+
+    Written because this layer landed green in CI having run none of itself:
+    Electron 43 dropped the `postinstall` that used to fetch its binary, so
+    `npm ci` installed the JS package and nothing else, and every test here
+    skipped. A skip is the right answer on a developer's machine that has not
+    built the backend. In CI it means the job asserted nothing while
+    reporting success, which is worse than a failure.
+    """
+    if not os.environ.get("CI"):
+        return
+    actual = [reason for reason in reasons if reason]
+    if actual:
+        raise RuntimeError(
+            "CI is configured to run the desktop shell's acceptance layer, "
+            "but its prerequisites are missing, so it would have skipped "
+            "silently: " + "; ".join(actual)
+        )
+
+
 def _free_port():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))

@@ -613,6 +613,13 @@
 - **CI 現在也跑這一層**：python job 加裝 `client/shell` 相依、`xvfb`，並用 PyInstaller 建
   Linux 版後端——順帶讓 CI 第一次真的驗證 `discord-drive.spec` 還能打包。兩個 pytest 步驟
   用 `xvfb-run -a` 包住，並拿掉命令列的 `-q`（`pytest.ini` 已有，疊成 `-qq` 會吞掉總結行）。
+- **第一次接上 CI 是綠的，而那 11 條一條都沒跑**（`764 passed, 11 skipped`）。成因：
+  electron 43 拿掉 `postinstall`，改成要自己叫的 `install-electron` bin，`npm ci` 四秒跑完
+  沒下載二進位檔；node 也還釘在 20，而 electron 43 宣告 `>= 22.12.0`。修了三件事：
+  補 `node node_modules/electron/install.js`、node 升到 22、以及
+  **`refuse_to_skip_in_ci`——`CI` 環境變數存在時缺件改成 raise**。
+  前兩項是這次的 bug，第三項是讓同一類 bug 下次不可能再靜默通過。
+  **綠勾不是證據，log 裡的數字才是。**
 
 **2026-08-11 · 對外門面：主分支改名、v0.1.0 發布** — 764 項（±0）、`--db=sqlite` 761 過
 3 skip、`node --test` 16 過（含驅動真 exe 那組）。
