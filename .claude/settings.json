@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": ["Bash(git push:*)"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:/my-projects/Discord-Drive/venv/Scripts/python.exe D:/my-projects/Discord-Drive/.claude/hooks/block-push-main.py"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:/my-projects/Discord-Drive/venv/Scripts/python.exe D:/my-projects/Discord-Drive/.claude/hooks/extract-decisions.py"
+          }
+        ]
+      }
+    ]
+  }
+}
