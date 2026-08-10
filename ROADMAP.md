@@ -519,6 +519,37 @@
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
 
+**2026-08-11 · 對外門面：主分支改名、v0.1.0 發布** — 764 項（±0）、`--db=sqlite` 761 過
+3 skip、`node --test` 16 過（含驅動真 exe 那組）。
+
+- **`feat/standalone-app` → `main`**，仍是預設分支。`master` 留著但落後 20 個 commit，
+  不再是任何東西的目標。
+- **CI 觸發條件跟著改**：`.github/workflows/test.yml` 的 `push.branches` 寫死 `master`，
+  改名後推 `main` 不會跑測試——分支改名會**靜默**廢掉 CI，改名的同一輪就要檢查這一行。
+- **repo description 與 topics 填上**（QUESTIONS.md 那題的實際採用值與建議值不同：
+  description 改寫成點出 chunk/加密/metadata store 三件事，topics 18 個含技術棧）。
+- **v0.1.0 release**，三個 Windows x64 檔：`DiscordDrive-0.1.0-setup.exe`、
+  `-portable.exe`、`discord-drive.exe`。附 SHA-256，因為沒有簽章憑證。
+- **打包產物會悄悄過期**：`dist-*/` 裡的 exe 是 08-07 建的，08-09 的 `c83ca3c` 改過
+  `src/main.py`、`src/standalone.py` 與整個 `client/shell/`。檔案還在、看起來能跑，
+  但少了兩天的改動。**發布前一律重建，不要相信 `dist-*/` 裡現成的東西。**
+- **`README.md` 補上下載入口**：導覽列與 Step 2a 指向 Releases，體積 `~17/~102 MB`
+  改成實測的 `~18/~104 MB`。上一輪才修過同一格數字，這一輪發布完又立刻過期——
+  **凡是寫死產物體積的地方，發布流程就得順手改它**。
+- **開了 private vulnerability reporting、secret scanning、push protection**，
+  加 `.github/dependabot.yml`（pip／兩個 npm／actions 四組，全部 grouped weekly；
+  `pymongo>=4.9` 明確 ignore，理由在 `requirements.txt`）。
+- **改用功能分支 + PR 進 `main`**（拍板見下）。`CLAUDE.md` 的收尾第 4 條與
+  「攔阻待補 hook」那句一併更新——後者早就過期，`block-push-main.py` 一直都在。
+
+**`master` 是什麼：8/2 的舊快照，不是「伺服器版分支」。** 這一輪差點照這個誤解去處理它，
+記下來免得下次再問一遍。證據：`main` 的 `src/config.py:133` 是
+`DB_BACKEND = os.getenv("DB_BACKEND", "mongo")`——伺服器版仍是**預設**；
+`docker-compose.yml`（mongodb + sftp-discord-server）、`Dockerfile`、`scripts/start.ps1`、
+`src/db.py` 的 `AsyncIOMotorClient` 全在 `main` 上。`master` 獨有的只有 `design/` 設計稿
+（`186beb3` 刻意刪的）與三個現在 gitignore 的本地檔。兩版早就共存在 `main`，
+`master` 只有伺服器版是因為它早於單機版開工。目前決定**留著不刪**。
+
 **2026-08-11 · 公開文件拆分與去腐化** — 764 項（±0）、`--db=sqlite` 761 過 3 skip、
 `node --test` 16 過。**純文件輪，`src/` 與 `tests/` 一行都沒動。**
 

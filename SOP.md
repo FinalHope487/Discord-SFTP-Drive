@@ -69,6 +69,12 @@
 `跑 pytest 想拿「幾項通過」，輸出只有進度點與 Task was destroyed 噪音，就是沒有 N passed 那一行 → 1. 先看 pytest.ini 的 addopts，不要懷疑 grep 寫錯或輸出被截斷：本專案 addopts = -q，命令列再加一個 -q 疊成 -qq，而 pytest 在 -qq 下不印總結行 2. 要數字就不要自己加 -q（addopts 已經有了）；想更安靜用 --tb=no，不要用第二個 -q 3. 判準：-q 一次是「一行一檔」，兩次是「連總結都不印」 → 命令列旗標與設定檔疊加，非測試或環境問題`
 （2026-08-11 寫入，第一次出現就寫：工具行為決定、必然重現。成本是兩輪各 46 秒的整套重跑跑完才發現數字根本沒印出來。順帶：`node --test` 沒有這個坑，它一律印 `ℹ tests N`。）
 
+`BUILD.md 上的指令一條一條貼進 Bash 工具，跑到 ./venv/Scripts/python.exe 那行變成 No such file or directory → 1. 先跑 pwd，不要懷疑 venv 壞了或路徑打錯：前一個呼叫裡的 cd client/app 還留著，工作目錄不會自己回到 repo 根 2. 判準：Bash 工具的工作目錄跨呼叫保存，但 shell 變數與函式不保存——直覺上兩者應該一致，實際相反 3. 修法是每一個呼叫自帶 cd /d/my-projects/Discord-Drive &&，不要依賴上一個呼叫留下的位置。BUILD.md 的指令塊全是相對路徑，整份文件都吃這個坑 → 工具的狀態保存語意，非環境或路徑問題`
+（2026-08-11 寫入，第一次出現就寫：工具行為決定、必然重現。BUILD.md 的「一次跑完」那種 `cd A && ... && cd ../..` 寫法在單一 shell 裡是對的，拆成多個工具呼叫就不是。）
+
+`gh release create 帶 --target 短 SHA，回 HTTP 422 Validation Failed: Release.target_commitish is invalid → 1. 不要去查 tag 名稱、權限或 notes 檔：422 指的就是 target 這個欄位 2. target_commitish 只吃完整 40 字元 SHA 或分支名，git log --oneline 給的 7 字元短 SHA 一律被拒，而錯誤訊息不會說是長度問題 3. 修法是 git rev-parse main 取完整 SHA，或直接給分支名（本地與遠端同步時兩者等價）→ GitHub API 的欄位格式要求，非權限或指令拼法問題`
+（2026-08-11 寫入，第一次出現就寫：API 決定、必然重現。發布流程一年跑不了幾次，所以這種坑每次都要重新踩一遍——寫下來的價值在這裡，不在頻率。）
+
 ---
 
 ## 已退役
