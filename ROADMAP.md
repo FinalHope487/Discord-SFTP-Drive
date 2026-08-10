@@ -68,10 +68,12 @@
 - [done] ~~**獨立單機版：packaged app 的密碼從哪來**~~（2026-08-07 開出同日拍板並落地，
   見下方變更紀錄）。拍板結果是 (a)：外殼跳密碼視窗，用 stdin 餵給後端子行程。
 
-- [later] **Electron 外殼那兩頁 UI 沒有自動化驗收**（2026-08-09 開出）。`client/app` 的 SPA 已經有
-  Playwright 蓋住，但 `setup.html` / `local.html` 還是只有目測。Python Playwright 不支援
-  Electron，要做就得另外引進 JS 端 Playwright（`_electron` API）。`setup.html` 只有一個表單，
-  等它開始長東西再說。
+- [done] ~~**Electron 外殼那兩頁 UI 沒有自動化驗收**~~（2026-08-09 開出，2026-08-11 做掉，
+  見下方變更紀錄）。**當初擱置的理由是錯的**：原文寫「Python Playwright 不支援 Electron，
+  要做就得另外引進 JS 端 Playwright（`_electron` API）」。`_electron` 確實只有 JS 端有，
+  但那不是唯一的路——Electron 開 `--remote-debugging-port`，Python Playwright 的
+  `connect_over_cdp` 就能接上真視窗，零新增相依。
+  **「做不到」與「我想到的那一種做法做不到」是兩件事，前者要有證據才能寫。**
 
 - [later] **`children()` 在兩個後端都是全表掃描**（2026-08-07 量到）。
   `{"parent_id": x}`（含垃圾桶項，`list_dir` 每次都會呼叫）在 MongoDB 是 COLLSCAN、
