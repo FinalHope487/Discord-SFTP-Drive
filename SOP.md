@@ -103,6 +103,17 @@
 會沉默的缺件被寫下來了，會尖叫的那個反而沒有。
 → 已升格為 `CLAUDE.md` 的〈驗證：不接受目測／本專案的驗證指令〉）
 
+`要在公開文件裡新增一列指向某個檔案、或改一段產品文案指向某個檔案前 → 1. 先查
+git ls-files <path> 或 git check-ignore -v <path>，不要只看檔案在磁碟上存在就當它會出現在
+別人的 clone 或打包後的 app 裡 2. 本專案已知一批「內部工作文件」在 .gitignore：GUIDE.md、
+BUILD.md、session-handoff.md、QUESTIONS.md、BLUEPRINT.md——外觀跟一般文件沒有差別，
+只有 .gitignore 知道 3. 打包產物（electron-builder 的 files、PyInstaller 的 spec）
+是另一層更窄的清單，追蹤了不代表會被帶進發行版，要各自確認 → 沒查驗就假設檔案是公開的，
+非文件內容錯誤`
+（2026-08-11 寫入，第一次出現就寫：本專案的檔案分類決定、跟這批既有內部文件的存在
+綁定必然重現。踩到的是 `client/shell/local.html` 已經指著一個使用者機器上不存在的
+`GUIDE.md`——差點在修文件時把同一個錯誤複製進 `README.md` 的公開表格。）
+
 ---
 
 ## 已退役
