@@ -34,7 +34,7 @@ fails them on purpose rather than rebuilding itself.
 ## Running the tests
 
 ```bash
-python -m pytest                  # 765 tests, about 45 seconds
+python -m pytest                  # 769 tests, about 45 seconds
 python -m pytest --db=sqlite      # the same suite against a real SQLite backend
 cd client/shell && node --test    # 16 tests, 11 without a built backend
 ```
@@ -43,7 +43,7 @@ No credentials and no network are needed — MongoDB and the Discord API are
 faked. All three must pass before a pull request is reviewed; CI runs the same
 three. Two of those counts move with the environment:
 
-- **`pytest` drops to 760 without a browser.** `tests/test_ui_login.py` is the
+- **`pytest` drops to 764 without a browser.** `tests/test_ui_login.py` is the
   only file that needs one, and a missing browser is an error there, not a skip.
   Inside the production image, for instance:
   `python -m pytest --ignore=tests/test_ui_login.py`.

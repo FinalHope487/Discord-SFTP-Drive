@@ -60,7 +60,9 @@ of the data and take the ordinary buffered append path.
 import asyncio
 import bisect
 import contextlib
+import errno
 import logging
+import os
 import time
 import uuid
 from collections import OrderedDict
@@ -326,6 +328,14 @@ async def _apply_metadata(node: dict, *, permissions=None, mtime=None,
     await db.get_db().nodes.update_one({"id": node["id"]}, {"$set": update})
 
 
+# `os.SEEK_DATA` and `os.SEEK_HOLE` exist only where the platform has them --
+# Linux and some BSDs, not Windows. Their values are the same wherever they
+# exist, so naming them here keeps `DiscordFile.seek` importable and testable
+# on a machine whose asyncssh will never ask for them. See that method.
+SEEK_DATA = getattr(os, "SEEK_DATA", 3)
+SEEK_HOLE = getattr(os, "SEEK_HOLE", 4)
+
+
 class DiscordFile:
     """An open file handle.
 
@@ -418,6 +428,51 @@ class DiscordFile:
     def _end_of_file(self) -> int:
         """The file's logical end, buffered bytes included."""
         return max(self._node["size"], self._covered_end() + len(self._buffer))
+
+    def seek(self, offset: int, whence: int) -> int:
+        """Answer the sparse-file queries. This file is all data, no holes.
+
+        asyncssh 2.21 added the `ranges@asyncssh.com` extension, and its
+        client asks for it on every `get()`. The server side answers by
+        calling this straight on the handle, past every `SFTPServer` override
+        in `src/sftp.py` -- the third instance of the reach-around that
+        module's docstring is about. Without it, downloads by an asyncssh
+        client fail on Linux with "'DiscordFile' object has no attribute
+        'seek'". Windows never calls it: `os.SEEK_DATA` does not exist there,
+        so asyncssh binds an implementation that does not seek, and the
+        failure is invisible to a test run on this platform.
+
+        **The tail hole is deliberately not reported**, even though
+        `_covered_end()` knows exactly where it starts and reporting it would
+        save transferring those zeros. Under `sparse=True` -- the client
+        default -- a short copy is expected rather than an error, so a hole
+        reported one byte early is a download that arrives quietly full of
+        zeros with nothing logged on either side. Claiming everything is data
+        cannot fail that way, and it is what the protocol did before the
+        extension existed, so no transfer changes shape. The optimisation is
+        a separate decision; `ROADMAP.md` holds it.
+
+        Otherwise this is POSIX, for a file of length `size` with no holes:
+        a position inside it has data there and its next hole is the implicit
+        one at the end, and a position at or past the end has neither, which
+        is `ENXIO`. That last case is what stops asyncssh's loop cleanly when
+        a client asks about a file another handle has since shrunk.
+
+        Not a general `seek`: there is no file position on this handle, reads
+        carry their own offset. Any other `whence` raises rather than
+        returning a number the caller would be entitled to act on.
+        """
+        if whence not in (SEEK_DATA, SEEK_HOLE):
+            raise NotImplementedError(
+                "DiscordFile.seek only answers SEEK_DATA and SEEK_HOLE; "
+                "reads take an offset instead of moving a position"
+            )
+
+        end = self.size
+        if offset >= end:
+            raise OSError(errno.ENXIO, "no data or hole past the end of file")
+
+        return offset if whence == SEEK_DATA else end
 
     async def refresh(self):
         """Pull this handle up to date if another handle changed the node.
