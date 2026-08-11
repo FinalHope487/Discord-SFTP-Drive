@@ -22,6 +22,7 @@ const path = require("node:path");
 
 const { normaliseServerUrl } = require("./server-url.js");
 const { LocalDrive, backendPath } = require("./backend.js");
+const { normaliseLanguage, menuStrings } = require("./language.js");
 
 const CONFIG_PATH = path.join(app.getPath("userData"), "config.json");
 
@@ -66,6 +67,31 @@ function readConfig() {
 function writeConfig(next) {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), "utf8");
+}
+
+/**
+ * The language the two setup pages and the menu are shown in.
+ *
+ * It lives in config.json rather than in either page because the pages are
+ * file:// and link to each other: a preference held by a page would be gone
+ * the moment the user followed that link, and gone again on the next launch.
+ *
+ * The file manager keeps its own preference in localStorage under the
+ * server's origin. The two are deliberately not shared -- see QUESTIONS.md.
+ */
+function readLanguage() {
+  return normaliseLanguage(readConfig().lang);
+}
+
+function writeLanguage(value) {
+  // An unusable value leaves the preference where it was rather than dropping
+  // it to the default: the caller is the page's own button, so anything else
+  // arriving here means a bug, and silently switching the user to Chinese
+  // would be a worse way to report it than simply not moving.
+  const lang = normaliseLanguage(value, readLanguage());
+  writeConfig({ ...readConfig(), lang });
+  buildMenu(lang);
+  return lang;
 }
 
 /* ----------------------------------------------------------------- probing */
@@ -320,36 +346,42 @@ function connectTo(origin) {
 
 /* -------------------------------------------------------------------- menu */
 
-function buildMenu() {
+// Rebuilt whenever the preference changes, which is what makes the switch on
+// the setup screen reach the chrome around it as well as the page itself.
+// Every `role` gets an explicit label: Electron's own defaults follow the OS
+// locale, so leaving them bare would put a Chinese menu item next to English
+// ones on a Chinese Windows, or the reverse.
+function buildMenu(lang) {
+  const s = menuStrings(lang);
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
-        label: "Discord Drive",
+        label: s.app,
         submenu: [
           {
-            label: "切換伺服器…  /  Change server…",
+            label: s.changeServer,
             accelerator: "CmdOrCtrl+Shift+S",
             click: () => createSetupWindow(null),
           },
           { type: "separator" },
-          { role: "reload" },
-          { role: "forceReload" },
-          { role: "toggleDevTools" },
+          { role: "reload", label: s.reload },
+          { role: "forceReload", label: s.forceReload },
+          { role: "toggleDevTools", label: s.devTools },
           { type: "separator" },
-          { role: "resetZoom" },
-          { role: "zoomIn" },
-          { role: "zoomOut" },
+          { role: "resetZoom", label: s.resetZoom },
+          { role: "zoomIn", label: s.zoomIn },
+          { role: "zoomOut", label: s.zoomOut },
           { type: "separator" },
-          { role: "quit" },
+          { role: "quit", label: s.quit },
         ],
       },
       {
-        label: "編輯 / Edit",
+        label: s.edit,
         submenu: [
-          { role: "cut" },
-          { role: "copy" },
-          { role: "paste" },
-          { role: "selectAll" },
+          { role: "cut", label: s.cut },
+          { role: "copy", label: s.copy },
+          { role: "paste", label: s.paste },
+          { role: "selectAll", label: s.selectAll },
         ],
       },
     ]),
@@ -380,6 +412,8 @@ if (!app.requestSingleInstanceLock()) {
     );
 
     ipcMain.handle("dd:current", () => readConfig().serverUrl || "");
+    ipcMain.handle("dd:language", () => readLanguage());
+    ipcMain.handle("dd:setLanguage", (_event, value) => writeLanguage(value));
     ipcMain.handle("dd:probe", async (_event, input) => {
       let origin;
       try {
@@ -423,7 +457,7 @@ if (!app.requestSingleInstanceLock()) {
       shell.openPath(localDataHome);
     });
 
-    buildMenu();
+    buildMenu(readLanguage());
 
     const saved = readConfig();
     if (saved.mode === "local") createSetupWindow(null, "local.html");

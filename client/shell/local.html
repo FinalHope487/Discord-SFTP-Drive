@@ -6,7 +6,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
     />
-    <title>Discord Drive — 在這台電腦上執行</title>
+    <title>Discord Drive</title>
     <style>
       :root {
         color-scheme: dark;
@@ -28,7 +28,11 @@
         background: var(--bg);
         color: var(--text);
         font: 13px/1.6 system-ui, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+        /* See setup.html: revealed once the strings are in, so the window does
+           not paint one language and then the other. */
+        visibility: hidden;
       }
+      body.ready { visibility: visible; }
       h1 { font-size: 17px; font-weight: 500; margin: 0 0 4px; letter-spacing: -0.01em; }
       p { margin: 0 0 10px; color: var(--muted); }
       code { font-family: var(--mono); color: var(--accent); word-break: break-all; }
@@ -64,6 +68,15 @@
         font-weight: 500;
       }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .topbar { display: flex; justify-content: flex-end; margin-bottom: 2px; }
+      button.lang {
+        height: 26px;
+        padding: 0 10px;
+        font-size: 12px;
+        color: var(--muted);
+        border-color: #33363f;
+      }
+      button.lang:hover:not(:disabled) { color: var(--text); }
       .status {
         margin-top: 14px;
         padding: 10px 12px;
@@ -102,7 +115,14 @@
         color: var(--muted);
       }
       .note h2 { font-size: 12px; font-weight: 500; color: var(--text); margin: 0 0 6px; }
-      .en { color: var(--dim); font-size: 11.5px; }
+      .note pre {
+        margin: 8px 0 0;
+        font-family: var(--mono);
+        font-size: 11px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: var(--accent);
+      }
       .back {
         display: inline-block;
         margin-top: 22px;
@@ -115,95 +135,243 @@
     </style>
   </head>
   <body>
-    <div id="loading" class="center">檢查中…</div>
+    <div class="topbar">
+      <button id="lang" class="lang" type="button"></button>
+    </div>
+
+    <div id="loading" class="center" data-i18n="loading"></div>
 
     <div id="missing" style="display:none">
-      <h1>找不到後端執行檔</h1>
-      <p>
-        這個 app 內建的後端不見了，這通常代表你是從原始碼直接跑外殼、還沒建過
-        <code>discord-drive.exe</code>。
-        <span class="en">The bundled backend is missing — likely a dev checkout that has not built it yet.</span>
-      </p>
+      <h1 data-i18n="missingTitle"></h1>
+      <p data-i18n="missingBody"></p>
       <div class="note">
-        在 repo 根目錄跑：
-        <pre style="margin-top:8px">./venv/Scripts/python.exe -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone</pre>
+        <span data-i18n="missingHow"></span>
+        <pre>./venv/Scripts/python.exe -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone</pre>
       </div>
     </div>
 
     <div id="first-run" style="display:none">
-      <h1>第一次執行：先填設定</h1>
-      <p>
-        已經幫你寫了一份設定範本，還沒有 Discord 憑證這類必要資訊。
-        <span class="en">A settings template was written; it still needs your Discord credentials.</span>
-      </p>
+      <h1 data-i18n="firstRunTitle"></h1>
+      <p data-i18n="firstRunBody"></p>
       <div class="note">
-        <h2>設定檔位置</h2>
+        <h2 data-i18n="configWhere"></h2>
         <code id="config-path"></code>
       </div>
       <div class="note">
-        <h2>要填什麼</h2>
-        打開上面那個檔案，填入標示 <code>REQUIRED</code> 的幾項——Discord bot token、
-        要存到哪（DM 或頻道其中一項）、還有你想用的帳號名。<code>GUIDE.md</code> 的第 2 節
-        有完整步驟。填完存檔，回來按「重新檢查」。
+        <h2 data-i18n="whatToFill"></h2>
+        <div data-i18n="whatToFillBody"></div>
       </div>
       <div class="row">
-        <button id="open-folder" type="button">開啟資料夾</button>
-        <button id="recheck-firstrun" class="primary" type="button">重新檢查</button>
+        <button id="open-folder" type="button" data-i18n="openFolder"></button>
+        <button id="recheck-firstrun" class="primary" type="button" data-i18n="recheck"></button>
       </div>
     </div>
 
     <div id="password-screen" style="display:none">
-      <h1>輸入密碼</h1>
-      <p>
-        這組密碼包著所有檔案的加密金鑰，不會被存在硬碟上——每次啟動都要輸入一次。
-        <span class="en">This wraps every file's encryption key and is never written to disk.</span>
-      </p>
+      <h1 data-i18n="passwordTitle"></h1>
+      <p data-i18n="passwordBody"></p>
 
-      <label for="password">密碼 · Password</label>
+      <label for="password" data-i18n="passwordLabel"></label>
       <input id="password" type="password" autocomplete="off" spellcheck="false" />
 
       <div class="row">
-        <button id="submit" class="primary" type="button">啟動</button>
+        <button id="submit" class="primary" type="button" data-i18n="start"></button>
       </div>
 
       <div id="pw-status" class="status"></div>
     </div>
 
-    <a id="back-link" class="back" href="setup.html">← 改連遠端伺服器 / Connect to a server instead</a>
+    <a id="back-link" class="back" href="setup.html" data-i18n="toRemote"></a>
 
     <script>
+      // Its own dictionary, for the reason setup.html gives: the CSP on this
+      // window allows inline script and nothing else, so neither page can load
+      // a shared file. They share no sentence, so nothing is duplicated but
+      // the twenty lines of machinery below.
+      const STRINGS = {
+        zh: {
+          docTitle: "Discord Drive — 在這台電腦上執行",
+          loading: "檢查中…",
+
+          missingTitle: "找不到後端執行檔",
+          missingBody:
+            "這個 app 內建的後端不見了，這通常代表你是從原始碼直接跑外殼、還沒建過 `discord-drive.exe`。",
+          missingHow: "在 repo 根目錄跑：",
+
+          firstRunTitle: "第一次執行：先填設定",
+          firstRunBody: "已經幫你寫了一份設定範本，還沒有 Discord 憑證這類必要資訊。",
+          configWhere: "設定檔位置",
+          whatToFill: "要填什麼",
+          whatToFillBody:
+            "打開上面那個檔案，填入標示 `REQUIRED` 的幾項——Discord bot token、" +
+            "要存到哪（DM 或頻道其中一項）、還有你想用的帳號名。" +
+            "`GUIDE.md` 的第 2 節有完整步驟。填完存檔，回來按「重新檢查」。",
+          openFolder: "開啟資料夾",
+          recheck: "重新檢查",
+
+          passwordTitle: "輸入密碼",
+          passwordBody:
+            "這組密碼包著所有檔案的加密金鑰，不會被存在硬碟上——每次啟動都要輸入一次。",
+          passwordLabel: "密碼",
+          start: "啟動",
+          starting: "啟動中…",
+
+          startingTitle: "正在啟動…",
+          startingBody: "第一次啟動要驗證 Discord 憑證，可能要幾秒鐘。",
+          backendFailedTitle: "後端無法啟動",
+          backendFailedBody: "以下是它結束前的輸出：",
+          timeoutTitle: "啟動逾時",
+          timeoutBody:
+            "後端還在跑，但沒有在時限內回應。可能是防毒軟體正在掃描，或是網路很慢。",
+          failedTitle: "啟動失敗",
+          failedBody: "密碼錯誤、或是設定檔裡的 Discord 憑證有問題，看下面的訊息。",
+
+          toRemote: "← 改連遠端伺服器",
+        },
+
+        en: {
+          docTitle: "Discord Drive — Run on this computer",
+          loading: "Checking…",
+
+          missingTitle: "The backend executable is missing",
+          missingBody:
+            "The backend this app bundles is not there. That usually means the shell is being run " +
+            "straight from source and `discord-drive.exe` has never been built.",
+          missingHow: "Run this in the repo root:",
+
+          firstRunTitle: "First run: fill in the settings",
+          firstRunBody:
+            "A settings template has been written for you. It is still missing the values it " +
+            "cannot guess, starting with your Discord credentials.",
+          configWhere: "Where the settings file is",
+          whatToFill: "What to fill in",
+          // Points at README rather than GUIDE.md on purpose: GUIDE.md is the
+          // Chinese walkthrough, and sending an English reader there is
+          // sending them to a document they cannot use. The README carries the
+          // same steps in English.
+          whatToFillBody:
+            "Open that file and fill in the values marked `REQUIRED` — your Discord bot token, " +
+            "where the chunks are stored (a DM or a channel, one or the other), and the account " +
+            "name you want to use. `README.md` walks through it under “Step 1 — the Discord " +
+            "side”. Save the file, come back here, and press “Check again”.",
+          openFolder: "Open folder",
+          recheck: "Check again",
+
+          passwordTitle: "Enter your password",
+          passwordBody:
+            "This password wraps the encryption key for every file. It is never written to disk, " +
+            "which is why it has to be typed at every start.",
+          passwordLabel: "Password",
+          start: "Start",
+          starting: "Starting…",
+
+          startingTitle: "Starting…",
+          startingBody:
+            "The first start checks the Discord credentials, which can take a few seconds.",
+          backendFailedTitle: "The backend could not start",
+          backendFailedBody: "This is what it printed before it exited:",
+          timeoutTitle: "Start timed out",
+          timeoutBody:
+            "The backend is still running but did not answer in time. Antivirus software may be " +
+            "scanning it, or the network may be slow.",
+          failedTitle: "Start failed",
+          failedBody:
+            "Either the password is wrong, or the Discord credentials in the settings file are. " +
+            "The output below says which.",
+
+          toRemote: "← Connect to a server instead",
+        },
+      };
+
+      const HTML_LANG = { zh: "zh-Hant", en: "en" };
+
       const $ = (id) => document.getElementById(id);
       const screens = ["loading", "missing", "first-run", "password-screen"];
+
+      let lang = "zh";
+      // Held as keys so that switching language re-renders whatever the status
+      // box is currently saying. The backend's own output is not a key: it is
+      // the child process's stderr, which has no translation and should not
+      // acquire one -- it is the text to search for or paste into an issue.
+      let shown = null;
+
+      function t(key, vars) {
+        const table = STRINGS[lang] || STRINGS.zh;
+        const template = table[key] ?? STRINGS.zh[key] ?? key;
+        if (!vars) return template;
+        return template.replace(/\{(\w+)\}/g, (whole, name) =>
+          Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : whole,
+        );
+      }
+
+      /** `text` with `code` and *bold* turned into elements, never into HTML. */
+      function parts(text) {
+        const out = [];
+        const pattern = /`([^`]+)`|\*([^*]+)\*/g;
+        let at = 0;
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+          if (match.index > at) out.push(document.createTextNode(text.slice(at, match.index)));
+          const element = document.createElement(match[1] !== undefined ? "code" : "strong");
+          element.textContent = match[1] !== undefined ? match[1] : match[2];
+          out.push(element);
+          at = pattern.lastIndex;
+        }
+        if (at < text.length) out.push(document.createTextNode(text.slice(at)));
+        return out;
+      }
+
+      function fill(element, text) {
+        element.replaceChildren(...parts(text));
+      }
 
       function show(id) {
         for (const s of screens) $(s).style.display = s === id ? "block" : "none";
       }
 
-      function reportStatus(kind, title, body, output) {
+      function renderStatus() {
         const el = $("pw-status");
-        el.className = `status on ${kind}`;
-        el.innerHTML = "";
+        if (!shown) return;
+        el.className = `status on ${shown.kind}`;
         const b = document.createElement("b");
-        b.textContent = title;
+        b.textContent = t(shown.title);
         const span = document.createElement("span");
-        span.textContent = body || "";
-        el.append(b, span);
-        if (output) {
+        fill(span, t(shown.body));
+        el.replaceChildren(b, span);
+        if (shown.output) {
           const pre = document.createElement("pre");
-          pre.textContent = output;
+          pre.textContent = shown.output;
           el.append(pre);
         }
       }
 
-      async function withBusy(button, label, work) {
-        const original = button.textContent;
+      function reportStatus(kind, title, body, output) {
+        shown = { kind, title, body, output };
+        renderStatus();
+      }
+
+      function applyLanguage() {
+        document.documentElement.lang = HTML_LANG[lang];
+        document.title = t("docTitle");
+        for (const element of document.querySelectorAll("[data-i18n]")) {
+          fill(element, t(element.dataset.i18n));
+        }
+        $("lang").textContent = lang === "zh" ? "中文" : "EN";
+        $("lang").setAttribute("aria-label", lang === "zh" ? "語言" : "Language");
+        renderStatus();
+      }
+
+      async function withBusy(button, labelKey, work) {
+        const key = button.dataset.i18n;
         button.disabled = true;
-        button.textContent = label;
+        fill(button, t(labelKey));
         try {
           return await work();
         } finally {
           button.disabled = false;
-          button.textContent = original;
+          // From the dictionary, not from the label that was there: the
+          // language can change while the backend is starting.
+          fill(button, t(key));
         }
       }
 
@@ -231,33 +399,38 @@
         show("password-screen");
         reportStatus(
           "bad",
-          "後端無法啟動",
-          "以下是它結束前的輸出：",
+          "backendFailedTitle",
+          "backendFailedBody",
           result.output || "(no output)",
         );
       }
+
+      $("lang").addEventListener("click", async () => {
+        lang = await window.dd.setLanguage(lang === "zh" ? "en" : "zh");
+        applyLanguage();
+      });
 
       $("open-folder").addEventListener("click", () => window.ddLocal.openDataFolder());
       $("recheck-firstrun").addEventListener("click", () => refresh(true));
 
       $("submit").addEventListener("click", () =>
-        withBusy($("submit"), "啟動中…", async () => {
+        withBusy($("submit"), "starting", async () => {
           const password = $("password").value;
           if (!password) return;
-          reportStatus("warn", "正在啟動…", "第一次啟動要驗證 Discord 憑證，可能要幾秒鐘。");
+          reportStatus("warn", "startingTitle", "startingBody");
           const result = await window.ddLocal.start(password);
           if (result.ok) {
             // The main process swaps this window's content for the drive
             // itself; nothing further to do here.
             return;
           }
-          const title = result.reason === "timeout"
-            ? "啟動逾時"
-            : "啟動失敗";
-          const body = result.reason === "timeout"
-            ? "後端還在跑，但沒有在時限內回應。可能是防毒軟體正在掃描，或是網路很慢。"
-            : "密碼錯誤、或是設定檔裡的 Discord 憑證有問題，看下面的訊息。";
-          reportStatus("bad", title, body, result.output);
+          const timedOut = result.reason === "timeout";
+          reportStatus(
+            "bad",
+            timedOut ? "timeoutTitle" : "failedTitle",
+            timedOut ? "timeoutBody" : "failedBody",
+            result.output,
+          );
           $("password").value = "";
           $("password").focus();
           // The child that failed is gone; a fresh one has to be spawned
@@ -270,7 +443,17 @@
         if (event.key === "Enter") $("submit").click();
       });
 
-      refresh(false);
+      (async () => {
+        try {
+          // Both bridges are on this window: `dd` carries the preference the
+          // other page writes, `ddLocal` carries the backend.
+          lang = await window.dd.language();
+          applyLanguage();
+        } finally {
+          document.body.classList.add("ready");
+        }
+        await refresh(false);
+      })();
     </script>
   </body>
 </html>

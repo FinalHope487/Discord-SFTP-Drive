@@ -16,6 +16,11 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("dd", {
   current: () => ipcRenderer.invoke("dd:current"),
+  // Both pages read this before they show anything, and both write it from
+  // their own switch. The main process owns the value so that following the
+  // link between the two pages, and relaunching the app, both keep it.
+  language: () => ipcRenderer.invoke("dd:language"),
+  setLanguage: (lang) => ipcRenderer.invoke("dd:setLanguage", String(lang)),
   probe: (url) => ipcRenderer.invoke("dd:probe", String(url)),
   connect: (url) => ipcRenderer.invoke("dd:connect", String(url)),
   onProblem: (handler) => {
