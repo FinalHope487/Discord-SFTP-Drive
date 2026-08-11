@@ -50,15 +50,21 @@ jobs:
         run: python -m pyflakes src tests
 
       # No credentials and no network: MongoDB and the Discord API are faked.
+      #
+      # No `-q` here. `pytest.ini` already sets it, and a second one makes
+      # `-qq`, which drops the "N passed" line -- so every green run in this
+      # job's history proved only that nothing failed, never that anything
+      # ran. Skipped tests and collection that quietly stopped finding files
+      # both look exactly like success without that number.
       - name: pytest
-        run: python -m pytest -q
+        run: python -m pytest
 
       # The same suite against a real SQLite backend. Not a second set of
       # tests -- the assertions written for MongoDB's behaviour, pointed at
       # the other backend, which is how two bugs were found that the default
       # run could not see.
       - name: pytest --db=sqlite
-        run: python -m pytest -q --db=sqlite
+        run: python -m pytest --db=sqlite
 
   node:
     runs-on: ubuntu-latest

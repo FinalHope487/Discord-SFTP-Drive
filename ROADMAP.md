@@ -52,6 +52,12 @@
   **我的推薦是 (b)**：它把新協定擴充變回舊行為，是「升級相依而不改變行為」的一部分，
   拿回三個安全修補；(a) 的優化留給日後真的量到尾端零浪費頻寬時再做。
 
+- [next] **aiohttp 3.14 對 `request["session"]` 發 `NotAppKeyWarning`**（2026-08-11
+  隨相依升級出現）。它要的是 `web.RequestKey`，`src/web.py` 有兩處寫入、約 25 處讀取。
+  現在只是建議不是 deprecation，兩條警告、沒有東西壞掉，所以沒有塞進相依升級那個 PR
+  ——那是生產程式碼，不該搭便車。**做的時候一次改完**：改一半會讓兩種寫法並存，
+  而型別化 key 的價值正是「拼錯就壞給你看」。
+
 - [parked] **關掉直譯器時偶爾出現 `Task was destroyed but it is pending`**（2026-08-06 觀察到）。
   指向 `websession.sweeper` 與 `web.trash_sweeper`，非決定性——同一份程式碼連跑三次只出現一次。
   是測試把 app 拆掉時 task 的取消還沒被 loop 處理完，純輸出噪音，功能無誤。
@@ -68,12 +74,11 @@
   `act.copyPath`、`act.copied`、`toast.uploaded`）。改文案時逐一比對才發現。
   **`detail.verified` 那一對是死得有道理的**——列目錄不畫綠勾，所以「已通過檢查」永遠沒機會出現；
   其餘幾個看起來是做到一半或後來換了做法。**要刪之前得先確認是「文字多餘」而不是「元件漏用」。**
-  **2026-08-11 補**：`BUILD.md` 已在 4ec83d3 刪除，四處還指著它——
-  `docker-compose.yml:163`（且寫成 `client/BUILD.md`，它從來不在那）、
-  `requirements-dev.txt:18`、`discord-drive.spec:16`、`tests/test_db_indexes.py:16`。
-  另外 `client/README.md:95-99` 整節指著 186beb3 刪掉的 `design/` 原型檔，
-  同檔的 shell 清單漏了 `backend.js` / `backend.test.js` / `local.html`，
-  且還寫著 `setup.html` 是「唯一隨 app 出貨的頁面」（`package.json` 的 `files` 已含 `local.html`）。
+  **2026-08-11 做掉了指向死檔的那一半**（見下方變更紀錄）：五處 BUILD.md 引用、
+  `client/README.md` 的原型檔那節與 shell 清單、`tests/test_session.py` 的 `todo.md`。
+  **修行不算修好，所以補了 `tests/test_doc_references.py`**——照 `test_compose_coverage.py`
+  的先例，會斷言的東西才算。**剩下的是 `i18n.js` 那 13 個 key**，不在這一輪：
+  刪字串與補元件是兩種相反的修法，要先逐個判斷是哪一種。
 
 - [done] ~~**獨立單機版：packaged app 的密碼從哪來**~~（2026-08-07 開出同日拍板並落地，
   見下方變更紀錄）。拍板結果是 (a)：外殼跳密碼視窗，用 stdin 餵給後端子行程。
@@ -536,6 +541,42 @@
 只記「日期 / 做了什麼 / 測試數」，加上不在別處的教訓。
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
+
+**2026-08-11 · 指向死檔的文件引用，連同會抓住它的測試** — 765 項（+1）、
+`--db=sqlite` 762 過 3 skip、pyflakes 乾淨。突變驗過：把 `.env.example` 那行改回
+`See BUILD.md.`，`test_doc_references.py` 立刻紅。
+
+- **修掉的是七處**，不是 ROADMAP 上記的四處：`docker-compose.yml`、`.env.example`、
+  `requirements-dev.txt`、`discord-drive.spec`、`tests/test_db_indexes.py` 指著
+  4ec83d3 刪掉的 BUILD.md（全部改指 `CONTRIBUTING.md`），`client/README.md` 有一整節
+  指著 186beb3 刪掉的原型檔，`tests/test_session.py` 指著更早就沒有的 todo.md。
+  **最後兩處是新測試找出來的，不是我列的**——這正是為什麼要有測試而不是逐條修。
+- **規則得分兩種檔案寫，否則它會逼人刪掉註解**。散文與設定檔裡任何 `.md` 都是指標；
+  Python 裡只有反引號包起來的算，因為 `tests/test_push_guard.py` 斷言的
+  `"QUESTIONS.md"` 是 hook 印出來的字串，不是要人去讀的檔案。分不清的規則會被
+  「那就別寫 docstring」回應。
+- **敘事檔（`ROADMAP.md` / `SOP.md` / `CLAUDE.md` / `QUESTIONS.md`）刻意不掃**：
+  記錄「BUILD.md 被刪了」必須寫出這個名字。這條測試自己的 docstring 也受同一限制，
+  所以裡面的死檔名都不加反引號。
+
+**2026-08-11 · Python 相依整批升級（PR #8，取代 dependabot #6）** — 764 項（±0）、
+`--db=sqlite` 761 過 3 skip、pyflakes 乾淨。**沒有對真 mongod 驗過**，見下。
+
+- **#6 裝不起來的原因是 pymongo 被手動釘住**，所以不在 dependabot 的 group 裡，
+  它升了 motor 到 3.7.1（要 `pymongo>=4.9`）卻動不了 `pymongo==4.8.0` 那一行。
+  **兩行必須一起動，這句話寫在 pin 旁邊**，因為下次還會再來一次。
+- **`pip check` 對這件事沒有用**：當年壞掉的組合它也說「no broken requirements」。
+  驗證方式是真的 import `motor.motor_asyncio` 並開一個 collection。
+- **`argon2-cffi` 不換成 cryptography 內建的 Argon2id**。原本的理由（cryptography
+  差兩個 major）被這個 commit 自己作廢了，留下來的理由是換 KDF 實作等於動主金鑰的
+  包裝方式，那要自己的決定與自己的驗證，不能當相依升級的副作用。
+- **缺一項驗證：真 mongod**。本機 Docker daemon 沒起來，而 `FakeDB` 不驗索引規格
+  ——正是 2026-08-05 那個 `$exists: false` 藏了兩天的同一個盲點。`src/db.py` 只呼叫
+  `create_index`，mongo:6.0 也在 pymongo 4.17 的支援範圍內，但這不等於驗過。
+- **asyncssh 只升到 2.20.0，不是 2.24.0**，理由見上方 `[next]`。
+  **這一條是 CI 抓的，本機抓不到**：`os.SEEK_DATA` 在 Windows 不存在，所以同一份程式碼
+  在這裡全綠、在 Linux 上每個下載都失敗。**「本機全綠」對跨平台的分支根本沒有意見**
+  ——這是本輪最貴的一課，而它花的成本只是一次 CI。
 
 **2026-08-11 · 對外門面：主分支改名、v0.1.0 發布** — 764 項（±0）、`--db=sqlite` 761 過
 3 skip、`node --test` 16 過（含驅動真 exe 那組）。

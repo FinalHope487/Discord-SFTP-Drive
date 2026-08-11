@@ -13,7 +13,7 @@
 #   cd client/app && npm install && npm run build
 #
 # PyInstaller only builds for the platform it runs on, exactly as
-# electron-builder does (BUILD.md says so for the desktop shell). Windows,
+# electron-builder does (CONTRIBUTING.md says so for both). Windows,
 # macOS and Linux each need a build on that platform.
 
 import os

@@ -150,7 +150,8 @@ async def test_a_dropped_connection_flushes_buffered_bytes(sftp_port):
 
 
 async def test_an_interrupted_upload_can_be_resumed_by_appending(sftp_port):
-    """`todo.md` asks for progress records in MongoDB to make this possible.
+    """The original plan asked for progress records in MongoDB to make this
+    possible.
 
     It already is, and without them: chunks are committed as they upload, so
     the file's size *is* the resume point. This is that claim as a test rather
