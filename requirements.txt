@@ -1,21 +1,19 @@
-asyncssh==2.14.2
-cryptography==42.0.5
-motor==3.4.0
-# Pinned because motor 3.4.0 only declares pymongo>=4.5,<5, and pip resolves
-# that to the latest 4.x, which no longer imports. pymongo 4.9 removed the
-# private names motor reaches for (pymongo.cursor._QUERY_OPTIONS), so every
-# release from 4.9 up fails at "import motor.motor_asyncio". Verified against
-# 4.8.0 (works) and 4.9.0 / 4.10.1 (both fail); the real range is >=4.5,<4.9.
-# "pip check" does not catch this: the broken combination still satisfies the
-# declared metadata. Revisit if motor is ever upgraded, since motor 3.6+
-# supports pymongo 4.9+ and this pin would then be holding the stack back.
-#
 # Keep this file ASCII-only. pip reads it with the locale encoding, so a
 # non-ASCII character makes the install fail outright on non-UTF-8 consoles
 # (cp950, cp1252, ...) before any package is resolved.
-pymongo==4.8.0
-aiohttp==3.9.5
-python-dotenv==1.0.1
+asyncssh==2.24.0
+cryptography==50.0.0
+motor==3.7.1
+# Still pinned, but no longer to hold pymongo back: motor 3.7.1 declares
+# >=4.9,<5 and imports fine against it. The pin exists because motor reaches
+# into pymongo private names, so the pair has to be verified together rather
+# than trusted from metadata -- "pip check" passes on combinations that fail
+# at "import motor.motor_asyncio", which is how motor 3.4.0 + pymongo 4.9
+# got in. Move both lines together, and prove it by importing, not by
+# resolving.
+pymongo==4.17.0
+aiohttp==3.14.3
+python-dotenv==1.2.2
 # Argon2id for turning the SFTP password into the key that wraps the master
 # key. PBKDF2-HMAC-SHA256 is still supported and still opens every record that
 # was written with it -- the stored record names its own KDF -- but Argon2id is
@@ -23,8 +21,11 @@ python-dotenv==1.0.1
 # deliberately memory-hard.
 #
 # This is the reference implementation rather than the one that landed in
-# cryptography 44. Taking it from cryptography would have meant upgrading that
-# package across two major versions, and asyncssh's entire transport layer sits
-# on it; a separate wheel has a far smaller blast radius. Ships manylinux and
-# Windows wheels for cp311, so the image needs no build toolchain.
+# cryptography 44. The original reason was blast radius -- taking it from
+# cryptography meant a two-major upgrade under asyncssh's transport layer.
+# That reason expired when cryptography went to 50 here; the standing one is
+# that swapping the KDF implementation touches how the master key is wrapped,
+# which is its own decision and its own verification, not a side effect of a
+# dependency bump. Ships manylinux and Windows wheels for cp311, so the image
+# needs no build toolchain.
 argon2-cffi==25.1.0
