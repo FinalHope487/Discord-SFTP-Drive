@@ -114,6 +114,19 @@ BUILD.md、session-handoff.md、QUESTIONS.md、BLUEPRINT.md——外觀跟一般
 綁定必然重現。踩到的是 `client/shell/local.html` 已經指著一個使用者機器上不存在的
 `GUIDE.md`——差點在修文件時把同一個錯誤複製進 `README.md` 的公開表格。）
 
+`test_a_rejected_token_puts_the_backend_output_on_the_screen` 在 CI 上偶發紅，畫面停在
+「the backend is not running」而不是預期的「DISCORD_BOT_TOKEN was rejected by Discord」
+→ 1. 先看這條測試本身要什麼：它起一個真的後端子行程，拿假 token 打 Discord 真實 API，
+等對方回 401 再把那段輸出斷言在畫面上——**不是假件，是一次真的網路往返** 2. 症狀有兩種變體，
+都指向同一個根因：逾時型是「啟動逾時...could not reach discord.com: Connection timeout」，
+崩潰型是「啟動失敗...the backend is not running」（子行程在畫面斷言跑到之前就已經退出）3.
+兩種都不是這一輪改動造成的——命中時的分支只動了文件檔，且同一份程式碼在別的 CI 執行緊接著
+就全線綠。**直接重跑那個 job**，不要去改測試或改 timeout 4. 三次以上仍紅才需要懷疑 runner
+層級的網路政策變了 → CI runner 到 discord.com 的真實網路可用性，非程式邏輯或測試寫法錯誤`
+（2026-08-11 寫入，第二次出現：`ROADMAP.md` 2026-08-11 那筆「這一輪沒碰它」的偶發紅
+已經寫了「再出現一次就寫」，這是那一次。兩次表現不同（逾時／子行程已退出）但同一根因，
+記在一起而不是分開兩條。）
+
 ---
 
 ## 已退役
