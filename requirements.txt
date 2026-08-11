@@ -14,7 +14,7 @@
 # copy is expected rather than an error, so a server that answers "no data
 # here" produces a download that silently arrives as zeros. Moving past 2.20.0
 # means teaching DiscordFile what its holes are, and that is a decision about
-# the data path, not a version bump. See QUESTIONS.md.
+# the data path, not a version bump. See ROADMAP.md.
 asyncssh==2.20.0
 cryptography==50.0.0
 motor==3.7.1
