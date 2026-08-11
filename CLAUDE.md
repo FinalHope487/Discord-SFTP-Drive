@@ -5,10 +5,12 @@
 - 型別檢查、lint、跑既有測試
 - 讀 README、package.json、既有文件
 
-## 先產出方案，經確認才動工（中風險）
+## 動工前留痕，不等確認（中風險）
 - 技術方案、檔案修改計畫
 - 架構/資料流調整設計
 - 風險與影響範圍列表
+
+方案寫進當輪工作區就開工，不停下來等我點頭。要推翻既有已拍板決策才升為高風險。
 
 ## 必須先問我，逐項確認（高風險，未經同意不可執行）
 - 改 schema / 建 migration / db push
@@ -16,8 +18,10 @@
 - 刪除或覆蓋既有資料
 - 改權限模型 / 批次改用戶資料
 - 新增或移除相依套件
+- 動加密演算法 / 金鑰處理 / 認證流程
 
-> 不確定屬於哪一層，一律視為高風險。
+> 不確定某個動作是否不可逆、或是否影響 `main`／production／既有資料時，視為高風險。
+> 其餘不確定照「長時工作模式」的判準走：正確做法不會因未決問題而改變，就去做。
 > 這份規則是行為引導。唯一有強制層的是 push：`.claude/hooks/block-push-main.py`
 > 會擋掉目標為 `main` 或 `master` 的 push，不論寫成 refspec 還是靠當前分支。
 > 其餘高風險項仍然只有這份文件擋著。
@@ -42,8 +46,6 @@
 - 兩種以上做法會導向**不同的架構或資料結構**，且不是單純風格差異
 - 需求有兩種讀法，且不同讀法產出的東西**實質不同**
 - 要偏離既有規格 / 既有文件（如 `ROADMAP.md`「已拍板的長期決策」）寫定的決策
-- 動到加密演算法、金鑰處理、認證流程
-- 要新增或移除一個相依套件
 - 發現任務前提本身有問題（例如「照著做會壞掉」）——先講，再問要不要換路
 
 ## 不要問我的情況
@@ -74,21 +76,25 @@
 
 預設行為，不必另外交代。一次委派可連續工作數小時，中途不回報進度。
 
+「輪」＝一次委派。同一輪內的重試叫「次」。
+
 ## 開工前：先驗上一輪，再挑新工作
 
 1. 跑一次上一輪宣稱完成的功能的驗證路徑。內層測試不算，要真依賴：
    `docker compose up -d` 看啟動 log、`pytest --db=sqlite`
-2. 壞了就 `git revert` 那個 commit、在 `ROADMAP.md` 改回未完成，修好它是這一輪唯一的事
+2. 壞了就 `git revert` 那個 commit、在 `ROADMAP.md` 改回未完成。修它排在所有新工作前面；
+   修 3 次仍紅就停在 revert 後的狀態，寫進 `QUESTIONS.md`，回去挑新工作
 3. 讀 `DECISIONS.jsonl`（壓縮前由 hook 自動抽出的決策）。要推翻裡面的決策前先看一遍，
    不要重新論證已經論證過的事
 
 交接摘要與 `git log` 打架時，信 `git log`。摘要是 agent 寫的散文，寫入可能被中斷；log 是 append-only。
 
-## 開工前：列出這一輪不碰的東西
+## 開工前：釘住收斂條件
 
-開工前列 2–3 項這一輪刻意不做的相鄰修正，寫進當輪工作區。
-中途撞牆不得修改這份清單來繞路——要改範圍就寫進 `QUESTIONS.md`，不自己放行。
-驗收標準同理：卡住時不准把「完成」的定義改成配合已經寫出來的東西。
+寫下這一輪的收斂條件——哪個指令輸出什麼數字或狀態才算完成，寫進當輪工作區。
+卡住時不准把「完成」的定義改成配合已經寫出來的東西。
+
+範圍不凍結：工作中長出來的目標當場做掉，見「衍生目標」。擋住你的是高風險層，不是範圍。
 
 ## 需要拍板的事：不停下來
 
@@ -105,13 +111,21 @@
 - 不執行、不繞過、不用等價的低風險做法偷渡
 - 寫進 `QUESTIONS.md` 的「待你執行／待你批准的動作」
 - 它需要的 migration、腳本、設定、測試全部備好但不執行
+- 備好的測試不得讓測試總數變紅：缺套件的用 `pytest.importorskip` 包住，並在 `QUESTIONS.md` 記一行
+
+## 衍生目標：當場做掉
+
+工作中長出來的目標不進 `ROADMAP.md` 排隊，當場做完再往下走，直到再也長不出新目標。
+兩個例外：命中高風險層的寫 `QUESTIONS.md`；與當前委派無關的新想法才進 `ROADMAP.md`。
 
 ## 結束這一輪的條件
 
+- 收斂條件達成，且再也長不出衍生目標
 - 剩下的全卡在 `QUESTIONS.md`
-- 同一問題修 3 輪仍紅 → 寫進「卡住」區，換下一件
-- 連續兩輪沒有新資訊
+- 同一問題修 3 次仍紅 → 寫進「卡住」區，換下一件
+- 連續兩次嘗試沒有產生新資訊
 - 任務前提本身是錯的
+- 下一件工作必須等前一個 PR 合併才做得下去
 
 回報三件事：完成什麼（附驗證數字）、`QUESTIONS.md` 全文、未做的部分。
 
@@ -128,10 +142,12 @@
 
 **一輪結束前**
 
-1. `ROADMAP.md`：變更紀錄補一筆（日期／做了什麼／測試數），更新 `[now]` / `[next]` 標記
+1. `ROADMAP.md`：變更紀錄補一筆（日期／做了什麼／測試數），更新 `[now]` / `[next]` 標記。
+   測試數變了就同步改「本專案的驗證指令」那幾個數字——兩邊漂開時沒有任何東西會變紅
 2. `QUESTIONS.md`：清掉已答的題，長期決策搬進 `ROADMAP.md` 或 `SOP.md`
 3. `SOP.md`：補這輪踩到的重複性問題，沒踩到就不寫
-4. 開功能分支、push 它、開 PR 進 `main`，然後停手等我合併。**絕不 push `main` 或 `master`**
+4. 開功能分支、push 它、開 PR 進 `main`。互不依賴的 PR 連續開，不要停；
+   只有下一件工作必須等這個 PR 合併才做得下去時，才停手等我。**絕不 push `main` 或 `master`**
    ——那是 `block-push-main.py` 會擋下來的事，不是靠自律。
    工作已經 commit 在 `main` 上才想起這條時：`git checkout -b <分支>` 再
    `git branch -f main origin/main`，不要用 `git reset --hard`
@@ -175,7 +191,8 @@ Electron 已是 `client/shell` 的 devDependency。
 - 新測試把被測行為刻意改壞一次，確認變紅，再改回來
 - **互動式手段（瀏覽器操作、截圖、手動看輸出）只能用來 debug 已失敗的測試**，不能當驗收
 - 不用截圖像素比對當預設；斷言打在角色、文字、狀態
-- 實際跑過下列指令、附上數字，才算完成
+- commit 前跑受影響那一層的測試；開 PR 前跑完整「本專案的驗證指令」四條，附數字。
+  只動文件、不動程式與測試的變更免跑，PR 說明寫明它動了哪些檔案
 - 還沒實際跑過的數字一律標明是預期值
 - **本機全綠對「上線平台會不會壞」沒有意見。** 相依套件常在匯入時依平台綁不同實作
   （本專案踩到的是 asyncssh 看 `os.SEEK_DATA` 決定 SFTP 稀疏檔案走哪條路），
@@ -190,21 +207,26 @@ Electron 已是 `client/shell` 的 devDependency。
 
 ## 本專案的驗證指令
 
-- `./venv/Scripts/python.exe -m pytest`（775 項；不要用裸 `python`，見 `SOP.md` 第一條）
-- `cd client/shell && node --test`（16 項）
+- `./venv/Scripts/python.exe -m pytest`（787 項；不要用裸 `python`，見 `SOP.md` 第一條）
+- `cd client/shell && node --test`（23 項）
 - `./venv/Scripts/python.exe -m pytest --db=sqlite`（假件換成真 SQLite 跑同一套）
 - `docker compose up -d` 看啟動 log
 
 **這些數字對應已提交樹。** 工作目錄裡未提交的測試不算數——寫進文件的數字必須是
 `git clone` 之後跑得出來的那個，否則下一輪會拿工作目錄的數字去對已提交的樹，對不起來。
 
-**775 需要兩個前置條件，缺了會 skip 而不是 fail**，所以看到 764 不是壞掉：
+**先建 SPA，否則 10 項直接 fail。** `client/app/dist/` 在 `.gitignore`，`git clone` 之後不存在；
+`tests/conftest.py` 的 `built_client` 對「不存在」與「比 `src` 舊」都 `pytest.fail`，
+於是 `test_ui_login.py` 5 項 + `test_ui_language.py` 5 項全紅。補法：`cd client/app && npm run build`。
+改完 `client/app/src` 沒重建也是同一個症狀。
+
+**另外三個前置條件缺了會 skip 而不是 fail**，所以看到 769 不是壞掉：
 
 | 缺什麼 | skip 幾項 | 補法 |
 |---|---|---|
-| `client/shell/node_modules`（Electron） | 11 | `cd client/shell && npm install` |
-| `dist-standalone/discord-drive.exe` | 3 | `python -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone` |
-| Linux 上沒有 `DISPLAY` | 11 | `xvfb-run -a` 包住 pytest |
+| `client/shell/node_modules`（Electron） | 18 | `cd client/shell && npm install` |
+| `dist-standalone/discord-drive.exe` | 4 | `python -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone` |
+| Linux 上沒有 `DISPLAY` | 18 | `xvfb-run -a` 包住 pytest |
 
 `node --test` 的整合部分同樣對真的 `dist-standalone/discord-drive.exe` 跑，缺了會 skip。
 
@@ -225,6 +247,8 @@ Electron 已是 `client/shell` 的 devDependency。
 ---
 
 # 主 Agent 委派 Subagent 的結構化邊界
+
+這一節只在你明確要求委派時生效。沒要求就不呼叫 subagent。
 
 委派前 prompt 必須包含以下五項，缺一不可：
 
@@ -264,5 +288,6 @@ Subagent 回報「完成」不構成完成。主 agent 收到報告後必須自�
   hook 抓不到的決策（在程式碼裡做掉、沒寫成散文的）自己補一行，格式相同
 - 需要我拍板的事寫入 `QUESTIONS.md`，不中斷工作（見「長時工作模式」）
 - `QUESTIONS.md` 被答完後清空；有長期效力的決策搬進 `ROADMAP.md` 或 `SOP.md`
-- 新想法寫入 `ROADMAP.md` 並標記 `[now]` / `[next]` / `[later]` / `[parked]`，不當場插隊
+- 與當前委派無關的新想法寫入 `ROADMAP.md` 並標記 `[now]` / `[next]` / `[later]` / `[parked]`。
+  由當前工作長出來的衍生目標當場做掉，不排隊——見「長時工作模式／衍生目標」
 - 跨多輪任務結束前依 `.claude/templates/session-handoff.md` 產出交接摘要

@@ -97,6 +97,12 @@
 成本是一次 10 分鐘的背景執行加一次 TaskStop。順帶：`node --test` 沒有這個坑，
 它直接 require 模組，壞掉就立刻紅。）
 
+`pytest 冒出 10 項 ERROR，全落在 test_ui_login.py 與 test_ui_language.py，訊息提到 client/app/dist → 1. 不要 debug 測試，這是前置條件沒滿足：cd client/app && npm run build 2. client/app/dist/ 在 .gitignore:52，git clone 之後根本不存在，所以任何新環境第一次跑一定是這 10 項紅 3. 改過 client/app/src 而沒重建也是同一個症狀，conftest.py 的 built_client 比對 src 與 dist 的 mtime，舊了就 pytest.fail 而不是 skip → 建置產物不在版控，非程式問題`
+（2026-08-11・Claude Opus 5 寫入，第一次出現就寫：環境決定、必然重現。
+`CLAUDE.md` 的前置條件表原本只列三個**會 skip** 的，漏掉這個**會 fail** 的——
+會沉默的缺件被寫下來了，會尖叫的那個反而沒有。
+→ 已升格為 `CLAUDE.md` 的〈驗證：不接受目測／本專案的驗證指令〉）
+
 ---
 
 ## 已退役
