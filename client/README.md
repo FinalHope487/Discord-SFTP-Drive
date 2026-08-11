@@ -68,10 +68,16 @@ src/
 main.js              視窗、首次設定流程、導覽鎖定、權限一律拒絕
 server-url.js        使用者輸入 → origin。唯一有安全後果的邏輯，所以獨立成模組
 server-url.test.js   node --test
-setup.html           首次設定畫面（唯一隨 app 出貨的頁面）
-setup-preload.js     三個 IPC 函式的橋，只掛在設定視窗上
+backend.js           本機後端子行程的整個生命週期（status / start / stop）
+backend.test.js      node --test，整合部分對真的 discord-drive.exe 跑
+setup.html           首次設定畫面：填遠端伺服器位址
+local.html           「在這台電腦上執行」畫面，與 setup.html 共用視窗與 preload
+setup-preload.js     IPC 橋，只掛在設定視窗上
 make-icon.py         產生 icon.png，只用標準函式庫
 ```
+
+隨 app 出貨的是 `package.json` 的 `files` 那一份清單（兩個頁面都在裡面），
+不是這個目錄的全部——`*.test.js`、`make-icon.py`、`package-lock.json` 不打包。
 
 指令：`npm start`（不打包直接跑）、`npm run dist`（產出 `../../dist-desktop/`）、
 `node --test`。
@@ -90,10 +96,3 @@ make-icon.py         產生 icon.png，只用標準函式庫
   而視窗在 OS 眼中仍然合法。
 - **0×0 不是「視窗太小」**，是「還沒量到」。用 `ResizeObserver` 補 `resize` 事件不會發生的那一次。
 
----
-
-## 設計原型在哪
-
-`design/v1-file-manager-prototype.dc.html`（連同 `support.js` 與 `_ds/`）是這一版介面的
-設計原型，17 個狀態、資料全是寫死的 mock、執行時從 unpkg 抓 React 與 Babel。
-**它不是 app，離線打開是一片空白。** 留著只當視覺與文案的參考。

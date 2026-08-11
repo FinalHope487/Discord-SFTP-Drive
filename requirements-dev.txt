@@ -15,8 +15,8 @@ pyflakes==3.4.0
 # the compose deployment never needs it installed.
 #
 # It can only build for the platform it runs on, the same restriction
-# electron-builder has (see BUILD.md). A Linux binary has to be built on
-# Linux.
+# electron-builder has (see CONTRIBUTING.md). A Linux binary has to be built
+# on Linux.
 pyinstaller==6.21.0
 
 # Drives the file manager in a real browser -- the layer the user actually
