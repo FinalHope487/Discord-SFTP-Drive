@@ -68,10 +68,12 @@
 - [done] ~~**獨立單機版：packaged app 的密碼從哪來**~~（2026-08-07 開出同日拍板並落地，
   見下方變更紀錄）。拍板結果是 (a)：外殼跳密碼視窗，用 stdin 餵給後端子行程。
 
-- [later] **Electron 外殼那兩頁 UI 沒有自動化驗收**（2026-08-09 開出）。`client/app` 的 SPA 已經有
-  Playwright 蓋住，但 `setup.html` / `local.html` 還是只有目測。Python Playwright 不支援
-  Electron，要做就得另外引進 JS 端 Playwright（`_electron` API）。`setup.html` 只有一個表單，
-  等它開始長東西再說。
+- [done] ~~**Electron 外殼那兩頁 UI 沒有自動化驗收**~~（2026-08-09 開出，2026-08-11 做掉，
+  見下方變更紀錄）。**當初擱置的理由是錯的**：原文寫「Python Playwright 不支援 Electron，
+  要做就得另外引進 JS 端 Playwright（`_electron` API）」。`_electron` 確實只有 JS 端有，
+  但那不是唯一的路——Electron 開 `--remote-debugging-port`，Python Playwright 的
+  `connect_over_cdp` 就能接上真視窗，零新增相依。
+  **「做不到」與「我想到的那一種做法做不到」是兩件事，前者要有證據才能寫。**
 
 - [later] **`children()` 在兩個後端都是全表掃描**（2026-08-07 量到）。
   `{"parent_id": x}`（含垃圾桶項，`list_dir` 每次都會呼叫）在 MongoDB 是 COLLSCAN、
@@ -591,6 +593,44 @@
   **這一條是 CI 抓的，本機抓不到**：`os.SEEK_DATA` 在 Windows 不存在，所以同一份程式碼
   在這裡全綠、在 Linux 上每個下載都失敗。**「本機全綠」對跨平台的分支根本沒有意見**
   ——這是本輪最貴的一課，而它花的成本只是一次 CI。
+
+**2026-08-11 · `client/shell` 兩頁的 UI 驗收層建立** — 775 項（+11）、`--db=sqlite` 772 過
+3 skip、`node --test` 16 過。**7/7 突變全被抓到**（見下）。
+
+- **怎麼驅動真視窗而不新增相依**：Electron 開 `--remote-debugging-port`，Playwright 的
+  `connect_over_cdp` 接上去。Playwright 早就在 `requirements-dev.txt`（`test_ui_login.py` 在用），
+  Electron 早就是 `client/shell` 的 devDependency。**這條路早就通，只是沒人試過**——
+  `CLAUDE.md` 之前寫「只能目測」並不是因為做不到。
+- **隔離靠 `--user-data-dir`**：`main.js` 把 `config.json` 與單機版整個資料目錄都放在
+  `app.getPath("userData")`，指到 tmpdir 就同時拿到乾淨的 first-run 狀態、又不會碰到
+  真的 `%APPDATA%\Discord Drive\`。
+- **11 條測試，7 條突變驗證**：每條都把被測行為改壞一次確認變紅（拔掉 `dd.current()` 的接線、
+  刪 `REASONS.scheme`、拿掉 `withBusy` 的 `finally`、改名 `ddLocal` bridge、寫死 config path、
+  recheck 後不換頁、失敗後不清空密碼欄）。7/7 全紅。
+- **第一版有一條假通過**：斷言欄位等於預設值 `http://127.0.0.1:8080`，而把整段 IPC 拔掉硬寫
+  預設值照樣綠。改成存一個非預設位址再 reload 才真的證明往返。**斷言的值等於程式碼裡的
+  常數時，那條斷言什麼都沒證明。**
+- **缺件是 skip 不是 fail，數字實測過**：缺 `discord-drive.exe` → 8 過 3 skip；
+  缺 Electron → 11 skip。乾淨 clone 跑出來是 764 過 11 skip。
+- **CI 現在也跑這一層**：python job 加裝 `client/shell` 相依、`xvfb`，並用 PyInstaller 建
+  Linux 版後端——順帶讓 CI 第一次真的驗證 `discord-drive.spec` 還能打包。兩個 pytest 步驟
+  用 `xvfb-run -a` 包住，並拿掉命令列的 `-q`（`pytest.ini` 已有，疊成 `-qq` 會吞掉總結行）。
+- **第一次接上 CI 是綠的，而那 11 條一條都沒跑**（`764 passed, 11 skipped`）。成因：
+  electron 43 拿掉 `postinstall`，改成要自己叫的 `install-electron` bin，`npm ci` 四秒跑完
+  沒下載二進位檔；node 也還釘在 20，而 electron 43 宣告 `>= 22.12.0`。修了三件事：
+  補 `node node_modules/electron/install.js`、node 升到 22、以及
+  **`refuse_to_skip_in_ci`——`CI` 環境變數存在時缺件改成 raise**。
+  前兩項是這次的 bug，第三項是讓同一類 bug 下次不可能再靜默通過。
+  **綠勾不是證據，log 裡的數字才是。**
+- **讀 log 又抓到第二個同型的洞，這個是既有的**：`node --test` 在 CI 上是
+  `11 tests, 10 pass, 1 skipped`，跳掉的正是 `LocalDrive against the real binary`
+  那一整組（本機 16 項裡的 5 個 subtest）。原因是 `backend.test.js` 把檔名寫死成
+  `discord-drive.exe`，而 `backend.js:80` 的 `backendPath()` 一直都依平台選名字——
+  **測試比它測的模組更不會跨平台**。workflow 裡那段註解還把這個 skip 解釋成刻意的
+  （「PyInstaller 只能打自己平台的包，這個檢查屬於 Windows」），這句話是錯的：
+  Linux 上 PyInstaller 建的是 Linux 版後端。修法是檔名依平台選、node job 也建一次後端、
+  以及 `process.env.CI` 存在時缺件改成 throw。後端在 node job 自己建而不是從 python job
+  傳 artifact：那樣兩個 job 會變成串聯，重複建一次 35 秒比多出來的 wall clock 便宜。
 
 **2026-08-11 · 對外門面：主分支改名、v0.1.0 發布** — 764 項（±0）、`--db=sqlite` 761 過
 3 skip、`node --test` 16 過（含驅動真 exe 那組）。

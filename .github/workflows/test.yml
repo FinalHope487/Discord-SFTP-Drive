@@ -23,9 +23,14 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          # electron 43 declares `engines: node >= 22.12.0`, and its installer
+          # is the thing that has to run here. 20 produced EBADENGINE warnings
+          # on every electron package in the tree.
+          node-version: '22'
           cache: npm
-          cache-dependency-path: client/app/package-lock.json
+          cache-dependency-path: |
+            client/app/package-lock.json
+            client/shell/package-lock.json
 
       # The browser tests refuse to run against a stale bundle rather than
       # building one themselves, so the build happens here, before pytest.
@@ -34,6 +39,22 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      # Electron, for `test_ui_shell.py`. It drives the shell's own two pages
+      # in a real window over CDP, so the runner needs the binary itself --
+      # not a package this suite imports.
+      #
+      # `npm ci` alone does not produce it. Electron 43 dropped the
+      # `postinstall` that used to fetch the binary and exposes the fetcher as
+      # an `install-electron` bin instead, so the install completes in four
+      # seconds having downloaded nothing. `test_ui_shell.py` refuses to skip
+      # when `CI` is set, which is what turns a repeat of this into a failure
+      # rather than a green run that asserted nothing.
+      - name: Install the desktop shell's dependencies
+        working-directory: client/shell
+        run: |
+          npm ci
+          node node_modules/electron/install.js
 
       - uses: actions/setup-python@v7
         with:
@@ -46,10 +67,24 @@ jobs:
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
 
+      # Electron needs a display, and `local.html` needs the backend it
+      # spawns. Without the executable those three tests skip themselves and
+      # say so; building it here is also the only place CI checks that
+      # `discord-drive.spec` still packages at all.
+      - name: Install xvfb
+        run: sudo apt-get install -y --no-install-recommends xvfb
+
+      - name: Build the standalone backend
+        run: |
+          python -m PyInstaller discord-drive.spec --noconfirm \
+            --distpath dist-standalone --workpath build-standalone
+
       - name: pyflakes
         run: python -m pyflakes src tests
 
       # No credentials and no network: MongoDB and the Discord API are faked.
+      # `xvfb-run -a` picks its own display number so two jobs on one runner
+      # cannot collide.
       #
       # No `-q` here. `pytest.ini` already sets it, and a second one makes
       # `-qq`, which drops the "N passed" line -- so every green run in this
@@ -57,14 +92,14 @@ jobs:
       # ran. Skipped tests and collection that quietly stopped finding files
       # both look exactly like success without that number.
       - name: pytest
-        run: python -m pytest
+        run: xvfb-run -a python -m pytest
 
       # The same suite against a real SQLite backend. Not a second set of
       # tests -- the assertions written for MongoDB's behaviour, pointed at
       # the other backend, which is how two bugs were found that the default
       # run could not see.
       - name: pytest --db=sqlite
-        run: python -m pytest --db=sqlite
+        run: xvfb-run -a python -m pytest --db=sqlite
 
   node:
     runs-on: ubuntu-latest
@@ -73,7 +108,10 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          # electron 43 declares `engines: node >= 22.12.0`, and its installer
+          # is the thing that has to run here. 20 produced EBADENGINE warnings
+          # on every electron package in the tree.
+          node-version: '22'
           cache: npm
           cache-dependency-path: client/shell/package-lock.json
 
@@ -81,9 +119,25 @@ jobs:
         working-directory: client/shell
         run: npm ci
 
-      # The block that drives the real `discord-drive.exe` skips itself when
-      # the executable is absent, which it is here -- PyInstaller only builds
-      # for the platform it runs on, and that check belongs on Windows.
+      # The block that drives the real backend is the reason this file exists,
+      # and it skipped on every CI run until now -- the test hard-coded
+      # `discord-drive.exe` while `backendPath()` had always chosen the name by
+      # platform. PyInstaller does build here; it builds the Linux one.
+      #
+      # Built in this job rather than shared from `python` as an artifact: the
+      # two jobs would then run in series, and a duplicated 35-second build is
+      # cheaper than the wall clock that costs.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Build the standalone backend
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m PyInstaller discord-drive.spec --noconfirm \
+            --distpath dist-standalone --workpath build-standalone
+
       - name: node --test
         working-directory: client/shell
         run: node --test

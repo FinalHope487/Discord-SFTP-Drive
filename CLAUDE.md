@@ -159,10 +159,15 @@
 | 函式庫 | 從安裝後的套件 import 公開 API |
 | 服務 | 走真網路層，含中介層與標頭 |
 
-本專案是瀏覽器（`client/app`）與桌面視窗（`client/shell`）。`client/app` 的 SPA 已有 Playwright
-驗收，測試檔放 `tests/`（真瀏覽器 → 真 aiohttp → 真 VFS/真資料庫 → `fake_discord`）。
-`client/shell` 的 `setup.html` / `local.html` 兩頁**仍未建立**，只能目測；在那之前，
-碰這兩頁的改動不得宣告完成。
+本專案是瀏覽器（`client/app`）與桌面視窗（`client/shell`），兩層都已建立，測試檔都放 `tests/`：
+
+| 層 | 檔案 | 怎麼打 |
+|---|---|---|
+| 瀏覽器 | `test_ui_login.py` | 真瀏覽器 → 真 aiohttp → 真 VFS/真資料庫 → `fake_discord` |
+| 桌面視窗 | `test_ui_shell.py` | 真 Electron 視窗（`--remote-debugging-port` + Playwright `connect_over_cdp`）→ 真 preload bridge → 真主行程 → 真 `discord-drive.exe` |
+
+啟動與連線細節在 `tests/shell_support.py`。零新增相依：Playwright 已在 `requirements-dev.txt`，
+Electron 已是 `client/shell` 的 devDependency。
 
 ## 規則
 
@@ -177,26 +182,31 @@
   Windows 上那條分支根本不執行，於是測試對它對錯一律綠。升級相依、或改動被這種
   分支包住的程式碼時，**驗收的那一次是 Linux CI，不是這台機器**；
   補測試要直接打自己那一側的方法，繞路走真的用戶端在唯一能執行它的平台以外沒有牙齒
-
-## `client/shell` 剩餘兩頁 UI 驗收層還沒建立時怎麼推進
-
-不要因為驗收層缺席就整個任務停擺。
-
-1. 把不碰 UI、不碰 I/O 的純邏輯切成獨立模組
-2. 用專案**既有、零新增相依**的測試手段驗證它（本專案是 `node --test`；`client/app` 是
-   `"type": "module"`，同一模式可用 ESM 寫法搬過去）
-3. 真正需要那一層才驗得了的接線照寫，但不宣告完成
+- **條件式 skip 在「一定要跑」的環境裡要改成 fail。** 缺件在開發機上 skip 是對的，
+  在 CI 上代表 workflow 壞了——而 skip 不會讓 job 變紅，於是「這一層有覆蓋」會以全綠的
+  形式活很久。作法見 `tests/shell_support.py` 的 `refuse_to_skip_in_ci`
+- **看到綠不算數，要看數字。** CI job 通過但測試全 skip 跟沒跑一樣；每次改完 CI 都去 log
+  裡確認那個數字真的變了
 
 ## 本專案的驗證指令
 
-- **內層**：`./venv/Scripts/python.exe -m pytest`（764 項；不要用裸 `python`，見 `SOP.md` 第一條）、
-  `cd client/shell && node --test`（16 項）
-- 這兩個數字對應**已提交樹**。工作目錄裡未提交的測試不算數——寫進文件的數字必須是
-  `git clone` 之後跑得出來的那個，否則下一輪會拿工作目錄的數字去對已提交的樹，對不起來
-- **使用者層**：`client/app` 已建立，Playwright 測試放 `tests/`；`client/shell` 的
-  `setup.html` / `local.html` 兩頁仍未建立，只能目測
-- **真依賴**：`pytest --db=sqlite`（假件換成真 SQLite 跑同一套）、`docker compose up -d` 看啟動 log、
-  `node --test` 的整合部分對真的 `dist-standalone/discord-drive.exe` 跑
+- `./venv/Scripts/python.exe -m pytest`（775 項；不要用裸 `python`，見 `SOP.md` 第一條）
+- `cd client/shell && node --test`（16 項）
+- `./venv/Scripts/python.exe -m pytest --db=sqlite`（假件換成真 SQLite 跑同一套）
+- `docker compose up -d` 看啟動 log
+
+**這些數字對應已提交樹。** 工作目錄裡未提交的測試不算數——寫進文件的數字必須是
+`git clone` 之後跑得出來的那個，否則下一輪會拿工作目錄的數字去對已提交的樹，對不起來。
+
+**775 需要兩個前置條件，缺了會 skip 而不是 fail**，所以看到 764 不是壞掉：
+
+| 缺什麼 | skip 幾項 | 補法 |
+|---|---|---|
+| `client/shell/node_modules`（Electron） | 11 | `cd client/shell && npm install` |
+| `dist-standalone/discord-drive.exe` | 3 | `python -m PyInstaller discord-drive.spec --noconfirm --distpath dist-standalone --workpath build-standalone` |
+| Linux 上沒有 `DISPLAY` | 11 | `xvfb-run -a` 包住 pytest |
+
+`node --test` 的整合部分同樣對真的 `dist-standalone/discord-drive.exe` 跑，缺了會 skip。
 
 ---
 
