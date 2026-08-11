@@ -91,6 +91,12 @@
 `測試在別的作業系統上整組 skip，而被測模組本身是跨平台的 → 1. 先比對測試與模組各自怎麼算出那個路徑／檔名，不要先懷疑 CI 環境：本專案是 backend.test.js 寫死 discord-drive.exe，而 backend.js 的 backendPath() 一直都用 process.platform 選名字 2. 判準：模組處理了平台差異、測試沒有——測試比它測的東西更不會跨平台，這個方向的錯很難自己現形，因為 skip 是綠的 3. 順手讀一次那個 skip 旁邊的註解：本專案 workflow 裡寫著「PyInstaller 只能打自己平台的包，這個檢查屬於 Windows」，那句話把 bug 描述成設計，於是沒人再看第二眼 → 測試裡的平台假設，非 CI 或建置問題`
 （2026-08-11 寫入，與上一條同一輪、同一個根因家族：都是「CI 綠但沒跑」。差別在發現方式——上一條靠 npm ci 的耗時不合理，這一條靠去讀 `# skipped 1` 到底跳了什麼。**替既有 skip 寫下的解釋，日後會被當成前提而不是待驗證的主張。**）
 
+`為了驗證測試會不會變紅而故意改壞程式碼，結果整套 Electron 驗收測試不是變紅而是每一條卡 60 秒 → 1. 先看被改壞的東西是不是 Electron **主程序**開機路徑上的（本專案是 client/shell/language.js，buildMenu 在 app.whenReady 裡就呼叫它）：主程序一拋例外就沒有視窗，tests/shell_support.py 的 _wait_for_cdp 只能等滿 CDP_STARTUP_TIMEOUT 才報錯，18 條就是 18 分鐘 2. 突變要挑「壞掉之後 app 仍然起得來」的那一層——改 main.js 裡讀設定的那一個函式（readLanguage 回傳未正規化的值），而不是改被 menuStrings 也用到的 normaliseLanguage 3. 判準：這個函式在第一個 BrowserWindow 出現之前有沒有被呼叫過。有就換一個突變點 4. 突變前先 cp 一份到 $TEMP，不要靠記憶還原 → 突變點選在開機路徑上，非測試或應用程式問題`
+（2026-08-11 寫入，第一次出現就寫：工具行為決定、必然重現。`CLAUDE.md` 要求每條新測試都要先驗過紅，
+所以只要 `client/shell` 繼續長出被主程序 require 的純模組，這個坑就會再踩。
+成本是一次 10 分鐘的背景執行加一次 TaskStop。順帶：`node --test` 沒有這個坑，
+它直接 require 模組，壞掉就立刻紅。）
+
 ---
 
 ## 已退役

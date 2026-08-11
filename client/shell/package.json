@@ -31,6 +31,7 @@
       "main.js",
       "server-url.js",
       "backend.js",
+      "language.js",
       "setup.html",
       "local.html",
       "setup-preload.js",

@@ -6,7 +6,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
     />
-    <title>Discord Drive — 連線設定</title>
+    <title>Discord Drive</title>
     <style>
       :root {
         color-scheme: dark;
@@ -28,7 +28,14 @@
         background: var(--bg);
         color: var(--text);
         font: 13px/1.6 system-ui, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+        /* Revealed once the strings are on the page. Without this the window
+           paints Chinese and then swaps to English a frame later, which reads
+           as a glitch rather than as a preference being honoured. The reveal
+           is in a `finally`, so a page that fails to translate is still a
+           usable page. */
+        visibility: hidden;
       }
+      body.ready { visibility: visible; }
       h1 { font-size: 17px; font-weight: 500; margin: 0 0 4px; letter-spacing: -0.01em; }
       p { margin: 0 0 10px; color: var(--muted); }
       code { font-family: var(--mono); color: var(--accent); }
@@ -64,6 +71,18 @@
         font-weight: 500;
       }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
+      /* The switch sits above the heading rather than in the flow, so that it
+         is in the same place on both pages and on every screen local.html
+         shows. */
+      .topbar { display: flex; justify-content: flex-end; margin-bottom: 2px; }
+      button.lang {
+        height: 26px;
+        padding: 0 10px;
+        font-size: 12px;
+        color: var(--muted);
+        border-color: #33363f;
+      }
+      button.lang:hover:not(:disabled) { color: var(--text); }
       .status {
         margin-top: 14px;
         padding: 10px 12px;
@@ -98,101 +117,298 @@
       .note + .note { margin-top: 10px; }
       ol { margin: 6px 0 0; padding-left: 18px; }
       li { margin-bottom: 5px; }
-      .en { color: var(--dim); font-size: 11.5px; }
+      .back {
+        display: inline-block;
+        margin-top: 16px;
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 12px;
+      }
+      .back:hover { color: var(--text); }
     </style>
   </head>
   <body>
-    <h1>連線到你的 Discord Drive</h1>
-    <p>
-      這個 app 是視窗，硬碟本身跑在別的地方。填入伺服器的位址就會連過去。
-      <span class="en">This app is the window; the drive runs elsewhere.</span>
-    </p>
+    <div class="topbar">
+      <button id="lang" class="lang" type="button"></button>
+    </div>
 
-    <label for="url">伺服器位址 · Server address</label>
+    <h1 data-i18n="title"></h1>
+    <p data-i18n="intro"></p>
+
+    <label for="url" data-i18n="urlLabel"></label>
     <input id="url" spellcheck="false" placeholder="http://127.0.0.1:8080" />
 
     <div class="row">
-      <button id="test" type="button">測試連線</button>
-      <button id="go" class="primary" type="button">連線並記住</button>
+      <button id="test" type="button" data-i18n="test"></button>
+      <button id="go" class="primary" type="button" data-i18n="go"></button>
     </div>
 
     <div id="status" class="status"></div>
 
-    <a class="back" href="local.html" style="display:inline-block;margin-top:16px;color:var(--muted);text-decoration:none;font-size:12px">
-      改在這台電腦上執行（不需要另一台伺服器）→
-    </a>
+    <a class="back" href="local.html" data-i18n="toLocal"></a>
 
     <div class="note">
-      <h2>Discord bot token 不在這裡填</h2>
-      token、頻道 id 與 MongoDB 帳密是<b style="display:inline">伺服器</b>的設定，寫在伺服器那台機器的
-      <code>.env</code> 裡，跟著 <code>docker compose up -d</code> 一起生效。它們不從這個畫面送過去：
-      token 是伺服器的祕密，不是使用者的祕密，讓客戶端寫得到它就等於讓任何登入的人讀得到它。
+      <h2 data-i18n="tokenTitle"></h2>
+      <div data-i18n="tokenBody"></div>
     </div>
 
     <div class="note">
-      <h2>從別的裝置連過來</h2>
-      預設只綁在伺服器自己的 <code>127.0.0.1</code>。要從這台以外的裝置連，
-      伺服器那邊的 <code>.env.example</code> 寫了三條路與各自的代價：
+      <h2 data-i18n="remoteTitle"></h2>
+      <div data-i18n="remoteBody"></div>
       <ol>
-        <li>私人網路（Tailscale / WireGuard）— 兩邊各裝一個軟體，其他都不用改。</li>
-        <li>反向代理配真憑證（Caddy 兩行）— app 本身仍不上網路。</li>
-        <li>LAN 明文 — 要同時改 <code>WEB_BIND=0.0.0.0</code> 與 <code>WEB_COOKIE_SECURE=0</code>，不建議。</li>
+        <li data-i18n="remote1"></li>
+        <li data-i18n="remote2"></li>
+        <li data-i18n="remote3"></li>
       </ol>
     </div>
 
     <script>
+      // Two dictionaries and a lookup, the same shape the file manager's
+      // `i18n.js` uses. The page cannot share that file, or one with
+      // local.html: this window's Content-Security-Policy allows
+      // `script-src 'unsafe-inline'` and nothing else, so a `<script src>`
+      // here is blocked. There is nothing to share anyway -- the two pages
+      // have no sentence in common.
+      //
+      // Markup inside a string is deliberately limited to `code` and *bold*,
+      // rendered into real elements below rather than assigned as HTML. A
+      // translated string is data, and data does not get parsed as markup on
+      // a page holding a privileged bridge.
+      const STRINGS = {
+        zh: {
+          docTitle: "Discord Drive — 連線設定",
+          title: "連線到你的 Discord Drive",
+          intro: "這個 app 是視窗，硬碟本身跑在別的地方。填入伺服器的位址就會連過去。",
+          urlLabel: "伺服器位址",
+          test: "測試連線",
+          go: "連線並記住",
+          toLocal: "改在這台電腦上執行（不需要另一台伺服器）→",
+
+          tokenTitle: "Discord bot token 不在這裡填",
+          tokenBody:
+            "token、頻道 id 與 MongoDB 帳密是*伺服器*的設定，寫在伺服器那台機器的 `.env` 裡，" +
+            "跟著 `docker compose up -d` 一起生效。它們不從這個畫面送過去：" +
+            "token 是伺服器的祕密，不是使用者的祕密，讓客戶端寫得到它就等於讓任何登入的人讀得到它。",
+
+          remoteTitle: "從別的裝置連過來",
+          remoteBody:
+            "預設只綁在伺服器自己的 `127.0.0.1`。要從這台以外的裝置連，" +
+            "伺服器那邊的 `.env.example` 寫了三條路與各自的代價：",
+          remote1: "私人網路（Tailscale / WireGuard）— 兩邊各裝一個軟體，其他都不用改。",
+          remote2: "反向代理配真憑證（Caddy 兩行）— app 本身仍不上網路。",
+          remote3:
+            "LAN 明文 — 要同時改 `WEB_BIND=0.0.0.0` 與 `WEB_COOKIE_SECURE=0`，不建議。",
+
+          okTitle: "連線正常",
+          okBody: "{origin} 回應了 /api/health。",
+          urlTitle: "位址看不懂",
+          urlBody: "檢查有沒有打錯字。像 127.0.0.1:8080 這樣就可以，http:// 可以省略。",
+          schemeTitle: "只接受 http 或 https",
+          schemeBody: "這個欄位填的是伺服器位址，不是檔案路徑。",
+          timeoutTitle: "連得上但沒有回應",
+          timeoutBody:
+            "位址對、但那一端沒有在時限內回話。伺服器可能正在啟動，或中間有東西擋著。",
+          unreachableTitle: "連不上",
+          unreachableBody:
+            "沒有東西在這個位址上聽。在伺服器那台機器跑 docker compose up -d，或確認位址與埠號。",
+          notDriveTitle: "有東西在聽，但不是 Discord Drive",
+          notDriveBody: "埠號多半打錯了。/api/health 沒有回傳預期的內容。",
+          failedTitle: "連線失敗",
+          withDetail: "{body}（{detail}）",
+          justDetail: "{detail}",
+
+          problemTitle: "連不上 {url}",
+          problemBody:
+            "{description}{code}。後端可能還沒起來——在 repo 目錄跑 docker compose up -d，" +
+            "再按「連線並記住」。",
+        },
+
+        en: {
+          docTitle: "Discord Drive — Connection",
+          title: "Connect to your Discord Drive",
+          intro:
+            "This app is the window; the drive itself runs somewhere else. " +
+            "Give it the server's address and it will connect.",
+          urlLabel: "Server address",
+          test: "Test connection",
+          go: "Connect and remember",
+          toLocal: "Run it on this computer instead (no separate server) →",
+
+          tokenTitle: "The Discord bot token does not go here",
+          tokenBody:
+            "The token, the channel id and the MongoDB credentials are the *server's* settings. " +
+            "They live in the `.env` file on the machine running the server and take effect with " +
+            "`docker compose up -d`. They are never sent from this screen: the token is the " +
+            "server's secret rather than any user's, and a client that could write it would be a " +
+            "client anyone who signs in could read it from.",
+
+          remoteTitle: "Reaching it from another device",
+          remoteBody:
+            "By default the server binds to its own `127.0.0.1` and nothing else. To reach it " +
+            "from anywhere but that machine, the server's `.env.example` sets out three routes " +
+            "and what each one costs:",
+          remote1:
+            "A private network (Tailscale / WireGuard) — install one piece of software at each " +
+            "end and change nothing else.",
+          remote2:
+            "A reverse proxy with a real certificate (two lines of Caddy) — the app itself still " +
+            "never faces the internet.",
+          remote3:
+            "Plain HTTP over the LAN — needs both `WEB_BIND=0.0.0.0` and `WEB_COOKIE_SECURE=0`. " +
+            "Not recommended.",
+
+          okTitle: "Connected",
+          okBody: "{origin} answered /api/health.",
+          urlTitle: "That address cannot be read",
+          urlBody:
+            "Check it for typos. Something like 127.0.0.1:8080 is enough; the http:// is optional.",
+          schemeTitle: "Only http or https",
+          schemeBody: "This field takes a server address, not a file path.",
+          timeoutTitle: "Reachable, but it did not answer",
+          timeoutBody:
+            "The address is right, but nothing replied in time. The server may still be starting, " +
+            "or something in between is blocking it.",
+          unreachableTitle: "Cannot connect",
+          unreachableBody:
+            "Nothing is listening on that address. Run docker compose up -d on the server, or " +
+            "check the address and port.",
+          notDriveTitle: "Something is listening, but it is not Discord Drive",
+          notDriveBody:
+            "The port is probably wrong. /api/health did not return what it should.",
+          failedTitle: "Connection failed",
+          withDetail: "{body} ({detail})",
+          justDetail: "{detail}",
+
+          problemTitle: "Cannot reach {url}",
+          problemBody:
+            "{description}{code}. The backend may not be up yet — run docker compose up -d in " +
+            "the repo directory, then press “Connect and remember”.",
+        },
+      };
+
+      const HTML_LANG = { zh: "zh-Hant", en: "en" };
+      const REASON_KEYS = {
+        url: "url",
+        scheme: "scheme",
+        timeout: "timeout",
+        unreachable: "unreachable",
+        "not-discord-drive": "notDrive",
+      };
+
       const $ = (id) => document.getElementById(id);
       const url = $("url");
       const status = $("status");
 
-      function show(kind, title, body) {
-        status.className = `status on ${kind}`;
-        status.innerHTML = "";
-        const b = document.createElement("b");
-        b.textContent = title;
-        const span = document.createElement("span");
-        span.textContent = body || "";
-        status.append(b, span);
+      let lang = "zh";
+      // What the status box is currently saying, kept as keys rather than as
+      // the rendered text so that switching language re-renders it. A failure
+      // message left in the previous language next to a translated page is
+      // the one thing a switch on this screen must not do.
+      let shown = null;
+
+      function t(key, vars) {
+        const table = STRINGS[lang] || STRINGS.zh;
+        const template = table[key] ?? STRINGS.zh[key] ?? key;
+        if (!vars) return template;
+        return template.replace(/\{(\w+)\}/g, (whole, name) =>
+          Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : whole,
+        );
       }
 
-      const REASONS = {
-        url: ["位址看不懂", "檢查有沒有打錯字。像 127.0.0.1:8080 這樣就可以，http:// 可以省略。"],
-        scheme: ["只接受 http 或 https", "這個欄位填的是伺服器位址，不是檔案路徑。"],
-        timeout: [
-          "連得上但沒有回應",
-          "位址對、但那一端沒有在時限內回話。伺服器可能正在啟動，或中間有東西擋著。",
-        ],
-        unreachable: [
-          "連不上",
-          "沒有東西在這個位址上聽。在伺服器那台機器跑 docker compose up -d，或確認位址與埠號。",
-        ],
-        "not-discord-drive": [
-          "有東西在聽，但不是 Discord Drive",
-          "埠號多半打錯了。/api/health 沒有回傳預期的內容。",
-        ],
-      };
+      /** `text` with `code` and *bold* turned into elements, never into HTML. */
+      function parts(text) {
+        const out = [];
+        const pattern = /`([^`]+)`|\*([^*]+)\*/g;
+        let at = 0;
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+          if (match.index > at) out.push(document.createTextNode(text.slice(at, match.index)));
+          // `strong` rather than `b`, because `.status b` is the status box's
+          // own title element and styling it as a block would break any
+          // message that ever carries emphasis.
+          const element = document.createElement(match[1] !== undefined ? "code" : "strong");
+          element.textContent = match[1] !== undefined ? match[1] : match[2];
+          out.push(element);
+          at = pattern.lastIndex;
+        }
+        if (at < text.length) out.push(document.createTextNode(text.slice(at)));
+        return out;
+      }
+
+      function fill(element, text) {
+        element.replaceChildren(...parts(text));
+      }
+
+      function renderStatus() {
+        if (!shown) return;
+        status.className = `status on ${shown.kind}`;
+        const b = document.createElement("b");
+        b.textContent = t(shown.title, shown.vars);
+        const body = document.createElement("span");
+        fill(body, t(shown.body, shown.vars));
+        status.replaceChildren(b, body);
+      }
+
+      function show(kind, title, body, vars) {
+        shown = { kind, title, body, vars };
+        renderStatus();
+      }
+
+      function applyLanguage() {
+        document.documentElement.lang = HTML_LANG[lang];
+        document.title = t("docTitle");
+        for (const element of document.querySelectorAll("[data-i18n]")) {
+          fill(element, t(element.dataset.i18n));
+        }
+        // The label names the language you are in, matching the chip in the
+        // file manager. The accessible name says what the control is *and*
+        // repeats that visible label: a name that replaced it would leave
+        // somebody driving this by voice with nothing to say.
+        $("lang").textContent = lang === "zh" ? "中文" : "EN";
+        $("lang").setAttribute("aria-label", lang === "zh" ? "語言：中文" : "Language: EN");
+        renderStatus();
+      }
 
       function report(result) {
         if (result.ok) {
-          show("ok", "連線正常", `${result.origin} 回應了 /api/health。`);
+          show("ok", "okTitle", "okBody", { origin: result.origin });
           return true;
         }
-        const [title, body] = REASONS[result.reason] || ["連線失敗", result.detail || ""];
-        show("bad", title, result.detail ? `${body}（${result.detail}）` : body);
+        const key = REASON_KEYS[result.reason];
+        if (!key) {
+          show("bad", "failedTitle", "justDetail", { detail: result.detail || "" });
+          return false;
+        }
+        if (result.detail) {
+          // The detail is the underlying library's message, which has no
+          // translation and should not get one -- it is the thing to paste
+          // into a search box.
+          const body = t(`${key}Body`);
+          show("bad", `${key}Title`, "withDetail", { body, detail: result.detail });
+        } else {
+          show("bad", `${key}Title`, `${key}Body`);
+        }
         return false;
       }
 
       async function withBusy(button, work) {
-        const label = button.textContent;
+        const key = button.dataset.i18n;
         button.disabled = true;
         button.textContent = "…";
         try {
           return await work();
         } finally {
           button.disabled = false;
-          button.textContent = label;
+          // Restored from the dictionary rather than from the label that was
+          // there: the language can change while a probe is in flight.
+          fill(button, t(key));
         }
       }
+
+      $("lang").addEventListener("click", async () => {
+        lang = await window.dd.setLanguage(lang === "zh" ? "en" : "zh");
+        applyLanguage();
+      });
 
       $("test").addEventListener("click", () =>
         withBusy($("test"), async () => report(await window.dd.probe(url.value))),
@@ -215,19 +431,26 @@
 
       window.dd.onProblem((problem) => {
         if (!problem) return;
-        show(
-          "warn",
-          `連不上 ${problem.url || ""}`,
-          `${problem.description || ""}${problem.code ? ` (${problem.code})` : ""}。` +
-            "後端可能還沒起來——在 repo 目錄跑 docker compose up -d，再按「連線並記住」。",
-        );
+        show("warn", "problemTitle", "problemBody", {
+          url: problem.url || "",
+          description: problem.description || "",
+          code: problem.code ? ` (${problem.code})` : "",
+        });
       });
 
-      window.dd.current().then((saved) => {
-        url.value = saved || "http://127.0.0.1:8080";
-        url.focus();
-        url.select();
-      });
+      (async () => {
+        try {
+          lang = await window.dd.language();
+          applyLanguage();
+          const saved = await window.dd.current();
+          url.value = saved || "http://127.0.0.1:8080";
+          url.focus();
+          url.select();
+        } finally {
+          // Whatever happened above, the window is not left blank.
+          document.body.classList.add("ready");
+        }
+      })();
     </script>
   </body>
 </html>

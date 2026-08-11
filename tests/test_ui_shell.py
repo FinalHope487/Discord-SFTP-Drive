@@ -248,6 +248,22 @@ async def test_filling_the_config_and_rechecking_reaches_the_password_screen(tmp
 
 
 @requires_backend
+async def test_the_first_run_screen_can_be_read_in_english(tmp_path):
+    """The preference reaching the screen a new user actually lands on.
+
+    `local.html` renders four screens from one dictionary, and this is the one
+    that decides whether somebody who cannot read Chinese can get the app
+    running at all.
+    """
+    async with shell_window(tmp_path, config={"mode": "local", "lang": "en"}) as page:
+        await expect(
+            page.get_by_role("heading", name="First run: fill in the settings")
+        ).to_be_visible(timeout=START_WAIT)
+        await expect(page.get_by_role("button", name="Check again")).to_be_visible()
+        assert await page.evaluate("document.documentElement.lang") == "en"
+
+
+@requires_backend
 async def test_a_rejected_token_puts_the_backend_output_on_the_screen(tmp_path):
     """The failure a user will actually hit, shown rather than swallowed.
 
@@ -280,3 +296,128 @@ async def test_a_rejected_token_puts_the_backend_output_on_the_screen(tmp_path):
 
         await expect(page.locator("#password")).to_have_value("")
         await expect(page.get_by_role("button", name="啟動")).to_be_enabled()
+
+
+# ------------------------------------------------------- the language switch
+
+
+async def test_the_switch_puts_the_setup_screen_into_english_and_back(tmp_path):
+    """One click, and every string on the page moves -- including the ones
+    that are not in the markup.
+
+    `language.test.js` proves the toggle picks the other language. It cannot
+    prove the button is wired to it, that the dictionary has an English half,
+    or that `applyLanguage` reaches an element whose `data-i18n` was misspelt.
+    """
+    async with shell_window(tmp_path) as page:
+        await expect(
+            page.get_by_role("heading", name="連線到你的 Discord Drive")
+        ).to_be_visible()
+
+        await page.get_by_role("button", name="語言").click()
+
+        await expect(
+            page.get_by_role("heading", name="Connect to your Discord Drive")
+        ).to_be_visible()
+        await expect(page.get_by_role("button", name="Test connection")).to_be_visible()
+        # Not decoration: it is what a screen reader picks a voice from, and
+        # what the browser hyphenates and picks fonts by.
+        assert await page.evaluate("document.documentElement.lang") == "en"
+
+        await page.get_by_role("button", name="Language").click()
+
+        await expect(
+            page.get_by_role("heading", name="連線到你的 Discord Drive")
+        ).to_be_visible()
+        assert await page.evaluate("document.documentElement.lang") == "zh-Hant"
+
+
+async def test_the_chosen_language_outlives_the_window(tmp_path):
+    """It has to be the main process holding this, not the page.
+
+    Both pages are file:// and link to each other, so a preference kept in the
+    page would be gone at the first click and gone again at the next launch.
+    The second window here is a genuinely new Electron process reading the
+    config the first one wrote.
+    """
+    async with shell_window(tmp_path) as page:
+        await page.get_by_role("button", name="語言").click()
+        await expect(
+            page.get_by_role("heading", name="Connect to your Discord Drive")
+        ).to_be_visible()
+
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved["lang"] == "en", saved
+
+    # config=None so the file the first window wrote is left alone.
+    async with shell_window(tmp_path) as page:
+        await expect(
+            page.get_by_role("heading", name="Connect to your Discord Drive")
+        ).to_be_visible()
+
+
+async def test_the_language_follows_the_link_into_local_mode(tmp_path):
+    """One preference across both pages, not one per page.
+
+    The two screens carry separate dictionaries -- their CSP allows no shared
+    script file -- so "both pages agree" is a claim about the value they read,
+    and only crossing the link actually tests it.
+    """
+    async with shell_window(tmp_path) as page:
+        await page.get_by_role("button", name="語言").click()
+        await expect(page.get_by_role("button", name="Test connection")).to_be_visible()
+
+        await page.get_by_role(
+            "link", name="Run it on this computer instead (no separate server) →"
+        ).click()
+        await page.wait_for_url("**/local.html")
+
+        await expect(page.get_by_role("button", name="Language")).to_be_visible()
+        assert await page.evaluate("document.documentElement.lang") == "en"
+
+
+async def test_a_message_already_on_screen_is_translated_with_the_page(tmp_path):
+    """The half that a naive implementation gets wrong.
+
+    Status text is built when the probe returns, not when the page renders, so
+    translating only `[data-i18n]` elements leaves a Chinese failure sitting
+    under an English page -- and it is a failure message, which is the moment
+    the reader can least afford it.
+    """
+    async with shell_window(tmp_path) as page:
+        await page.fill("#url", "ftp://nope")
+        await page.get_by_role("button", name="測試連線").click()
+
+        status = page.locator("#status")
+        await expect(status).to_contain_text("只接受 http 或 https", timeout=PROBE_WAIT)
+
+        await page.get_by_role("button", name="語言").click()
+
+        await expect(status).to_contain_text("Only http or https")
+        await expect(status).not_to_contain_text("只接受")
+
+
+async def test_a_config_with_no_language_still_opens(tmp_path):
+    """Every build before this one wrote a config without the key.
+
+    `normaliseLanguage` has a unit test for the value; this is the path that
+    actually delivers it, and the failure it guards against is a blank window
+    rather than a wrong word.
+    """
+    async with shell_window(tmp_path, config={"serverUrl": ""}) as page:
+        await expect(
+            page.get_by_role("heading", name="連線到你的 Discord Drive")
+        ).to_be_visible()
+        # The heading alone is not enough: a missing key still renders Chinese
+        # through the dictionary's own fallback, and only this says the value
+        # that reached the page was a language rather than `undefined`.
+        assert await page.evaluate("document.documentElement.lang") == "zh-Hant"
+
+
+async def test_a_hand_edited_language_falls_back_rather_than_blanking(tmp_path):
+    """config.json is a file a user can open and mistype in."""
+    async with shell_window(tmp_path, config={"lang": "klingon"}) as page:
+        await expect(
+            page.get_by_role("heading", name="連線到你的 Discord Drive")
+        ).to_be_visible()
+        assert await page.evaluate("document.documentElement.lang") == "zh-Hant"
