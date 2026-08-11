@@ -356,8 +356,10 @@
         for (const element of document.querySelectorAll("[data-i18n]")) {
           fill(element, t(element.dataset.i18n));
         }
+        // See setup.html: the accessible name repeats the visible label
+        // rather than replacing it.
         $("lang").textContent = lang === "zh" ? "中文" : "EN";
-        $("lang").setAttribute("aria-label", lang === "zh" ? "語言" : "Language");
+        $("lang").setAttribute("aria-label", lang === "zh" ? "語言：中文" : "Language: EN");
         renderStatus();
       }
 

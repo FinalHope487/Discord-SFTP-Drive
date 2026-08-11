@@ -103,6 +103,7 @@ export default function Login({ t, lang, onLanguage, onSignedIn }) {
             className="chip"
             onClick={onLanguage}
             title={t("act.language")}
+            aria-label={`${t("act.language")}: ${lang === "zh" ? "中文" : "EN"}`}
           >
             <Icon name="translate" size={13} />
             {lang === "zh" ? "中文" : "EN"}

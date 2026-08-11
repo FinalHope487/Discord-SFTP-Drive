@@ -361,10 +361,11 @@
           fill(element, t(element.dataset.i18n));
         }
         // The label names the language you are in, matching the chip in the
-        // file manager. The accessible name is the word "language" in the
-        // current language, so the control is findable either way.
+        // file manager. The accessible name says what the control is *and*
+        // repeats that visible label: a name that replaced it would leave
+        // somebody driving this by voice with nothing to say.
         $("lang").textContent = lang === "zh" ? "中文" : "EN";
-        $("lang").setAttribute("aria-label", lang === "zh" ? "語言" : "Language");
+        $("lang").setAttribute("aria-label", lang === "zh" ? "語言：中文" : "Language: EN");
         renderStatus();
       }
 

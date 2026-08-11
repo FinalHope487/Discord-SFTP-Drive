@@ -110,7 +110,14 @@ export default function App() {
   const fileInput = useRef(null);
   const toastTimer = useRef(null);
 
-  useEffect(() => localStorage.setItem("dd.lang", lang), [lang]);
+  useEffect(() => {
+    localStorage.setItem("dd.lang", lang);
+    // index.html hard-codes zh-Hant, which stops being true the moment the
+    // chip is clicked. It is what a screen reader picks a voice from and what
+    // the browser picks fonts and hyphenation by, so leaving it wrong makes
+    // the English interface read aloud in Chinese.
+    document.documentElement.lang = lang === "en" ? "en" : "zh-Hant";
+  }, [lang]);
   useEffect(() => localStorage.setItem("dd.display", display), [display]);
 
   /* ------------------------------------------------------------- errors */
@@ -676,7 +683,15 @@ export default function App() {
           <span className="name">{t("app.name")}</span>
           <span className="path">{view === "trash" ? t("side.trash") : cwd}</span>
         </div>
-        <button className="chip" onClick={() => setLang(lang === "zh" ? "en" : "zh")} title={t("act.language")}>
+        <button
+          className="chip"
+          onClick={() => setLang(lang === "zh" ? "en" : "zh")}
+          title={t("act.language")}
+          // The visible label is the language you are in, which does not say
+          // what the control does. The accessible name says both, and keeps
+          // the visible word inside itself so voice control can still reach it.
+          aria-label={`${t("act.language")}: ${lang === "zh" ? "中文" : "EN"}`}
+        >
           <Icon name="translate" size={13} />
           {lang === "zh" ? "中文" : "EN"}
         </button>
