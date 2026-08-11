@@ -127,7 +127,7 @@ jobs:
       # Built in this job rather than shared from `python` as an artifact: the
       # two jobs would then run in series, and a duplicated 35-second build is
       # cheaper than the wall clock that costs.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
