@@ -15,7 +15,7 @@
 # here" produces a download that silently arrives as zeros. Moving past 2.20.0
 # means teaching DiscordFile what its holes are, and that is a decision about
 # the data path, not a version bump. See ROADMAP.md.
-asyncssh==2.20.0
+asyncssh==2.24.0
 cryptography==50.0.0
 motor==3.7.1
 # Still pinned, but no longer to hold pymongo back: motor 3.7.1 declares
