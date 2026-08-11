@@ -1,21 +1,11 @@
 # Keep this file ASCII-only. pip reads it with the locale encoding, so a
 # non-ASCII character makes the install fail outright on non-UTF-8 consoles
 # (cp950, cp1252, ...) before any package is resolved.
-# Held one release short of 2.21.0, which added the sparse-file extension
-# `ranges@asyncssh.com`. Its client asks for it by default on every get(), and
-# its server side answers by calling lseek(SEEK_DATA) directly on whatever
-# object is behind the handle -- reaching past every SFTPServer override this
-# project has. Ours is a DiscordFile, which has no seek, so on Linux every
-# download from an asyncssh client fails with "Uncaught exception". Windows is
-# green either way: os.SEEK_DATA does not exist there, so asyncssh picks a
-# different implementation and never seeks.
-#
-# The dangerous direction is the fix, not the bug. Under sparse=True a short
-# copy is expected rather than an error, so a server that answers "no data
-# here" produces a download that silently arrives as zeros. Moving past 2.20.0
-# means teaching DiscordFile what its holes are, and that is a decision about
-# the data path, not a version bump. See ROADMAP.md.
-asyncssh==2.20.0
+# 2.21.0 added the `ranges@asyncssh.com` sparse-file extension, whose server
+# side calls lseek(SEEK_DATA) straight on the handle object, past every
+# SFTPServer override here. `DiscordFile.seek` answers it; read that docstring
+# before touching this pin, because the failure it avoids is silent.
+asyncssh==2.24.0
 cryptography==50.0.0
 motor==3.7.1
 # Still pinned, but no longer to hold pymongo back: motor 3.7.1 declares
