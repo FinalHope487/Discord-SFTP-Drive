@@ -205,7 +205,8 @@
           whatToFillBody:
             "打開上面那個檔案，填入標示 `REQUIRED` 的幾項——Discord bot token、" +
             "要存到哪（DM 或頻道其中一項）、還有你想用的帳號名。" +
-            "`GUIDE.md` 的第 2 節有完整步驟。填完存檔，回來按「重新檢查」。",
+            "`README.md` 的「Step 1 — the Discord side」有完整步驟（英文）。" +
+            "填完存檔，回來按「重新檢查」。",
           openFolder: "開啟資料夾",
           recheck: "重新檢查",
 
@@ -245,10 +246,12 @@
             "cannot guess, starting with your Discord credentials.",
           configWhere: "Where the settings file is",
           whatToFill: "What to fill in",
-          // Points at README rather than GUIDE.md on purpose: GUIDE.md is the
-          // Chinese walkthrough, and sending an English reader there is
-          // sending them to a document they cannot use. The README carries the
-          // same steps in English.
+          // Both languages point here, not at GUIDE.md. GUIDE.md is
+          // gitignored -- it never reaches a fresh clone, let alone this
+          // packaged app's `files` list -- so it cannot be the answer for
+          // either reader. There is no tracked Chinese walkthrough right now;
+          // the zh string above says so and sends the reader to this same
+          // section, English and all.
           whatToFillBody:
             "Open that file and fill in the values marked `REQUIRED` — your Discord bot token, " +
             "where the chunks are stored (a DM or a channel, one or the other), and the account " +
