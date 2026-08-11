@@ -160,7 +160,8 @@ services:
       # callers is the one directory a flaw should not be able to modify.
       #
       # If `client/app/dist` does not exist yet, Docker creates it empty and
-      # the server serves a page saying how to build it. See client/BUILD.md.
+      # the server serves a page saying how to build it. See CONTRIBUTING.md,
+      # "Building from source".
       - ./client/app/dist:/app/web:ro
     secrets:
       - sftp_password

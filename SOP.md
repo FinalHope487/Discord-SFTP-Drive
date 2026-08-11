@@ -75,6 +75,9 @@
 `gh release create 帶 --target 短 SHA，回 HTTP 422 Validation Failed: Release.target_commitish is invalid → 1. 不要去查 tag 名稱、權限或 notes 檔：422 指的就是 target 這個欄位 2. target_commitish 只吃完整 40 字元 SHA 或分支名，git log --oneline 給的 7 字元短 SHA 一律被拒，而錯誤訊息不會說是長度問題 3. 修法是 git rev-parse main 取完整 SHA，或直接給分支名（本地與遠端同步時兩者等價）→ GitHub API 的欄位格式要求，非權限或指令拼法問題`
 （2026-08-11 寫入，第一次出現就寫：API 決定、必然重現。發布流程一年跑不了幾次，所以這種坑每次都要重新踩一遍——寫下來的價值在這裡，不在頻率。）
 
+`跑 pytest 全綠、但結尾那行「N passed」整個不見，只剩一排點和 [100%] → 1. 先看 pytest.ini 的 addopts：本專案已經有 -q，指令再打一次 -q 就是 -qq，而 -qq 會把最後的統計行拿掉 2. 不要去懷疑輸出被截斷、管線吞掉或行程在收尾時死掉——exit code 是 0，測試真的跑完了 3. 跑本專案的測試不要自己加 -q，addopts 已經給了 → 兩處 verbosity 疊加，非輸出或測試框架問題`
+（2026-08-11 寫入，第一次出現就寫：工具行為決定、必然重現。**這條的危險性不在浪費時間**——它精準地砍掉 `CLAUDE.md`〈驗證〉那條「看到綠不算數，要看數字」所依賴的那個數字，而畫面看起來仍然全綠。同一輪裡它讓兩次全套測試的結果無法拿來比較。）
+
 ---
 
 ## 已退役

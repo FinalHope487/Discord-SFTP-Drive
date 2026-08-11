@@ -13,9 +13,9 @@ deployment could ever build. It surfaced the first time the trash code met a
 real MongoDB, as a server that would not start.
 
 These tests cannot catch a rejection either -- only a real server can do that,
-and `BUILD.md` says so. What they can do is pin the expression, so that changing
-it back to something MongoDB refuses is a failing test rather than a discovery
-made in production.
+and `CONTRIBUTING.md` says so. What they can do is pin the expression, so that
+changing it back to something MongoDB refuses is a failing test rather than a
+discovery made in production.
 """
 
 import pytest
