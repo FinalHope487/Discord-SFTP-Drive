@@ -17,7 +17,7 @@ pyflakes==3.4.0
 # It can only build for the platform it runs on, the same restriction
 # electron-builder has (see CONTRIBUTING.md). A Linux binary has to be built
 # on Linux.
-pyinstaller==6.21.0
+pyinstaller==6.22.0
 
 # Drives the file manager in a real browser -- the layer the user actually
 # touches. Every other test here drives the VFS or the HTTP API directly and is
@@ -26,4 +26,4 @@ pyinstaller==6.21.0
 #
 # Needs a browser download that pip does not do:
 #   ./venv/Scripts/python.exe -m playwright install chromium
-pytest-playwright==0.8.0
+pytest-playwright==0.9.0
