@@ -590,6 +590,16 @@
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
 
+**2026-08-20 · `CLAUDE.md` 的測試數回填（787 → 792）** — 792 項（774 過 18 skip）、
+`--db=sqlite` 771 過 21 skip、`node --test` 23 過 0 skip。**程式與測試零改動**，純數字修正。
+
+- 漂開的原因不是誰漏改，是 `CLAUDE.md` 自己寫的那句「兩邊漂開時沒有任何東西會變紅」
+  ——然後它自己漂了 5 項。這條規則目前沒有強制層，只能靠每輪實際跑一次去對。
+- 18 個 skip 全部是 `electron is not installed`（`client/shell/node_modules` 在，
+  Electron 本體沒裝成）。文件表上「缺 `dist-standalone/discord-drive.exe` → 4 skip」
+  在這台機器觀察不到：那 4 支在 `test_ui_shell.py` 裡，已經先被 electron 那個條件 skip 掉，
+  兩個條件疊在一起。表沒有錯，只是那一項要 Electron 裝好才看得見。
+
 **2026-08-11 · asyncssh 升到 2.24.0，`DiscordFile` 學會回答稀疏檔案查詢** — 769 項（+4）、
 `--db=sqlite` 766 過 3 skip、pyflakes 乾淨。**3/3 突變全被抓到**，各自打在不同的測試上：
 把 `SEEK_HOLE` 改成誠實回報 `_covered_end()`、拿掉 `ENXIO` 那條、接受任意 `whence`。
