@@ -135,6 +135,21 @@ BUILD.md、session-handoff.md、QUESTIONS.md、BLUEPRINT.md——外觀跟一般
 `用 Python 腳本改檔案裡的幾行，改完 diff 顯示整個檔案都變了 → 1. 先看行尾，不要先懷疑取代邏輯：pathlib 的 write_text 走文字模式，Windows 上會把 \n 寫成 \r\n，原檔是 LF 就等於每一行都被改過 2. 要保位元組用 read_bytes/write_bytes 自己 split(b"\n")，或 open(..., newline="") 3. 驗證用 diff 之後數 ^[<>] 的行數，不要目測 → 文字模式的行尾轉換，非編輯邏輯錯`
 （2026-08-20・Python 3.12 on Windows。本專案 src/ 全部是 LF。踩到的場合是「只改三行、其餘必須逐位元組相同」的注入實驗，整檔行尾被翻掉就等於實驗失效。）
 
+---
+
+`headless 呼叫的 agent CLI（agy 等）逾時或看起來零輸出，stdout 與 --log-file 都看不出它做過什麼 → 1. 不要從「零輸出」推論「它沒有動作」——那是這次白繞一大圈的原因 2. 去讀它自己的對話記錄：agy 是 ~/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript_full.jsonl，按 mtime 挑最新的 3. 把每一步 tool_calls 的路徑參數全抽出來看它在哪裡工作，漫遊家目錄就是 cwd 沒傳到 4. --log-file 是收尾才 flush 的，異常終止就沒有，不要因為沒 log 就以為沒跑 → 觀測面不完整，非「請求沒送到」`
+（2026-08-20・agy 1.1.15。stdout 與 --output-format stream-json 都是零事件，而 transcript 裡有 40＋ 個已完成步驟。同一份 transcript 也是唯一能證明「有沒有越界」的證據。）
+
+---
+
+`從 PowerShell 呼叫原生程式，子行程的工作目錄不是你 Set-Location 過去的那個 → 1. Set-Location 只改 PS provider 的位置，不改 [Environment]::CurrentDirectory，而原生子行程繼承的是後者 2. 修法是兩行都寫：Set-Location $Dir 之後補 [Environment]::CurrentDirectory = $Dir 3. 把實際值印出來當證據，不要假設 → PowerShell 5.1 的 provider 位置與行程工作目錄是兩件事`
+（2026-08-20・PowerShell 5.1。症狀不是報錯而是子行程在錯的樹裡工作到逾時，看起來像子行程本身壞了。）
+
+---
+
+`把長字串當引數傳給原生 exe，對方只收到前半截 → 1. 先數 ASCII 雙引號：PowerShell 5.1 在第一個 " 就把 argv 截斷 2. 讓字串本身不含雙引號（b"" 寫成 b''），並在腳本加守衛：if ($t -match '"') { exit 2 } 3. 驗長度，不要目測——agy 的 log 有 promptLength=N，要等於檔案位元組數 4. 用瑣碎內容探這個坑會得到假陰性：截斷後剩的半句話照樣能被回答，看起來是過的 → 原生引數編碼，非對方解析錯誤`
+（2026-08-20・PowerShell 5.1。這一輪被它擋掉一次完整回合；先前還誤判成「雙引號已排除」。）
+
 ## 已退役
 
 <!-- 條目退場時搬到這裡，註明退役日期與原因。留著才知道曾經踩過 -->

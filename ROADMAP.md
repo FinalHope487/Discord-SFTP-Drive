@@ -590,6 +590,20 @@
 決策與理由在上面那一節，重複問題在 SOP.md，逐檔改動在 git log。這裡不複述。
 -->
 
+**2026-08-20 · agy headless 跑得動了，Gemini 3.7 Flash 開放式提問 3/3** — 測試數不變
+（774 過 18 skip）。注入實驗全在 `%LOCALAPPDATA%` 的副本裡跑，真專案零改動；這一輪
+追蹤中的改動只有 `SOP.md` 三條。
+
+- 卡住上一輪的兩個坑都在呼叫端，不在 agy 也不在模型：PowerShell 5.1 的 `Set-Location`
+  不改 `[Environment]::CurrentDirectory`（原生子行程於是在家目錄漫遊到逾時），以及它
+  把含 ASCII 雙引號的引數在該處截斷（prompt 只送出前半截）。兩條都進了 `SOP.md`。
+- **「零輸出」不等於「沒動作」。** 判斷外部 agent 做過什麼要讀它自己的 transcript，
+  `--log-file` 與 stdout 都不是完整紀錄。先前從「零事件」推論成「請求沒送到」是錯的，
+  白繞一大圈。也進了 `SOP.md`。
+- 評測結果推翻 `AGY_GEMINI_EVAL.md` 輪七的「換模型無效」：同一組注入、同一種開放式
+  問法，3.6 Flash／3.1 Pro／Opus 4.6 合計 0/5，3.7 Flash (High) 是 3/3 且零越界。
+  §8（未追蹤檔）記了完整條件與必須揭露的差異。
+
 **2026-08-20 · `CLAUDE.md` 的測試數回填（787 → 792）** — 792 項（774 過 18 skip）、
 `--db=sqlite` 771 過 21 skip、`node --test` 23 過 0 skip。**程式與測試零改動**，純數字修正。
 
