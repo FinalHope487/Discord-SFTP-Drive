@@ -6,7 +6,7 @@
 # SFTPServer override here. `DiscordFile.seek` answers it; read that docstring
 # before touching this pin, because the failure it avoids is silent.
 asyncssh==2.24.0
-cryptography==50.0.0
+cryptography==50.0.1
 motor==3.7.1
 # Still pinned, but no longer to hold pymongo back: motor 3.7.1 declares
 # >=4.9,<5 and imports fine against it. The pin exists because motor reaches
@@ -17,7 +17,7 @@ motor==3.7.1
 # resolving.
 pymongo==4.17.0
 aiohttp==3.14.3
-python-dotenv==1.2.2
+python-dotenv==1.2.3
 # Argon2id for turning the SFTP password into the key that wraps the master
 # key. PBKDF2-HMAC-SHA256 is still supported and still opens every record that
 # was written with it -- the stored record names its own KDF -- but Argon2id is
