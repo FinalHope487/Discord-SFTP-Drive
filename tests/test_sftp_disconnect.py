@@ -1,6 +1,6 @@
 """An SFTP connection really cut at the socket, mid-upload.
 
-The gap this closes, recorded in ROADMAP.md: both unwind fixes of 2026-08-06
+The gap this closes, recorded in the ROADMAP.md changelog (git history): both unwind fixes of 2026-08-06
 were made and verified on the HTTP path. SFTP handles have a different
 lifecycle -- asyncssh owns them, and closes them itself when a session ends --
 so "does cutting the connection commit half a file" was an open question there,

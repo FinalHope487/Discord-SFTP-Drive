@@ -1,7 +1,7 @@
 """Cross-handle visibility: a handle opened before another handle changed the
 same node used to keep serving its own stale copy forever.
 
-Confirmed by hand against real infrastructure (see ROADMAP.md): connection B
+Confirmed by hand against real infrastructure (see the ROADMAP.md changelog in git history): connection B
 truncated a 20MB file to 4096 bytes while connection A held the file open;
 connection A's handle kept reporting the old 20MB size and, worse, handed back
 1024 bytes of the plaintext that used to live past the new end.

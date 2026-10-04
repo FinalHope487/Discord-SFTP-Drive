@@ -1,6 +1,6 @@
 """An upload whose connection really is cut, at the socket.
 
-The gap this closes, recorded in ROADMAP.md: every existing test of the failure
+The gap this closes, recorded in the ROADMAP.md changelog (git history): every existing test of the failure
 path injects the failure into the *fake* -- `FakeDiscord.fail_uploads_from`
 raises, and the handler unwinds. That covers what happens once an exception
 reaches `upload()`, and says nothing about whether cutting a client off

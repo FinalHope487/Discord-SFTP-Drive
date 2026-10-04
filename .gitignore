@@ -73,3 +73,6 @@ build-standalone/
 # dependencies. Enabled when needed and deleted when not, so it stays out of
 # the history entirely -- see .env.dev, which `.env.*` above already covers.
 dev-stack/
+# Written by collab-kit at the end of a session for whoever picks it up
+# next; same reason as session-handoff.md above.
+handoff.md

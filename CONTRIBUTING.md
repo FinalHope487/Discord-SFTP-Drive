@@ -3,8 +3,8 @@
 ## Before a large change
 
 Open an issue first. Several things that look like obvious improvements are
-deliberate decisions with the reasoning written down — `ROADMAP.md` has a
-"已拍板的長期決策" (settled decisions) section covering why the trash marker is
+deliberate decisions with the reasoning written down — `docs/decisions/` holds
+one file per settled decision, covering why the trash marker is
 inside the integrity tag, why there is no backward compatibility for
 pre-HMAC chunks, why the directory lock is process-level rather than optimistic,
 and more. It is in Chinese; ask in an issue and it will be summarised in
@@ -142,7 +142,8 @@ test count in this file has been wrong twice for that reason.
 | `docs/OPERATIONS.md` | Remote access, backup and recovery, troubleshooting, known limits. |
 | `CONTRIBUTING.md` | Building, testing, and the bar for "done". Every test number in the project lives here. |
 | `.env.example` | Every setting and what getting it wrong costs. |
-| `ROADMAP.md` | Why anything is the way it is, and the changelog. Chinese. |
+| `docs/decisions/` | Why anything is the way it is, one file per decision. Chinese. |
+| `ROADMAP.md` | Open work and the current test baseline. Chinese. |
 
 Numbers must be what a fresh clone actually produces, not what your working tree
 produces.

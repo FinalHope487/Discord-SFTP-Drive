@@ -1,7 +1,7 @@
 # 獨立單機版 — 設計方案
 
 > **狀態**：2026-08-07 產出。前提（一台裝置一份資料／換 SQLite／仍存 Discord）已於同日拍板，
-> 見 `ROADMAP.md`「已拍板的長期決策」，理由不在這裡複述。
+> 見 `docs/decisions/`，理由不在這裡複述。
 >
 > **本方案的核心主張**：這件事的難處不在打包，在**換掉 MongoDB 而不動 `vfs.py`**。
 > 打包只是把已經會動的東西塞進一個檔案；換資料庫是把 2328 行檔案系統邏輯底下的地板抽掉。
@@ -105,7 +105,7 @@ SQLite 的 partial index 語法和語意都對得上，這是選 SQLite 而不�
 它是「兩個活節點不能同名」與「垃圾桶裡可以同名」同時成立的唯一原因。
 
 **已量過的查詢計畫**（`EXPLAIN QUERY PLAN`，對照 MongoDB 那邊記在
-`ROADMAP.md` 的 IXSCAN／COLLSCAN 驗證）：
+`docs/decisions/2026-08-06-trash-partial-index-trashed-at.md` 的 IXSCAN／COLLSCAN 驗證）：
 
 | 查詢 | 計畫 |
 |---|---|

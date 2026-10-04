@@ -301,8 +301,9 @@ sweep is a background scan, not a timer accurate to the second.
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Remote access, backup and recovery, changing the password, troubleshooting, known limits. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Building from source, running the tests, proposing a change. |
 | [`.env.example`](.env.example) | Every setting and what getting it wrong costs. |
-| [`ROADMAP.md`](ROADMAP.md) | Every settled decision with its reasoning, the open questions and how each resolved, and a changelog. Start here for "why is it like that". Written in Chinese. |
-| [`SOP.md`](SOP.md) | Recurring problems and the order to check things in. Mostly environment traps. Chinese. |
+| [`docs/decisions/`](docs/decisions/) | Every settled decision with its reasoning, one file each. Start here for "why is it like that". Written in Chinese. |
+| [`ROADMAP.md`](ROADMAP.md) | Open work, hard constraints and the current test baseline. Chinese. |
+| [`SOP.md`](SOP.md) | Index of recurring problems; the entries, grouped by symptom, are under `SOP/`. Mostly environment traps. Chinese. |
 | [`design-multi-user.md`](design-multi-user.md) | The structural steps have landed; opening a second account has not. Its banner says which is which. |
 | [`design-node-identity-integrity.md`](design-node-identity-integrity.md) | Built; its banner lists the four places plan and result diverged. |
 | [`design-standalone.md`](design-standalone.md) | How the metadata store was replaced without touching `vfs.py`, and the route that was rejected. |
@@ -333,8 +334,8 @@ Working and in real use against a real bot token: single user, single replica.
 [v0.1.0](https://github.com/FinalHope487/Discord-SFTP-Drive/releases/tag/v0.1.0)
 is the first tagged build; only the standalone side ships as a binary.
 The known gaps are written down rather than glossed over — see
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md#known-limits) and the `[later]` and
-`[parked]` items in [`ROADMAP.md`](ROADMAP.md).
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md#known-limits),
+[`ROADMAP/later.md`](ROADMAP/later.md) and [`ROADMAP/parked.md`](ROADMAP/parked.md).
 
 ## License
 

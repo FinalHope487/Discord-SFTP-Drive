@@ -1,6 +1,6 @@
 """Signed attachment URLs that really do lapse, over real HTTP.
 
-The gap this closes, recorded in ROADMAP.md: `FakeDiscord` hands out
+The gap this closes, recorded in the ROADMAP.md changelog (git history): `FakeDiscord` hands out
 `https://cdn.test/<id>` and it works for ever, so the whole of `_url_cache`'s
 invalidation and every branch of the re-resolve had never run against a URL
 that stopped working. A green suite said nothing about them.

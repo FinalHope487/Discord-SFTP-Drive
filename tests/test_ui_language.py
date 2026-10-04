@@ -63,7 +63,8 @@ async def test_the_choice_survives_a_reload(page):
     """Kept in localStorage, so a reload must not drop back to Chinese.
 
     The desktop shell keeps its own preference in config.json instead. The two
-    are separate on purpose; see QUESTIONS.md.
+    are separate on purpose; see
+    docs/decisions/2026-08-11-shell-and-spa-language-stay-separate.md.
     """
     await page.get_by_role("button", name="語言").click()
     await expect(page.get_by_role("button", name="Sign in")).to_be_visible()

@@ -77,7 +77,8 @@ function writeConfig(next) {
  * the moment the user followed that link, and gone again on the next launch.
  *
  * The file manager keeps its own preference in localStorage under the
- * server's origin. The two are deliberately not shared -- see QUESTIONS.md.
+ * server's origin. The two are deliberately not shared -- see
+ * docs/decisions/2026-08-11-shell-and-spa-language-stay-separate.md.
  */
 function readLanguage() {
   return normaliseLanguage(readConfig().lang);

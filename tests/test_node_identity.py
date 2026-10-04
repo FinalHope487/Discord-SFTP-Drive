@@ -17,7 +17,7 @@ What is covered now:
   listing it, which is what makes a deletion detectable.
 
 What is still not covered, deliberately: permissions and timestamps (not
-content -- see ROADMAP.md), and restoring an older copy of both a child and
+content -- see docs/decisions/), and restoring an older copy of both a child and
 its parent, which is whole-file rollback and an accepted residual risk.
 
 The tampering below writes to `fake_db.nodes.docs` directly. That is the

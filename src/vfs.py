@@ -450,7 +450,8 @@ class DiscordFile:
         zeros with nothing logged on either side. Claiming everything is data
         cannot fail that way, and it is what the protocol did before the
         extension existed, so no transfer changes shape. The optimisation is
-        a separate decision; `ROADMAP.md` holds it.
+        a separate decision;
+        `docs/decisions/2026-08-11-sparse-seek-reports-all-data.md` holds it.
 
         Otherwise this is POSIX, for a file of length `size` with no holes:
         a position inside it has data there and its next hole is the implicit

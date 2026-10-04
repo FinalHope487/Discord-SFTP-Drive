@@ -20,7 +20,7 @@
 >    一個普通的有 tag 的目錄。既有的 pre-tag root 只在空的時候就地升級，非空則拒絕。
 >
 > §5 的 migration 腳本**沒有寫**（D4）。覆蓋範圍見 `tests/test_node_identity.py`；
-> 決策見 `ROADMAP.md`。
+> 決策見 `docs/decisions/`。
 >
 > **以下是拍板當下的方案內容**（2026-08-03 精簡過，論證與取捨保留，敘事與已無效的細節移除）。
 
@@ -99,7 +99,7 @@ def node_tag(key, *, file_id, parent_id, filename, size, chunk_tags) -> bytes:
   客戶端之間會算出不同的 tag，變成一個只在特定客戶端出現的「檔案損毀」。
   **這是既有程式碼沒有處理的問題，本方案順帶納入。**
 
-**權限位與時間戳維持不納入**，理由見 `ROADMAP.md` 的拍板決策。
+**權限位與時間戳維持不納入**，理由見 `docs/decisions/2026-07-31-integrity-tag-scope.md`。
 
 ### 3.2 目錄節點
 
@@ -185,7 +185,7 @@ fail closed 是已拍板決策，所以沒有回填就等於升級當下全部�
 `2` → 新格式。這讓「可重跑」是結構上成立的，而不是靠腳本自己記進度。
 
 腳本形狀（`scripts/migrate_node_tags.py`，`--dry-run` 預設 / `--apply` / `--verify`），
-密碼從 `.env` 讀（`SOP.md` 那條：`load_dotenv` 要給絕對路徑），走 `keystore.open_master_key()`。
+密碼從 `.env` 讀（`SOP[指令沒有做到你以為的事]#4`：`load_dotenv` 要給絕對路徑），走 `keystore.open_master_key()`。
 
 ---
 

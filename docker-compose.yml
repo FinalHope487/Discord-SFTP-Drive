@@ -41,7 +41,7 @@ services:
   # fixed on 2026-07-31, put back.
   #
   # Supporting more than one replica needs optimistic locking at the node
-  # level, not a bigger cache. See ROADMAP.md.
+  # level, not a bigger cache. See ROADMAP/later.md.
   sftp-discord-server:
     build: .
     ports:

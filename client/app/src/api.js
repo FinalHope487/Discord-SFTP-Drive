@@ -1,7 +1,7 @@
 // The only module that knows the wire format.
 //
 // Two rules hold everywhere below, and both come from decisions recorded in
-// ROADMAP.md rather than from taste:
+// docs/decisions/ rather than from taste:
 //
 //   * a 401 is never handled by signing back in. Re-authenticating needs the
 //     password, because the password is what unwraps the master key -- there

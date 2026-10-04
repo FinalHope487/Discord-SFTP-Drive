@@ -281,7 +281,8 @@ async def test_reopening_an_existing_database_finds_its_generated_columns(tmp_pa
 
 
 async def test_the_indexes_are_actually_used(indexed):
-    """The SQLite half of the IXSCAN check `ROADMAP.md` records for MongoDB.
+    """The SQLite half of the IXSCAN check recorded for MongoDB in
+    `docs/decisions/2026-08-06-trash-partial-index-trashed-at.md`.
 
     A partial index only serves a query the planner can prove is a subset of
     the index's own filter, so the query and the index have to agree. When
