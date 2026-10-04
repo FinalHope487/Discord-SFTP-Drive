@@ -271,6 +271,31 @@ device has three routes with different costs — see
 
 **Web UI** — <http://127.0.0.1:8080>. Upload, download, rename, delete, trash.
 
+<details>
+<summary>What it looks like — four steps</summary>
+
+1. Sign in with `SFTP_USER` and the password. **EN**／**中文** in the corner switches the language.
+
+   <img src="docs/images/sign-in.png" alt="Sign-in screen with username and password fields and a Sign in button" width="720">
+
+2. **New folder** and **Upload** are in the top bar; you can also drag files onto the window.
+
+   <img src="docs/images/file-list.png" alt="File list showing two folders and three files, with New folder and Upload buttons in the top bar" width="720">
+
+3. **New folder** asks for a name, then **Create**.
+
+   <img src="docs/images/new-folder.png" alt="New folder dialog with a name field and a Create button" width="720">
+
+4. Select a file and press <kbd>Delete</kbd> to move it to **Trash** in the sidebar. The ↺ button
+   restores it to where it was; × deletes it for ever.
+
+   <img src="docs/images/trash.png" alt="Trash view listing one deleted file, with a restore button and a delete-for-ever button on its row" width="720">
+
+The screenshots are generated from the real UI with fake data; see
+[`docs/visual-guide.md`](docs/visual-guide.md) to regenerate them.
+
+</details>
+
 Signing in unwraps the master key into process memory for the life of the
 session. Hence both an idle timeout (default 10 minutes) and an absolute ceiling
 (default 2 hours), which the browser can shorten but never extend. One account

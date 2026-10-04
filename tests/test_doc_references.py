@@ -10,7 +10,7 @@ before with the compose variables -- twice, with the first fix's comment a few
 lines above the second miss -- and what closed it was test_compose_coverage.py,
 not the lines. So: the same again, for filenames.
 
-Two rules, because a filename means different things in different files:
+Three rules, because a filename means different things in different files:
 
 - In prose and config, any name ending in .md is a pointer. Those files have
   no reason to write one down except to send the reader there.
@@ -18,6 +18,8 @@ Two rules, because a filename means different things in different files:
   pointer; the same name inside an assertion is usually the string some hook
   prints, and a rule that cannot tell those apart gets answered by deleting
   the docstring.
+- In prose and config, an embedded image (Markdown `![](...)` or HTML `src=`)
+  must exist too. A missing screenshot is a broken icon on the landing page.
 
 Narrative files are out of scope. ROADMAP.md, SOP.md, CLAUDE.md and
 QUESTIONS.md name dead documents deliberately -- recording that a file was
@@ -53,6 +55,11 @@ SCANNED_GLOBS = ["src/*.py", "tests/*.py", "scripts/*.py", "docs/*.md"]
 BARE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.md)\b")
 BACKTICKED = re.compile(r"`((?:[\w.-]+/)*[\w.-]+\.md)`")
 
+# Embedded images, Markdown or HTML. A README screenshot that is not in the
+# tree renders as a broken icon on the landing page, and nothing else would
+# notice. Only embeds count: a file listing that names icon.png is prose.
+IMAGE = re.compile(r'!\[[^\]]*\]\(([^)\s]+)\)|\bsrc="([^"]+)"')
+
 # A .md inside a URL belongs to somebody else's repository.
 URL = re.compile(r"https?://\S+")
 
@@ -66,8 +73,11 @@ def _scanned_files():
 
 def _references(path):
     text = URL.sub(" ", path.read_text(encoding="utf-8"))
-    pattern = BACKTICKED if path.suffix == ".py" else BARE
-    return {match.group(1) for match in pattern.finditer(text)}
+    if path.suffix == ".py":
+        return {match.group(1) for match in BACKTICKED.finditer(text)}
+    found = {match.group(1) for match in BARE.finditer(text)}
+    found |= {m.group(1) or m.group(2) for m in IMAGE.finditer(text)}
+    return found
 
 
 @pytest.mark.skipif(

@@ -51,10 +51,10 @@ commit 與 CI run 的 SHA 與狀態寫在〈基線〉。
 **commit**：`main` 上本輪最後一個 commit（含 `6a541d7` electron 43.4.0）
 **CI run**：推 `main` 後的那一次，見 `gh run list --limit 3`
 
-| 層 | 指令 | 本輪實跑（2026-10-04） |
+| 層 | 指令 | 本輪實跑（2026-10-04，README 截圖） |
 |---|---|---|
 | Python 全套 | `./venv/Scripts/python.exe -m pytest` | **756 passed / 18 skipped**（774 項；移除 `tests/test_push_guard.py` 18 項） |
-| 同一套換真 SQLite | `./venv/Scripts/python.exe -m pytest --db=sqlite` | **753 passed / 21 skipped** |
+| 同一套換真 SQLite | `./venv/Scripts/python.exe -m pytest --db=sqlite` | 未跑（本輪只動測試輔助與文件） |
 | Electron 外殼 | `cd client/shell && node --test` | **23 passed** |
 | lint | `./venv/Scripts/python.exe -m pyflakes src tests` | exit 0 |
 | 桌面視窗 user 層 | `tests/test_ui_shell.py` | 未跑：本機 `client/shell/node_modules` 沒裝 Electron，18 項 skip |
@@ -75,9 +75,3 @@ commit 與 CI run 的 SHA 與狀態寫在〈基線〉。
 **怎麼做**：user 自己從 `settings.local.json` 刪那一行，刪 `r6ws`、`r7ws`，留 `r6verify`、`r7verify`
 **會改變什麼**：之後再跑那支腳本會跳權限確認；釋放約 12 MB
 **做後回退代價**：權限規則照上面原字串加回去；刪掉的工作區回不來，證據檔在 `*verify` 所以結論不受影響
-
-### [next] README 加圖片操作說明
-**具體細節**：方案在 `docs/visual-guide.md`；README 目前沒有任何圖片
-**怎麼做**：寫 `scripts/` 截圖腳本（Playwright＋`fake_discord`，假資料）輸出到 `docs/images/`；README〈Using it〉放 3～5 張；`tests/test_doc_references.py` 擴大到 `.png`／`.gif`
-**會改變什麼**：README、`docs/images/`、一支新腳本、doc 測試的掃描規則
-**做後回退代價**：`git revert`；圖片留在 git 歷史裡，repo 體積不會因 revert 變回來

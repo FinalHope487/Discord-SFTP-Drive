@@ -63,3 +63,9 @@
 **怎麼做**：未知
 **會改變什麼**：VFS 要多一種節點型別
 **做後回退代價**：已建立的連結節點要另外清，否則舊程式讀到未知型別
+
+### [later] README 加一段 GIF 與桌面外殼設定頁截圖
+**具體細節**：2026-10-04 只做了四張 SPA 的 PNG。GIF 要 ffmpeg 轉檔，CI 沒有；外殼設定頁要 Electron，本機沒裝
+**怎麼做**：GIF：`tests/capture_readme_images.py` 開 Playwright 錄影，有 ffmpeg 才轉 GIF；外殼：沿用 `tests/shell_support.py` 連上真視窗截圖
+**會改變什麼**：README 多一張動圖與一張外殼截圖；截圖腳本多一個可選的 ffmpeg 依賴（不是套件，是外部執行檔）
+**做後回退代價**：`git revert`；圖片留在 git 歷史裡，repo 體積不會變回來

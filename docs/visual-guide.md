@@ -1,6 +1,17 @@
 # 圖片操作說明：怎麼放、放哪、怎麼不讓它過期
 
-研究日期 2026-10-04。只是研究與方案；這一輪還沒加任何圖片。
+研究日期 2026-10-04。同日落地：README〈Using it〉的四張 PNG 在 `docs/images/`。
+
+## 重新產生截圖
+
+介面改了就跑一次，再看 `git diff --stat docs/images` 與變動的圖，確認它還在教旁邊那一步：
+
+```bash
+cd client/app && npm run build
+./venv/Scripts/python.exe -m pytest tests/capture_readme_images.py
+```
+
+腳本檔名不是 `test_*.py`，預設的 `pytest` 不會跑它。圖片連結指向不存在的檔案時，`tests/test_doc_references.py` 會紅。
 
 ## 查到的事實
 
@@ -40,6 +51,6 @@
 
 ## 要先知道的限制
 
-- `tests/test_doc_references.py` 只檢查 `.md` 連結；**指向不存在圖片的連結不會讓任何測試變紅**。開始放圖時，把它的規則擴大到 `.png`／`.gif`
+- `tests/test_doc_references.py` 已擴大到嵌入的圖片（Markdown 圖片語法與 HTML 的 src 屬性）
 - `client/shell/local.html` 的首次執行畫面在打包後的 app 裡是離線頁，連不到 README 的圖片；要在 app 裡給圖，就得把圖打包進 `client/shell`，並加進 `package.json` 的 `files` 清單
-- 這一輪沒有確認 SPA 有沒有深色主題。沒有的話，第 4 點只需要淺色版
+- SPA 只有深色主題（`client/app/src/styles.css` 的 `color-scheme: dark`），所以只產生一套圖，不用 `<picture>`

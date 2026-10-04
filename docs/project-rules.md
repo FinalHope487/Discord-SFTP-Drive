@@ -78,6 +78,7 @@
 | 工具 | 執行方式 |
 |---|---|
 | `tools/outline.py` | `./venv/Scripts/python.exe tools/outline.py <檔> --min 20` |
+| `tests/capture_readme_images.py` | `./venv/Scripts/python.exe -m pytest tests/capture_readme_images.py`：重產 README 截圖，見 `docs/visual-guide.md` |
 | `scripts/find_orphans.py` | 只列不刪，見 `docs/decisions/2026-08-06-find-orphans-list-only.md` |
 
 ## 本專案專屬行為規則
