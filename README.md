@@ -271,7 +271,7 @@ device has three routes with different costs — see
 
 **Web UI** — <http://127.0.0.1:8080>. Upload, download, rename, delete, trash.
 
-<details>
+<details open>
 <summary>What it looks like — four steps</summary>
 
 1. Sign in with `SFTP_USER` and the password. The interface starts in English; the **EN** chip in the
