@@ -17,7 +17,7 @@ const {
 
 test("the two languages this app has", () => {
   assert.deepEqual(LANGUAGES, ["zh", "en"]);
-  assert.ok(LANGUAGES.includes(DEFAULT_LANGUAGE));
+  assert.equal(DEFAULT_LANGUAGE, "en");
 });
 
 test("a language survives, whatever case and padding it arrives in", () => {
@@ -29,21 +29,21 @@ test("a language survives, whatever case and padding it arrives in", () => {
 test("anything else falls back rather than reaching a dictionary lookup", () => {
   // A config written by a build that predates the switch. This is the input
   // that actually happens, and it must not turn the window blank.
-  assert.equal(normaliseLanguage(undefined), "zh");
-  assert.equal(normaliseLanguage(null), "zh");
-  assert.equal(normaliseLanguage(""), "zh");
-  assert.equal(normaliseLanguage(42), "zh");
-  assert.equal(normaliseLanguage({ lang: "en" }), "zh");
+  assert.equal(normaliseLanguage(undefined), "en");
+  assert.equal(normaliseLanguage(null), "en");
+  assert.equal(normaliseLanguage(""), "en");
+  assert.equal(normaliseLanguage(42), "en");
+  assert.equal(normaliseLanguage({ lang: "zh" }), "en");
   // Close enough to look right, not close enough to be a key. Nothing writes
   // these, so accepting them would only widen what a hand-edited config can
   // put into `document.documentElement.lang`.
-  assert.equal(normaliseLanguage("zh-Hant"), "zh");
-  assert.equal(normaliseLanguage("en-US"), "zh");
+  assert.equal(normaliseLanguage("zh-Hant"), "en");
+  assert.equal(normaliseLanguage("en-US"), "en");
 });
 
 test("the fallback is honoured, and is itself checked", () => {
-  assert.equal(normaliseLanguage("nonsense", "en"), "en");
-  assert.equal(normaliseLanguage(undefined, "en"), "en");
+  assert.equal(normaliseLanguage("nonsense", "zh"), "zh");
+  assert.equal(normaliseLanguage(undefined, "zh"), "zh");
   // A caller passing junk as the fallback still gets a language back; the
   // whole point of this function is that its result is always usable.
   assert.equal(normaliseLanguage("nonsense", "klingon"), DEFAULT_LANGUAGE);
@@ -54,8 +54,8 @@ test("the switch is a toggle, and total", () => {
   assert.equal(otherLanguage("en"), "zh");
   // Junk normalises to the default first, so the button on a page whose
   // config was hand-edited still moves somewhere rather than sticking.
-  assert.equal(otherLanguage("nonsense"), "en");
-  assert.equal(otherLanguage(undefined), "en");
+  assert.equal(otherLanguage("nonsense"), "zh");
+  assert.equal(otherLanguage(undefined), "zh");
 });
 
 test("both menus carry the same labels", () => {

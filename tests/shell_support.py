@@ -154,18 +154,78 @@ async def _wait_for_cdp(port, proc, log_path):
     )
 
 
+# The main Electron process of each launch, by user-data directory, so a test
+# can ask the operating system about the windows that process owns.
+LAUNCHED = {}
+
+
+def _owner(hwnd):
+    import ctypes
+    from ctypes import wintypes
+
+    owner = wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+    return owner.value
+
+
+def on_screen_windows_of(pid):
+    """Titles of `pid`'s visible top-level windows that touch a monitor.
+
+    Windows only. A window placed off every screen is visible to the window
+    manager but overlaps no monitor, so it is not in this list.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.MonitorFromWindow.restype = wintypes.HANDLE
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        if _owner(hwnd) == pid and user32.IsWindowVisible(hwnd):
+            if user32.MonitorFromWindow(hwnd, 0):  # MONITOR_DEFAULTTONULL
+                title = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, title, 256)
+                found.append(title.value)
+        return True
+
+    user32.EnumWindows(each, 0)
+    return found
+
+
+def owns_foreground(pid):
+    """Whether the window with keyboard focus belongs to `pid`. Windows only."""
+    import ctypes
+
+    return _owner(ctypes.windll.user32.GetForegroundWindow()) == pid
+
+
 @contextlib.asynccontextmanager
-async def shell_window(user_data_dir, config=None):
+async def shell_window(user_data_dir, config=None, lang="zh"):
     """The real shell window, as a Playwright page.
 
     `config` is written to `config.json` before launch, which is how a test
     picks its entry screen: `main.js` opens `local.html` for `mode: "local"`,
     a remote window when `serverUrl` is set, and `setup.html` otherwise.
+
+    `lang` is merged into that config unless the config names one itself.
+    The default app language is English; most tests here assert the Chinese
+    copy, so they ask for it. `lang=None` leaves the choice to the app, and so
+    does `config=None` on a directory that already has a config: that is a
+    second launch reading what the first one wrote.
+
+    The window is shown off every screen, without focus or a taskbar button
+    (`DD_SHELL_OFFSCREEN=1`), so a run does not interrupt whoever is using the
+    machine. CDP drives it the same.
     """
     from playwright.async_api import async_playwright
 
     user_data_dir = Path(user_data_dir)
     user_data_dir.mkdir(parents=True, exist_ok=True)
+    second_launch = config is None and (user_data_dir / "config.json").exists()
+    if lang is not None and not second_launch and "lang" not in (config or {}):
+        config = {**(config or {}), "lang": lang}
     if config is not None:
         (user_data_dir / "config.json").write_text(
             json.dumps(config), encoding="utf-8"
@@ -188,8 +248,13 @@ async def shell_window(user_data_dir, config=None):
 
     with log_path.open("wb") as log:
         proc = subprocess.Popen(
-            args, cwd=SHELL, stdout=log, stderr=subprocess.STDOUT
+            args,
+            cwd=SHELL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, "DD_SHELL_OFFSCREEN": "1"},
         )
+        LAUNCHED[str(user_data_dir)] = proc.pid
         try:
             await _wait_for_cdp(port, proc, log_path)
             async with async_playwright() as driver:

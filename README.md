@@ -274,7 +274,8 @@ device has three routes with different costs — see
 <details>
 <summary>What it looks like — four steps</summary>
 
-1. Sign in with `SFTP_USER` and the password. **EN**／**中文** in the corner switches the language.
+1. Sign in with `SFTP_USER` and the password. The interface starts in English; the **EN** chip in the
+   corner switches to Chinese.
 
    <img src="docs/images/sign-in.png" alt="Sign-in screen with username and password fields and a Sign in button" width="720">
 

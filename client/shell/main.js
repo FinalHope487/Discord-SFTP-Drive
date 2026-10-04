@@ -30,6 +30,18 @@ const MIN_WIDTH = 1024;
 const MIN_HEIGHT = 640;
 const PROBE_TIMEOUT_MS = 6000;
 
+// Set only by tests/shell_support.py. The windows are still shown -- a window
+// that is never shown behaves differently (the local-mode start fails) -- but
+// off every screen, without taking focus, and without a taskbar button, so a
+// test run does not interrupt whoever is using the machine.
+const OFFSCREEN = process.env.DD_SHELL_OFFSCREEN === "1";
+const OFFSCREEN_BOUNDS = OFFSCREEN ? { x: -20000, y: -20000, skipTaskbar: true } : {};
+
+function reveal(win) {
+  if (OFFSCREEN) win.showInactive();
+  else win.show();
+}
+
 let mainWindow = null;
 let setupWindow = null;
 
@@ -183,12 +195,13 @@ function createSetupWindow(problem, page = "setup.html") {
       stopLocalBackendIfRunning();
     }
     setupWindow.loadFile(path.join(__dirname, page));
-    setupWindow.focus();
+    if (!OFFSCREEN) setupWindow.focus();
     if (problem) setupWindow.webContents.send("dd:problem", problem);
     return setupWindow;
   }
 
   setupWindow = new BrowserWindow({
+    ...OFFSCREEN_BOUNDS,
     width: 620,
     height: 640,
     resizable: true,
@@ -210,7 +223,7 @@ function createSetupWindow(problem, page = "setup.html") {
 
   setupWindow.loadFile(path.join(__dirname, page));
   setupWindow.once("ready-to-show", () => {
-    setupWindow.show();
+    reveal(setupWindow);
     if (problem) setupWindow.webContents.send("dd:problem", problem);
   });
 
@@ -240,6 +253,7 @@ function createSetupWindow(problem, page = "setup.html") {
 
 function createMainWindow(origin) {
   mainWindow = new BrowserWindow({
+    ...OFFSCREEN_BOUNDS,
     width: 1360,
     height: 860,
     // Enforced by the window manager, so the drag stops at the floor rather
@@ -261,7 +275,7 @@ function createMainWindow(origin) {
   });
 
   mainWindow.loadURL(origin);
-  mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.once("ready-to-show", () => reveal(mainWindow));
 
   // Links to anywhere else open in the real browser. A session cookie that
   // authorises reads of every stored file has no business being carried into

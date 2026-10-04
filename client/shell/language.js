@@ -13,7 +13,7 @@
 // two pages share no sentence.
 
 const LANGUAGES = ["zh", "en"];
-const DEFAULT_LANGUAGE = "zh";
+const DEFAULT_LANGUAGE = "en";
 
 /**
  * The language a value means, or the fallback.

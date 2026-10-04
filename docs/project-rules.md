@@ -40,6 +40,7 @@
 | 桌面視窗 | `tests/test_ui_shell.py` | 真 Electron 視窗（`--remote-debugging-port` + Playwright `connect_over_cdp`）→ 真 preload bridge → 真主行程 → 真 `discord-drive.exe` |
 
 啟動與連線細節在 `tests/shell_support.py`；CI 上缺件要 fail 不 skip，作法是同檔的 `refuse_to_skip_in_ci`。
+外殼測試的視窗放在螢幕外、不搶焦點（`DD_SHELL_OFFSCREEN=1`），跑測試時可以照常用電腦。`shell_window` 預設寫入 `lang: zh`，因為多數斷言是中文字；要測 app 自己的預設語言就傳 `lang=None`。
 
 ### 前置條件
 

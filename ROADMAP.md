@@ -48,16 +48,15 @@ commit 與 CI run 的 SHA 與狀態寫在〈基線〉。
 **只有一份，覆寫不追加，≤40 行。** 數字取自本輪實跑；沒跑的層寫「未跑」，
 不得沿用上一輪的數字。
 
-**commit**：`main` 上本輪最後一個 commit（含 `6a541d7` electron 43.4.0）
+**commit**：`main` 上本輪最後一個 commit（預設英文 UI＋外殼測試視窗移到螢幕外）
 **CI run**：推 `main` 後的那一次，見 `gh run list --limit 3`
 
-| 層 | 指令 | 本輪實跑（2026-10-04，README 截圖） |
+| 層 | 指令 | 本輪實跑（2026-10-04） |
 |---|---|---|
-| Python 全套 | `./venv/Scripts/python.exe -m pytest` | **756 passed / 18 skipped**（774 項；移除 `tests/test_push_guard.py` 18 項） |
-| 同一套換真 SQLite | `./venv/Scripts/python.exe -m pytest --db=sqlite` | 未跑（本輪只動測試輔助與文件） |
+| Python 全套（含瀏覽器與桌面視窗 user 層） | `./venv/Scripts/python.exe -m pytest` | **776 passed / 0 skipped** |
+| 同一套換真 SQLite | `./venv/Scripts/python.exe -m pytest --db=sqlite` | **773 passed / 3 skipped** |
 | Electron 外殼 | `cd client/shell && node --test` | **23 passed** |
 | lint | `./venv/Scripts/python.exe -m pyflakes src tests` | exit 0 |
-| 桌面視窗 user 層 | `tests/test_ui_shell.py` | 未跑：本機 `client/shell/node_modules` 沒裝 Electron，18 項 skip |
 | 真 MongoDB | `docker compose up -d` | 未跑 |
 
 ---

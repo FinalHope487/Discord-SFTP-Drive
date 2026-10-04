@@ -67,7 +67,7 @@ function isTooSmall({ w, h }) {
 }
 
 export default function App() {
-  const [lang, setLang] = useState(() => localStorage.getItem("dd.lang") || "zh");
+  const [lang, setLang] = useState(() => localStorage.getItem("dd.lang") || "en");
   const t = useTranslate(lang);
 
   const [phase, setPhase] = useState("checking");
@@ -112,10 +112,10 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem("dd.lang", lang);
-    // index.html hard-codes zh-Hant, which stops being true the moment the
+    // index.html hard-codes `en`, which stops being true the moment the
     // chip is clicked. It is what a screen reader picks a voice from and what
     // the browser picks fonts and hyphenation by, so leaving it wrong makes
-    // the English interface read aloud in Chinese.
+    // the Chinese interface read aloud in English.
     document.documentElement.lang = lang === "en" ? "en" : "zh-Hant";
   }, [lang]);
   useEffect(() => localStorage.setItem("dd.display", display), [display]);

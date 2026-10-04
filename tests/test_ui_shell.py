@@ -17,16 +17,20 @@ that have nothing to do with this application.
 """
 
 import json
+import sys
 
 import pytest
 from playwright.async_api import expect
 
 from tests.shell_support import (
+    LAUNCHED,
     backend_missing,
     electron_missing,
     health_server,
     refuse_to_skip_in_ci,
     shell_window,
+    on_screen_windows_of,
+    owns_foreground,
 )
 
 _NO_ELECTRON = electron_missing()
@@ -95,6 +99,23 @@ async def test_the_saved_address_is_offered_on_arrival(tmp_path):
         await page.reload()
 
         await expect(page.locator("#url")).to_have_value(saved)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="asks Win32 which windows are visible; CI runs under xvfb anyway",
+)
+async def test_the_test_window_stays_off_screen_and_unfocused(tmp_path):
+    """`DD_SHELL_OFFSCREEN=1` keeps a test run out of the user's way.
+
+    Asked of the operating system, not the page: the page cannot see where its
+    window is or whether it has the keyboard.
+    """
+    async with shell_window(tmp_path) as page:
+        await expect(page.locator("#url")).to_be_visible()
+        pid = LAUNCHED[str(tmp_path)]
+        assert on_screen_windows_of(pid) == []
+        assert not owns_foreground(pid)
 
 
 async def test_no_saved_address_falls_back_to_the_placeholder(tmp_path):
@@ -404,20 +425,19 @@ async def test_a_config_with_no_language_still_opens(tmp_path):
     actually delivers it, and the failure it guards against is a blank window
     rather than a wrong word.
     """
-    async with shell_window(tmp_path, config={"serverUrl": ""}) as page:
+    async with shell_window(tmp_path, config={"serverUrl": ""}, lang=None) as page:
         await expect(
-            page.get_by_role("heading", name="連線到你的 Discord Drive")
+            page.get_by_role("heading", name="Connect to your Discord Drive")
         ).to_be_visible()
-        # The heading alone is not enough: a missing key still renders Chinese
-        # through the dictionary's own fallback, and only this says the value
-        # that reached the page was a language rather than `undefined`.
-        assert await page.evaluate("document.documentElement.lang") == "zh-Hant"
+        # The heading alone is not enough: only this says the value that
+        # reached the page was a language rather than `undefined`.
+        assert await page.evaluate("document.documentElement.lang") == "en"
 
 
 async def test_a_hand_edited_language_falls_back_rather_than_blanking(tmp_path):
     """config.json is a file a user can open and mistype in."""
     async with shell_window(tmp_path, config={"lang": "klingon"}) as page:
         await expect(
-            page.get_by_role("heading", name="連線到你的 Discord Drive")
+            page.get_by_role("heading", name="Connect to your Discord Drive")
         ).to_be_visible()
-        assert await page.evaluate("document.documentElement.lang") == "zh-Hant"
+        assert await page.evaluate("document.documentElement.lang") == "en"
