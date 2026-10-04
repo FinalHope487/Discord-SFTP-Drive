@@ -5,8 +5,7 @@ for a write-up at the end of a round, so on a long round every trade-off made
 before the first compaction is gone by the time anyone writes it down. This
 harvests them into `DECISIONS.jsonl` while the transcript is still intact.
 
-Opposite failure posture to `block-push-main.py`. That one fails closed. This
-one fails open, always exit 0: a crash here stalls compaction on a session that
+Fails open, always exit 0: a crash here stalls compaction on a session that
 has already run out of context, and one lost decision line is far cheaper than
 that.
 

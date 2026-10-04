@@ -1,10 +1,9 @@
 """The PreCompact hook that salvages decisions before compaction discards them.
 
-Driven as a subprocess with JSON on stdin, same as `test_push_guard.py` and for
-the same reason: the process boundary is the thing under test.
+Driven as a subprocess with JSON on stdin: the process boundary is the thing
+under test.
 
-The mirror image of the push guard on failure, though. That hook fails closed --
-a push it cannot classify gets blocked. This one must fail *open*: a crash here
+This hook must fail *open*: a crash here
 would stall compaction, and losing one decision line is cheaper than wedging a
 session that has run out of context. Every malformed-input case below asserts
 exit 0.
@@ -211,8 +210,8 @@ def test_caps_the_harvest_per_compaction(tmp_path):
 def test_survives_non_ascii_round_trip(tmp_path):
     """cp950 is the console codepage here; the ledger has to stay UTF-8.
 
-    Same trap `block-push-main.py` documents -- a ledger full of mojibake is a
-    ledger nobody can read next session.
+    Reading stdin with the locale codec breaks on the first non-ASCII byte;
+    a ledger full of mojibake is a ledger nobody can read next session.
     """
     said = "改用《部分唯一索引》表達「欄位不存在」，因為 $exists: false 不被 partialFilterExpression 接受"
     t = transcript(tmp_path, [assistant(text(said))])

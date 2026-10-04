@@ -40,7 +40,6 @@ commit 與 CI run 的 SHA 與狀態寫在〈基線〉。
 
 - **`config.py` 讀得到的每個變數都出現在 `docker-compose.yml` 與 `.env.example`** **強制**：`tests/test_compose_coverage.py`
 - **公開文件與設定檔指向的 `.md` 必須存在** **強制**：`tests/test_doc_references.py`
-- **不推 `main`／`master`**（與新版規則檔衝突，見 `QUESTIONS.md` Q1） **強制**：`.claude/hooks/block-push-main.py`，回歸測試 `tests/test_push_guard.py`
 
 ---
 
@@ -49,13 +48,13 @@ commit 與 CI run 的 SHA 與狀態寫在〈基線〉。
 **只有一份，覆寫不追加，≤40 行。** 數字取自本輪實跑；沒跑的層寫「未跑」，
 不得沿用上一輪的數字。
 
-**commit**：本輪 commit 的父 `f5ae868`（工作目錄＝本輪改動，數字對應本輪 commit 的樹）
-**CI run**：未跑（本輪未推）
+**commit**：`main` 上本輪最後一個 commit（含 `6a541d7` electron 43.4.0）
+**CI run**：推 `main` 後的那一次，見 `gh run list --limit 3`
 
 | 層 | 指令 | 本輪實跑（2026-10-04） |
 |---|---|---|
-| Python 全套 | `./venv/Scripts/python.exe -m pytest` | **774 passed / 18 skipped**（792 項） |
-| 同一套換真 SQLite | `./venv/Scripts/python.exe -m pytest --db=sqlite` | **771 passed / 21 skipped** |
+| Python 全套 | `./venv/Scripts/python.exe -m pytest` | **756 passed / 18 skipped**（774 項；移除 `tests/test_push_guard.py` 18 項） |
+| 同一套換真 SQLite | `./venv/Scripts/python.exe -m pytest --db=sqlite` | **753 passed / 21 skipped** |
 | Electron 外殼 | `cd client/shell && node --test` | **23 passed** |
 | lint | `./venv/Scripts/python.exe -m pyflakes src tests` | exit 0 |
 | 桌面視窗 user 層 | `tests/test_ui_shell.py` | 未跑：本機 `client/shell/node_modules` 沒裝 Electron，18 項 skip |
@@ -71,26 +70,8 @@ commit 與 CI run 的 SHA 與狀態寫在〈基線〉。
 **會改變什麼**：只動 `src/web.py`，消掉警告；行為不變
 **做後回退代價**：`git revert` 該 commit 即可；沒有資料或格式受影響
 
-### [blocked] 刪掉 agy 評測留下的 Bash 權限規則
-**具體細節**：`.claude/settings.local.json` 裡有 `Bash(powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\sword\AppData\Local\Temp\r6ws\launch.ps1 *)`。評測已結束，它指向 temp 目錄裡一支可被改寫的腳本。見 `QUESTIONS.md` Q2
-**怎麼做**：從 `settings.local.json` 的 allow 清單刪掉那一行
-**會改變什麼**：之後再跑那支腳本會跳權限確認
-**做後回退代價**：把那一行加回去；`settings.local.json` 不在版控，要自己記得原字串（就在上面）
-
-### [blocked] 清掉 agy 評測的 temp 工作區（約 1.5 GB）
-**具體細節**：`%LOCALAPPDATA%\Temp\r6ws`、`r6verify`、`r7ws`、`r7verify`。`r7ws` 有 5 份各 195 MB 的 venv 複本；證據檔在 `r6verify`／`r7verify`。見 `QUESTIONS.md` Q2
-**怎麼做**：刪 `r6ws`、`r7ws`，留兩個 `*verify`
-**會改變什麼**：釋放約 1.5 GB；評測工作區無法重跑
-**做後回退代價**：刪掉的 venv 複本回不來，要重建就照評測流程重新複製；證據檔保留所以結論不受影響
-
-### [blocked] dependabot PR #17／#18
-**具體細節**：#17 是 python group 2 個 dev 相依更新，#18 是 `client/shell` electron 43.3.0 → 43.4.0。沒跑過它們的 CI、沒審過內容。屬改相依，見 `QUESTIONS.md` Q3
-**怎麼做**：看兩個 PR 的 CI log 裡的 passed 數字（不只看綠勾），再合併
-**會改變什麼**：dev 相依版本；electron 升級會影響 `tests/test_ui_shell.py` 那 18 項
-**做後回退代價**：`git revert` 合併 commit 並重跑 `npm ci`／`pip install`；沒有資料受影響
-
-### [blocked] 關掉 GitHub repo 的 Wiki 與 Projects
-**具體細節**：兩者都沒在用，問過四輪沒有答案。見 `QUESTIONS.md` Q4
-**怎麼做**：`gh repo edit FinalHope487/Discord-SFTP-Drive --enable-wiki=false --enable-projects=false`
-**會改變什麼**：repo 頁面少兩個分頁
-**做後回退代價**：同一指令改成 `=true`；未查 Wiki 有沒有內容，關閉前先看一次
+### [next] user 手動清掉 agy 評測的殘留
+**具體細節**：user 於 2026-10-04 批准（原 Q2），但 agent 執行時被權限系統擋下。`.claude/settings.local.json` 的 allow 清單仍有 `Bash(powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\sword\AppData\Local\Temp\r6ws\launch.ps1 *)`；`%LOCALAPPDATA%\Temp\r6ws`（44 KB）、`r7ws`（12 MB）仍在，venv 複本已不在
+**怎麼做**：user 自己從 `settings.local.json` 刪那一行，刪 `r6ws`、`r7ws`，留 `r6verify`、`r7verify`
+**會改變什麼**：之後再跑那支腳本會跳權限確認；釋放約 12 MB
+**做後回退代價**：權限規則照上面原字串加回去；刪掉的工作區回不來，證據檔在 `*verify` 所以結論不受影響
