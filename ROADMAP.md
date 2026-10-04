@@ -75,3 +75,9 @@ commit 與 CI run 的 SHA 與狀態寫在〈基線〉。
 **怎麼做**：user 自己從 `settings.local.json` 刪那一行，刪 `r6ws`、`r7ws`，留 `r6verify`、`r7verify`
 **會改變什麼**：之後再跑那支腳本會跳權限確認；釋放約 12 MB
 **做後回退代價**：權限規則照上面原字串加回去；刪掉的工作區回不來，證據檔在 `*verify` 所以結論不受影響
+
+### [next] README 加圖片操作說明
+**具體細節**：方案在 `docs/visual-guide.md`；README 目前沒有任何圖片
+**怎麼做**：寫 `scripts/` 截圖腳本（Playwright＋`fake_discord`，假資料）輸出到 `docs/images/`；README〈Using it〉放 3～5 張；`tests/test_doc_references.py` 擴大到 `.png`／`.gif`
+**會改變什麼**：README、`docs/images/`、一支新腳本、doc 測試的掃描規則
+**做後回退代價**：`git revert`；圖片留在 git 歷史裡，repo 體積不會因 revert 變回來

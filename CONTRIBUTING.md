@@ -140,6 +140,7 @@ test count in this file has been wrong twice for that reason.
 | --- | --- |
 | `README.md` | What it is, the ToS risk, choosing a build, setup, everyday use. The landing page — every other document must be reachable from it. |
 | `docs/OPERATIONS.md` | Remote access, backup and recovery, troubleshooting, known limits. |
+| `docs/visual-guide.md` | How usage screenshots and GIFs are made and where they live. Chinese. |
 | `CONTRIBUTING.md` | Building, testing, and the bar for "done". Every test number in the project lives here. |
 | `.env.example` | Every setting and what getting it wrong costs. |
 | `docs/decisions/` | Why anything is the way it is, one file per decision. Chinese. |

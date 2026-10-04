@@ -299,6 +299,7 @@ sweep is a background scan, not a timer accurate to the second.
 | File | What it holds |
 | --- | --- |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Remote access, backup and recovery, changing the password, troubleshooting, known limits. |
+| [`docs/visual-guide.md`](docs/visual-guide.md) | Plan for screenshots and GIFs in this README: format, where images live, how they are regenerated. Chinese. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Building from source, running the tests, proposing a change. |
 | [`.env.example`](.env.example) | Every setting and what getting it wrong costs. |
 | [`docs/decisions/`](docs/decisions/) | Every settled decision with its reasoning, one file each. Start here for "why is it like that". Written in Chinese. |
